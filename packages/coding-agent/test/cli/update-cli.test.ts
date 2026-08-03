@@ -5,12 +5,24 @@ import { runUpdateCommand } from "../../src/cli/update-cli";
 type FetchInput = string | URL | Request;
 type FetchInit = RequestInit | BunFetchRequestInit;
 
+const originalSourceCheckout = Bun.env.OMP_SOURCE_CHECKOUT;
+
+function restoreSourceCheckout(): void {
+	if (originalSourceCheckout === undefined) {
+		delete Bun.env.OMP_SOURCE_CHECKOUT;
+	} else {
+		Bun.env.OMP_SOURCE_CHECKOUT = originalSourceCheckout;
+	}
+}
+
 describe("runUpdateCommand fetch cancellation", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		restoreSourceCheckout();
 	});
 
 	it("checks release metadata with a timeout signal", async () => {
+		delete Bun.env.OMP_SOURCE_CHECKOUT;
 		let requestSignal: AbortSignal | undefined;
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		const fetchStub = Object.assign(
@@ -29,15 +41,9 @@ describe("runUpdateCommand fetch cancellation", () => {
 });
 
 describe("runUpdateCommand source checkout dispatch", () => {
-	const originalSourceCheckout = Bun.env.OMP_SOURCE_CHECKOUT;
-
 	afterEach(() => {
 		vi.restoreAllMocks();
-		if (originalSourceCheckout === undefined) {
-			delete Bun.env.OMP_SOURCE_CHECKOUT;
-		} else {
-			Bun.env.OMP_SOURCE_CHECKOUT = originalSourceCheckout;
-		}
+		restoreSourceCheckout();
 	});
 
 	it("routes source launchers before official release discovery", async () => {
