@@ -3,7 +3,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
-import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { truncateHead, truncateHeadBytes, truncateTail, truncateTailBytes } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
@@ -101,6 +101,10 @@ function quoteShellArg(value: string): string {
 
 function terminalState(state: DaemonSnapshot["state"]): boolean {
 	return state === "exited" || state === "failed";
+}
+
+function settledState(state: DaemonSnapshot["state"]): boolean {
+	return terminalState(state) || state === "restarting";
 }
 
 /**
@@ -338,6 +342,15 @@ class DaemonBroker {
 	readonly #token: string;
 	readonly #idleGraceMs: number;
 	readonly #records = new Map<string, ManagedDaemon>();
+	/**
+	 * Names reserved by an in-flight `start` before its record lands in
+	 * `#records`. Requests dispatch concurrently, and `#start` awaits (cwd stat,
+	 * log open) between the duplicate check and the record insert; without a
+	 * synchronous reservation two clients can both pass the check and spawn
+	 * duplicate processes — one exits on a held resource (e.g. a Chromium
+	 * profile lock) or keeps running untracked.
+	 */
+	readonly #startingNames = new Set<string>();
 	readonly #clients = new Set<net.Socket>();
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<net.Socket>();
@@ -496,50 +509,59 @@ class DaemonBroker {
 		) {
 			throw new Error('Windows batch files require application "cmd.exe" with the batch path after "/c"');
 		}
-		const existing = this.#records.get(spec.name);
-		if (existing) await this.#refreshDetached(existing);
-		if (existing && !terminalState(existing.snapshot.state)) {
-			throw new Error(`Daemon ${spec.name} is already ${existing.snapshot.state}`);
+		if (this.#startingNames.has(spec.name)) {
+			throw new Error(`Daemon ${spec.name} is already starting`);
 		}
-		if (spec.ready?.log) {
-			try {
-				new RegExp(spec.ready.log, "u");
-			} catch (error) {
-				throw new Error(`Invalid readiness regex: ${error instanceof Error ? error.message : String(error)}`);
+		this.#startingNames.add(spec.name);
+		let record: ManagedDaemon;
+		try {
+			const existing = this.#records.get(spec.name);
+			if (existing) await this.#refreshDetached(existing);
+			if (existing && !terminalState(existing.snapshot.state)) {
+				throw new Error(`Daemon ${spec.name} is already ${existing.snapshot.state}`);
 			}
+			if (spec.ready?.log) {
+				try {
+					new RegExp(spec.ready.log, "u");
+				} catch (error) {
+					throw new Error(`Invalid readiness regex: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+			const stat = await fs.stat(spec.cwd);
+			if (!stat.isDirectory()) throw new Error(`Daemon cwd is not a directory: ${spec.cwd}`);
+			const dir = path.join(this.#runtimeDir, "daemons", spec.name);
+			const now = Date.now();
+			record = {
+				spec,
+				snapshot: {
+					name: spec.name,
+					id: crypto.randomUUID(),
+					state: "starting",
+					createdAt: now,
+					startedAt: now,
+					restartCount: 0,
+					outputBytes: 0,
+					owner,
+					persist: spec.persist,
+					detached: spec.detached,
+				},
+				dir,
+				log: await DaemonLog.open(dir),
+				generation: 0,
+				stopRequested: false,
+				logReady: !spec.ready?.log,
+				portReady: spec.ready?.port === undefined,
+				readinessBuffer: "",
+				outputOffset: 0,
+				readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
+				consecutiveFailures: 0,
+				persistQueue: Promise.resolve(),
+			};
+			syncReadyPending(record);
+			this.#records.set(spec.name, record);
+		} finally {
+			this.#startingNames.delete(spec.name);
 		}
-		const stat = await fs.stat(spec.cwd);
-		if (!stat.isDirectory()) throw new Error(`Daemon cwd is not a directory: ${spec.cwd}`);
-		const dir = path.join(this.#runtimeDir, "daemons", spec.name);
-		const now = Date.now();
-		const record: ManagedDaemon = {
-			spec,
-			snapshot: {
-				name: spec.name,
-				id: crypto.randomUUID(),
-				state: "starting",
-				createdAt: now,
-				startedAt: now,
-				restartCount: 0,
-				outputBytes: 0,
-				owner,
-				persist: spec.persist,
-				detached: spec.detached,
-			},
-			dir,
-			log: await DaemonLog.open(dir),
-			generation: 0,
-			stopRequested: false,
-			logReady: !spec.ready?.log,
-			portReady: spec.ready?.port === undefined,
-			readinessBuffer: "",
-			outputOffset: 0,
-			readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
-			consecutiveFailures: 0,
-			persistQueue: Promise.resolve(),
-		};
-		syncReadyPending(record);
-		this.#records.set(spec.name, record);
 		await this.#launch(record);
 		let readyTimedOut = false;
 		if (spec.ready && !terminalState(record.snapshot.state)) {
@@ -754,7 +776,7 @@ class DaemonBroker {
 	}
 
 	async #refreshDetached(record: ManagedDaemon): Promise<void> {
-		if (!record.spec.detached || terminalState(record.snapshot.state)) return;
+		if (!record.spec.detached || settledState(record.snapshot.state)) return;
 		const generation = record.generation;
 		await this.#readDetachedOutput(record, generation);
 		if (generation !== record.generation || record.process) return;
@@ -791,8 +813,14 @@ class DaemonBroker {
 	}
 
 	async #settle(record: ManagedDaemon, generation: number, exitCode?: number, error?: string): Promise<void> {
-		if (generation !== record.generation || terminalState(record.snapshot.state)) return;
+		// `restarting` is a settled state (child exited, relaunch timer armed). Any op that
+		// runs #refreshDetached on such a record must not re-settle it: re-entry double-counts
+		// restartCount and overwrites record.restartTimer, orphaning the armed timer so it fires
+		// after stop() and resurrects the daemon (issue #6852).
+		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		await this.#readDetachedOutput(record, generation);
+		// The output read yields, so a concurrent refresh may settle this generation first.
+		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		record.process = undefined;
 		record.input = undefined;
 		record.pty = undefined;
@@ -1096,7 +1124,7 @@ class DaemonBroker {
 	}
 }
 
-/** Start the detached per-project daemon broker selected by the CLI worker host. */
+/** Start the detached project or global daemon broker selected by the CLI worker host. */
 export async function startDaemonBrokerFromEnvironment(): Promise<void> {
 	const projectDir = process.env[DAEMON_PROJECT_DIR_ENV];
 	const runtimeDir = process.env[DAEMON_RUNTIME_DIR_ENV];
@@ -1110,7 +1138,7 @@ export async function startDaemonBrokerFromEnvironment(): Promise<void> {
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
 	const lease = await acquireBrokerLease(runtimeDir);
 	if (!lease) return;
-	process.title = "omp daemon broker";
+	setProcessName("omp daemon broker");
 	const token = (await Bun.file(path.join(runtimeDir, TOKEN_FILE)).text()).trim();
 	if (!token) throw new Error("Daemon broker token is empty");
 	const broker = new DaemonBroker(projectDir, runtimeDir, token, idleGraceMs);

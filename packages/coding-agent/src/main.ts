@@ -42,7 +42,8 @@ import {
 	type ScopedModel,
 } from "./config/model-resolver";
 import { ModelsConfigFile } from "./config/models-config";
-import { getDefault, type SettingPath, Settings, settings } from "./config/settings";
+import { serviceTierSettingToTier } from "./config/service-tier";
+import { getDefault, type SettingPath, Settings, type SettingValue, settings } from "./config/settings";
 import { initializeWithSettings } from "./discovery";
 import {
 	clearPluginRootsAndCaches,
@@ -75,6 +76,13 @@ import {
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
+import {
+	createForeignSessionStore,
+	foreignSessionInfoToSessionInfo,
+	foreignSessionSourceName,
+	persistForeignSession,
+} from "./session/foreign-session-import";
+import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
 import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
@@ -84,14 +92,7 @@ import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
-import {
-	getChangelogPath,
-	parseChangelog,
-	parseChangelogVersion,
-	readLastChangelogVersion,
-	selectStartupChangelog,
-	writeLastChangelogVersion,
-} from "./utils/changelog";
+import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 import { withTimeoutSignal } from "./utils/fetch-timeout";
 
@@ -189,8 +190,9 @@ function applyAcpDefaultSettingOverrides(targetSettings: Settings = settings): v
 	applyDefaultSettingOverrides(HOST_DEFAULTED_SETTING_PATHS, targetSettings);
 }
 
-async function readPipedInput(): Promise<string | undefined> {
-	if (process.stdin.isTTY !== false) return undefined;
+/** Reads a non-TTY stdin stream as prompt text. */
+export async function readPipedInput(): Promise<string | undefined> {
+	if (process.stdin.isTTY === true) return undefined;
 	// stdin is a pipe: a producer that never writes nor closes would block
 	// startup forever with zero output. Say what we're blocked on after 1s.
 	const notice = setTimeout(() => {
@@ -409,7 +411,7 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 async function runInteractiveMode(
 	session: AgentSession,
 	version: string,
-	changelogMarkdown: string | undefined,
+	startupChangelog: StartupChangelogSelection | undefined,
 	notifs: (InteractiveModeNotify | null)[],
 	versionCheckPromise: Promise<string | undefined>,
 	initialMessages: string[],
@@ -428,7 +430,7 @@ async function runInteractiveMode(
 	const mode = new InteractiveMode(
 		session,
 		version,
-		changelogMarkdown,
+		startupChangelog,
 		setExtensionUIContext,
 		lspServers,
 		mcpManager,
@@ -506,6 +508,7 @@ async function runInteractiveMode(
 	}
 
 	if (initialMessage !== undefined) {
+		session.maybeStartTitleGeneration(initialMessage);
 		try {
 			using _keepalive = new EventLoopKeepalive();
 			await session.prompt(initialMessage, { images: initialImages });
@@ -516,6 +519,7 @@ async function runInteractiveMode(
 	}
 
 	for (const message of initialMessages) {
+		session.maybeStartTitleGeneration(message);
 		try {
 			using _keepalive = new EventLoopKeepalive();
 			await session.prompt(message);
@@ -574,6 +578,27 @@ export class SessionResolutionError extends Error {
 		this.name = "SessionResolutionError";
 		this.hint = hint;
 	}
+}
+
+function resolveForeignSessionSource(
+	parsed: Pick<Args, "continue" | "fork" | "fromClaude" | "fromCodex" | "noSession" | "resume">,
+): ForeignSessionSource | undefined {
+	if (parsed.fromClaude && parsed.fromCodex) {
+		throw new SessionResolutionError("--from-claude and --from-codex cannot be used together");
+	}
+	const source = parsed.fromClaude ? "claude" : parsed.fromCodex ? "codex" : undefined;
+	if (!source) return undefined;
+	if (parsed.noSession) {
+		throw new SessionResolutionError(`--from-${source} requires session persistence`);
+	}
+	if (parsed.continue || parsed.resume || parsed.fork) {
+		throw new SessionResolutionError(`--from-${source} cannot be combined with --continue, --resume, or --fork`);
+	}
+	return source;
+}
+
+function isForeignSessionImport(parsed: Pick<Args, "fromClaude" | "fromCodex">): boolean {
+	return parsed.fromClaude === true || parsed.fromCodex === true;
 }
 
 type MissingCwdMoveResult =
@@ -662,33 +687,19 @@ async function resolveScopedModels(
 	);
 }
 
-async function getChangelogForDisplay(parsed: Args): Promise<string | undefined> {
-	if (parsed.continue || parsed.resume) {
+async function getChangelogForDisplay(
+	parsed: Args,
+	mode: SettingValue<"startup.changelogMode">,
+): Promise<StartupChangelogSelection | undefined> {
+	if (parsed.continue || parsed.resume || isForeignSessionImport(parsed)) {
 		return undefined;
 	}
 
-	const lastVersion = await readLastChangelogVersion();
-	const parsedLastVersion = parseChangelogVersion(lastVersion);
-	if (!parsedLastVersion) {
-		await writeLastChangelogVersion(VERSION);
-		return undefined;
-	}
-	if (lastVersion === VERSION) {
-		// Steady state: user already saw the current version's changelog. Skip the file read + parse.
-		return undefined;
-	}
-
-	const changelogPath = getChangelogPath();
-	const entries = await parseChangelog(changelogPath);
-	const startupChangelog = selectStartupChangelog(entries, lastVersion, VERSION);
-	if (startupChangelog.persistCurrentVersion) {
-		await writeLastChangelogVersion(VERSION);
-	}
-	if (startupChangelog.markdown) {
-		return startupChangelog.markdown;
-	}
-
-	return undefined;
+	return resolveStartupChangelogForDisplay({
+		mode,
+		currentVersion: VERSION,
+		changelogPath: getChangelogPath(),
+	});
 }
 
 const SESSION_ID_ARG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -868,6 +879,10 @@ export async function buildSessionOptions(
 	if (parsed.agentProfile !== undefined) {
 		options.agentProfile = parsed.agentProfile;
 	}
+	const restoringSession = Boolean(parsed.continue || parsed.resume || isForeignSessionImport(parsed));
+	if (parsed.serviceTier !== undefined) {
+		options.openAIServiceTier = serviceTierSettingToTier(parsed.serviceTier) ?? null;
+	}
 	const cliDirs = parsed.addDir ?? [];
 	const settingsDirs = activeSettings.get("workspace.additionalDirectories");
 	if (cliDirs.length > 0 || settingsDirs.length > 0) {
@@ -898,7 +913,7 @@ export async function buildSessionOptions(
 		options.providerPromptCacheKeySource = "explicit";
 	} else {
 		const header = sessionManager?.getHeader();
-		const scopedModelOverride = scopedModels.length > 0 && !parsed.continue && !parsed.resume;
+		const scopedModelOverride = scopedModels.length > 0 && !restoringSession;
 		const forkCacheShapeChanged =
 			scopedModelOverride ||
 			parsed.model !== undefined ||
@@ -956,7 +971,7 @@ export async function buildSessionOptions(
 				options.thinkingLevel = resolved.thinkingLevel;
 			}
 		}
-	} else if (scopedModels.length > 0 && !parsed.continue && !parsed.resume) {
+	} else if (scopedModels.length > 0 && !restoringSession) {
 		const remembered = activeSettings.getModelRole("default");
 		if (remembered) {
 			const rememberedSpec = resolveModelRoleValue(
@@ -1059,8 +1074,7 @@ export async function buildSessionOptions(
 		// thinking suffix) after extensions register; seeding the fallback
 		// scoped model's level here would override it in createAgentSession.
 		!deferredDefaultRole &&
-		!parsed.continue &&
-		!parsed.resume
+		!restoringSession
 	) {
 		options.thinkingLevel = scopedModels[0].thinkingLevel;
 	}
@@ -1123,14 +1137,13 @@ export async function buildSessionOptions(
 	}
 
 	// Additional extension paths from CLI
-	const cliExtensionPaths = parsed.noExtensions ? [] : [...(parsed.extensions ?? []), ...(parsed.hooks ?? [])];
+	const cliExtensionPaths = [...(parsed.extensions ?? []), ...(parsed.hooks ?? [])];
 	if (cliExtensionPaths.length > 0) {
 		options.additionalExtensionPaths = cliExtensionPaths;
 	}
 
 	if (parsed.noExtensions) {
 		options.disableExtensionDiscovery = true;
-		options.additionalExtensionPaths = [];
 	}
 
 	return options;
@@ -1141,6 +1154,7 @@ interface RunRootCommandDependencies {
 	discoverAuthStorage?: typeof discoverAuthStorage;
 	selectSession?: typeof selectSession;
 	runAcpMode?: RunAcpMode;
+	createForeignSessionStore?: (source: ForeignSessionSource) => ForeignSessionStore;
 	settings?: Settings;
 	forceSetupWizard?: boolean;
 }
@@ -1162,10 +1176,6 @@ export async function runRootCommand(
 	await logger.time("applyStartupCwd", applyStartupCwd, parsedArgs);
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
-
-	// Create AuthStorage and ModelRegistry upfront
-	const authStorage = await logger.time("discoverAuthStorage", deps.discoverAuthStorage ?? discoverAuthStorage);
-	const modelRegistry = logger.time("modelRegistry:init", () => new ModelRegistry(authStorage));
 
 	if (parsedArgs.version) {
 		writeStartupNotice(parsedArgs, `${VERSION}\n`);
@@ -1209,15 +1219,31 @@ export async function runRootCommand(
 	// Register CLI-provided extension package paths (`--extension`, `--hook`) so
 	// the `omp-plugins` discovery provider can surface their `skills/`, `hooks/`,
 	// `tools/`, `commands/`, `rules/`, `prompts/`, and `.mcp.json` sub-trees.
-	// `--no-extensions` short-circuits both the factory load and the sub-discovery.
-	if (!parsedArgs.noExtensions) {
-		const cliExtensions = [...(parsedArgs.extensions ?? []), ...(parsedArgs.hooks ?? [])];
-		if (cliExtensions.length > 0) {
-			injectOmpExtensionCliRoots(cliExtensions, home, getProjectDir());
-		}
-	}
+	// Explicit roots remain authorized under `--no-extensions`; only ambient
+	// extension discovery is disabled.
+	const cliExtensions = [...(parsedArgs.extensions ?? []), ...(parsedArgs.hooks ?? [])];
+	injectOmpExtensionCliRoots(cliExtensions, home, getProjectDir(), {
+		mode: parsedArgs.noExtensions ? "explicit-only" : "merge",
+		replace: true,
+	});
 
 	let cwd = getProjectDir();
+	// Classify the host before opening auth or settings storage so every
+	// session-critical database connection picks the right busy timeout.
+	// See getDbBusyTimeoutMs().
+	const isProtocolMode = mode === "rpc" || mode === "rpc-ui" || mode === "acp";
+	// Protocol modes own stdin; treating it as prompt text would consume JSON-RPC frames before their transports start.
+	const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
+	const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
+	const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
+	// Only the interactive host renders a focusable Agent Hub / subagent session
+	// tree; declare it so headless subagent optimizations (e.g. skipping replan
+	// title refresh) can tell a focusable process from a print/RPC/eval one.
+	setInteractiveHost(isInteractive);
+	// Create AuthStorage and ModelRegistry upfront
+	const authStorage = await logger.time("discoverAuthStorage", deps.discoverAuthStorage ?? discoverAuthStorage);
+	const modelRegistry = logger.time("modelRegistry:init", () => new ModelRegistry(authStorage));
+
 	const settingsInstance =
 		deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd, configFiles: parsedArgs.config }));
 	if (parsedArgs.approvalMode) {
@@ -1240,15 +1266,6 @@ export async function runRootCommand(
 	if (parsedArgs.noTitle || parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui" || parsedArgs.mode === "acp") {
 		Bun.env.PI_NO_TITLE = "1";
 	}
-	const isProtocolMode = mode === "rpc" || mode === "rpc-ui" || mode === "acp";
-	// Protocol modes own stdin; treating it as prompt text would consume JSON-RPC frames before their transports start.
-	const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
-	const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
-	const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
-	// Only the interactive host renders a focusable Agent Hub / subagent session
-	// tree; declare it so headless subagent optimizations (e.g. skipping replan
-	// title refresh) can tell a focusable process from a print/RPC/eval one.
-	setInteractiveHost(isInteractive);
 
 	// Initialize discovery system with settings for provider persistence
 	logger.time("initializeWithSettings", initializeWithSettings, settingsInstance);
@@ -1304,19 +1321,77 @@ export async function runRootCommand(
 	// id from UUID-shaped values owned by later extension flags.
 	normalizeContinueSessionArgs(parsedArgs, rawArgs);
 
-	// Create session manager based on CLI flags. SessionResolutionError signals a
-	// user-facing failure (unknown --resume/--fork id, non-interactive fork
-	// prompt, --fork with --no-session): print + exit cleanly instead of letting
-	// it surface as `[Uncaught Exception]` (see issue #2084).
+	// Resolve native resume/fork flags or import one foreign transcript into a
+	// fresh persisted OMP session before constructing the AgentSession.
 	let sessionManager: SessionManager | undefined;
+	let foreignSource: ForeignSessionSource | undefined;
 	try {
-		sessionManager = await logger.time(
-			"createSessionManager",
-			createSessionManager,
-			parsedArgs,
-			cwd,
-			settingsInstance,
-		);
+		foreignSource = resolveForeignSessionSource(parsedArgs);
+		if (foreignSource) {
+			if (isProtocolMode) {
+				throw new SessionResolutionError(`--from-${foreignSource} is not supported in ${mode} mode`);
+			}
+			const sourceName = foreignSessionSourceName(foreignSource);
+			const store = (deps.createForeignSessionStore ?? createForeignSessionStore)(foreignSource);
+			let foreignSessions: ForeignSessionInfo[];
+			try {
+				foreignSessions = await logger.time(`list${sourceName}Sessions`, () => store.list());
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new SessionResolutionError(`Failed to list ${sourceName} sessions: ${message}`);
+			}
+			if (foreignSessions.length === 0) {
+				writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} sessions found`)}\n`);
+				stopStartupWatchdog();
+				process.exit(0);
+			}
+			const choices = foreignSessions.map(foreignSessionInfoToSessionInfo);
+			pauseStartupWatchdog();
+			let selected: SessionInfo | null;
+			try {
+				selected = await logger.time(`select${sourceName}Session`, deps.selectSession ?? selectSession, choices, {
+					title: `Import ${sourceName} Session`,
+					scopeLabel: false,
+					showCwd: true,
+					allowDelete: false,
+					allowGlobalScope: false,
+					historySearch: false,
+				});
+			} finally {
+				resumeStartupWatchdog();
+			}
+			if (!selected) {
+				writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} session selected`)}\n`);
+				stopStartupWatchdog();
+				process.exit(0);
+			}
+			const foreignSession = foreignSessions.find(
+				session => session.id === selected.id && session.path === selected.path,
+			);
+			if (!foreignSession) {
+				throw new SessionResolutionError(`Selected ${sourceName} session is no longer available`);
+			}
+			try {
+				sessionManager = await logger.time(
+					`import${sourceName}Session`,
+					persistForeignSession,
+					store,
+					foreignSession,
+					{ fallbackCwd: cwd, sessionDir: parsedArgs.sessionDir },
+				);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new SessionResolutionError(`Failed to import ${sourceName} session: ${message}`);
+			}
+		} else {
+			sessionManager = await logger.time(
+				"createSessionManager",
+				createSessionManager,
+				parsedArgs,
+				cwd,
+				settingsInstance,
+			);
+		}
 	} catch (error: unknown) {
 		if (error instanceof SessionResolutionError) {
 			process.stderr.write(`${chalk.red(`Error: ${error.message}`)}\n`);
@@ -1328,7 +1403,7 @@ export async function runRootCommand(
 		throw error;
 	}
 
-	if (typeof parsedArgs.resume === "string" && sessionManager) {
+	if ((typeof parsedArgs.resume === "string" || foreignSource) && sessionManager) {
 		const previousCwd = cwd;
 		cwd = await switchToResumedProject(sessionManager.getCwd(), settingsInstance, pluginPreloadPromise);
 		if (cwd !== previousCwd) {
@@ -1394,7 +1469,7 @@ export async function runRootCommand(
 		sessionManager = await SessionManager.open(selected.path);
 	}
 
-	if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork)) {
+	if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource)) {
 		const pendingToolWarning = describePendingToolCalls(sessionManager.getBranch());
 		if (pendingToolWarning) {
 			logger.warn("Resumed session has pending tool calls", {
@@ -1537,7 +1612,7 @@ export async function runRootCommand(
 		const showStartupSplash = shouldShowStartupSplash({
 			configured: settingsInstance.get("startup.showSplash"),
 			isInteractive,
-			resuming: Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork),
+			resuming: Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
 			quiet: settingsInstance.get("startup.quiet"),
 			timing: Boolean($env.PI_TIMING),
 			stdinIsTTY: process.stdin.isTTY,
@@ -1547,6 +1622,7 @@ export async function runRootCommand(
 		const installPersistedSubagentReviver = (
 			created: CreateAgentSessionResult,
 			options: CreateAgentSessionOptions,
+			eventBus: EventBus,
 		): void => {
 			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
 				createPersistedSubagentReviverFactory({
@@ -1555,6 +1631,7 @@ export async function runRootCommand(
 					modelRegistry,
 					settings: settingsInstance,
 					enableLsp: options.enableLsp ?? true,
+					eventBus,
 				}),
 				Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
 			);
@@ -1569,7 +1646,7 @@ export async function runRootCommand(
 
 		// Cold-revive support is bound to this top-level session generation. ACP
 		// owns several concurrent roots and therefore never installs this global.
-		installPersistedSubagentReviver(initialSessionResult, sessionOptions);
+		installPersistedSubagentReviver(initialSessionResult, sessionOptions, eventBus);
 		if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 			authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);
 		}
@@ -1605,7 +1682,12 @@ export async function runRootCommand(
 			await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus, rpcInput);
 		} else if (isInteractive) {
 			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
-			const changelogMarkdown = await logger.time("main:getChangelogForDisplay", getChangelogForDisplay, parsedArgs);
+			const startupChangelog = await logger.time(
+				"main:getChangelogForDisplay",
+				getChangelogForDisplay,
+				parsedArgs,
+				settingsInstance.get("startup.changelogMode"),
+			);
 
 			const modelScopeNotification = buildModelScopeNotification(
 				scopedModels,
@@ -1688,7 +1770,7 @@ export async function runRootCommand(
 					eventBus: nextEventBus,
 					preloadedExtensions: nextExtensions,
 				});
-				installPersistedSubagentReviver(result, nextOptions);
+				installPersistedSubagentReviver(result, nextOptions, nextEventBus);
 				const notifications: (InteractiveModeNotify | null)[] = formatExtensionLoadNotifications(
 					nextExtensions.errors,
 				).map(message => ({ kind: "warn", message }));
@@ -1712,14 +1794,14 @@ export async function runRootCommand(
 			let transition = await runInteractiveMode(
 				session,
 				VERSION,
-				changelogMarkdown,
+				startupChangelog,
 				notifs,
 				versionCheckPromise,
 				initialArgs.messages,
 				setToolUIContext,
 				lspServers,
 				mcpManager,
-				Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork),
+				Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
 				deps.forceSetupWizard === true,
 				showStartupSplash,
 				eventBus,
@@ -1744,7 +1826,7 @@ export async function runRootCommand(
 				transition = await runInteractiveMode(
 					next.result.session,
 					VERSION,
-					changelogMarkdown,
+					undefined,
 					next.notifications,
 					Promise.resolve(undefined),
 					[],

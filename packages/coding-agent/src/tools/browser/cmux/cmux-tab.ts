@@ -8,16 +8,11 @@ import { resizeImage } from "../../../utils/image-resize";
 import type { ToolSession } from "../../index";
 import { resolveToCwd } from "../../path-utils";
 import { formatScreenshot } from "../../render-utils";
+import { bindRunFacade, resolvePredicateTimeout, type WaitPredicateOptions, waitForRun } from "../../run-scope";
 import { ToolAbortError, ToolError, throwIfAborted } from "../../tool-errors";
 import { type AriaSnapshotOptions, assertSelectorString, buildAriaSnapshotScript } from "../aria/aria-snapshot";
 import { DEFAULT_VIEWPORT } from "../launch";
 import { extractReadableFromHtml, type ReadableFormat } from "../readable";
-import {
-	bindBrowserRunFacade,
-	resolvePredicateTimeout,
-	type WaitPredicateOptions,
-	waitForBrowserRun,
-} from "../run-cancellation";
 import { cloneSafe, RunOutput } from "../run-output";
 import type { Observation, ReadyInfo, RunResultOk, ScreenshotResult, SessionSnapshot } from "../tab-protocol";
 import {
@@ -37,7 +32,6 @@ import type { CmuxSocketClient } from "./socket-client";
 interface ScreenshotOptions {
 	selector?: string;
 	fullPage?: boolean;
-	save?: string;
 	silent?: boolean;
 	encoding?: "base64" | "binary";
 }
@@ -487,7 +481,7 @@ export class CmuxTab {
 		return content;
 	}
 
-	async screenshot(opts: ScreenshotOptions = {}): Promise<ScreenshotResult> {
+	async screenshot(opts: ScreenshotOptions = {}): Promise<string> {
 		const context = this.#requireRunContext("tab.screenshot()");
 		// The cmux daemon's `browser.screenshot` captures the surface viewport
 		// only — it has no element-clip or full-page mode, and Bun.Image cannot
@@ -518,20 +512,16 @@ export class CmuxTab {
 				excludeWebP: context.session.excludeWebP,
 			},
 		);
-		const explicitPath = opts.save ? resolveToCwd(opts.save, context.session.cwd) : undefined;
-		const returnedPath = typeof result.path === "string" && result.path.length > 0 ? result.path : undefined;
-		const saveFullRes = !!(explicitPath || context.session.browserScreenshotDir || returnedPath);
+		const saveFullRes = !!context.session.browserScreenshotDir;
 		const savedBuffer = saveFullRes ? buffer : Buffer.from(resized.buffer);
 		const savedMimeType = saveFullRes ? captureMime : resized.mimeType;
 		const ext = savedMimeType === "image/webp" ? "webp" : savedMimeType === "image/jpeg" ? "jpg" : "png";
-		const dest =
-			explicitPath ??
-			(context.session.browserScreenshotDir
-				? path.join(
-						context.session.browserScreenshotDir,
-						`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
-					)
-				: (returnedPath ?? path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`)));
+		const dest = context.session.browserScreenshotDir
+			? path.join(
+					context.session.browserScreenshotDir,
+					`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
+				)
+			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);
 		const info: ScreenshotResult = {
@@ -556,7 +546,7 @@ export class CmuxTab {
 			context.output.push({ type: "text", text: lines.join("\n") });
 			context.output.push({ type: "image", data: resized.data, mimeType: resized.mimeType });
 		}
-		return info;
+		return dest;
 	}
 
 	async waitForUrl(pattern: string | RegExp, opts?: { timeout?: number }): Promise<string> {
@@ -1350,16 +1340,16 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 		// Keep both inside try so a concurrent in-process eval/browser run surfaces as
 		// a rejected promise the supervisor can report, never an unhandled rejection.
 		runtime.setCwd(opts.snapshot.cwd);
-		const runTab = bindBrowserRunFacade(tab, signal);
+		const runTab = bindRunFacade(tab, signal);
 		runtime.setRunScope({
-			page: bindBrowserRunFacade(tab.page, signal),
-			browser: bindBrowserRunFacade(tab.browser, signal),
+			page: bindRunFacade(tab.page, signal),
+			browser: bindRunFacade(tab.browser, signal),
 			tab: runTab,
 			assert: (cond: unknown, text?: string): void => {
 				if (!cond) throw new ToolError(text ?? "Assertion failed");
 			},
 			wait: (msOrPredicate: number | (() => unknown), waitOpts?: WaitPredicateOptions): Promise<unknown> =>
-				waitForBrowserRun(
+				waitForRun(
 					msOrPredicate,
 					signal,
 					typeof msOrPredicate === "number"

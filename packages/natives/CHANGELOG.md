@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced `DesktopSession.execute(actions, window)` and action batches with per-operation capture, pointer, keyboard, window, and accessibility methods; capture caps now apply per call and coordinate input requires a prior frame for the same target.
+
+### Added
+
+- Added a cross-platform, in-process `ps` shell builtin with BSD/procps selection forms, custom output columns, sorting, process metrics, and header suppression.
+- Added macOS, Win32, X11, and Wayland desktop backends behind one session API, including capture-free window discovery, isolated capture, explicit background/foreground delivery, native AX/UIA/AT-SPI trees with generational refs, and structured errors when a platform cannot honestly deliver background input.
+
+### Fixed
+
+- Fixed the accessibility snapshot marking a window root `(focused)` from its app-local `AXFocused` attribute even when another application held global focus; the root annotation now reflects the global window-roster focus flag.
+- Clarified coordinate-frame errors: pointer input before any capture, out-of-frame coordinates, and between-display points now name the capture-frame contract and the remedy instead of a bare bounds check.
+- Fixed macOS background keyboard events being posted through both CoreGraphics and SkyLight, which duplicated every typed character in AppKit targets; the authenticated SkyLight route now delivers each event once.
+
+## [17.2.2] - 2026-07-31
+
+### Changed
+
+- Updated native HTML-to-Markdown rendering to html-to-markdown-rs 3.9.2 defaults, which may result in formatting differences (such as fenced code blocks and cycling nested-list bullets) compared to version 2.30.0.
+
+### Fixed
+
+- Fixed a heap corruption crash when opening PulseAudio on Linux ARM64 by shipping target-specific miniaudio Rust layouts for GNU and musl native addons.
+- Fixed local Bazel addon builds on NixOS by exposing system CMake tools to sandboxed build scripts and correctly bundling Opus.
+- Fixed workspace native addon loading to correctly prefer the workspace build over an installed leaf package.
+- Fixed process crashes caused by pathological HTML inputs; conversions that exceed the native-stack DOM depth limit now reject instead of returning silently truncated Markdown.
+
+## [17.2.1] - 2026-07-30
+
+### Fixed
+
+- Fixed the `computer` tool advertising Wayland support that never worked: on the default rootless XWayland (GNOME/KDE/sway) the X11 root window has no readable pixmap, so root `GetImage` failed on every screenshot with a raw `BadMatch` protocol dump. `Monitor::all` now probes root drawability at initialization and fails fast with an actionable `DESKTOP_BACKEND_UNAVAILABLE` message naming the rootless-XWayland constraint, and `docs/computer-use.md` now lists rootless XWayland as unsupported ([#7085](https://github.com/can1357/oh-my-pi/issues/7085)).
+
+## [17.2.0] - 2026-07-30
+
+### Changed
+
+- Split the native voice engine (miniaudio capture/playback, WebRTC peer, Opus media) out of the `pi-natives` addon crate into a napi-free `pi-voice` rlib. The addon keeps thin `#[napi]` adapters, so the JS API is unchanged; the webrtc/opus/miniaudio dependency graph now compiles once into the library and no longer rebuilds with the addon leaf (which recompiles every release via its version-sentinel edit).
+- Release binaries now build in parallel with the test fan-out; npm leaf publishing moved to a dedicated post-validation job (`release_native_leaves`), and darwin release bazel caches are pre-warmed on native-affecting main pushes — cutting release wall time from the previous serialized tests → cold darwin build pipeline.
+
+## [17.1.8] - 2026-07-28
+
+### Fixed
+
+- Fixed an issue on macOS (darwin) where the native addon delivered zero AudioCapture callbacks, which prevented microphone audio from being captured.
+
 ## [17.1.6] - 2026-07-27
 
 ### Changed

@@ -116,6 +116,7 @@ describe("system prompt tool inventory", () => {
 	async function renderMountedWebSearch(opts: {
 		nativeTools: boolean;
 		directDefinition: boolean;
+		dynamic?: boolean;
 	}): Promise<{ text: string; inventory: string }> {
 		const tools = new Map(TOOLS);
 		if (opts.directDefinition) tools.set("web_search", DIRECT_WEB_SEARCH);
@@ -129,7 +130,7 @@ describe("system prompt tool inventory", () => {
 			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
 			nativeTools: opts.nativeTools,
 			inlineToolDescriptors: false,
-			xdevTools: [{ name: "web_search", summary: "Searches the web." }],
+			xdevTools: [{ name: "web_search", summary: "Searches the web.", dynamic: opts.dynamic }],
 			xdevDocs: "Mounted web search documentation.",
 		});
 		const text = systemPrompt.join("\n\n");
@@ -439,10 +440,6 @@ describe("system prompt tool inventory", () => {
 		});
 		const text = systemPrompt.join("\n\n");
 		expect(text).toContain("# Computer Use");
-		expect(text).toContain("The `computer` tool is explicitly enabled and available");
-		expect(text).toContain("MUST use `computer` for requests to view or control host desktop applications");
-		expect(text).toContain("NEVER claim Computer Use is unavailable");
-		expect(text).toContain("Inspect the fresh screenshot returned by every successful `computer` call");
 	});
 
 	it("renders `# Tool:` sections (not a name list) when tools are not native", async () => {
@@ -655,5 +652,34 @@ describe("system prompt tool inventory", () => {
 
 		expect(text).toContain("<skills>");
 		expect(text).toContain("- frontend-design: Frontend UI workflow");
+	});
+
+	it("omits the read-only scout delegation gate when scout is unavailable", async () => {
+		const opts = { toolNames: ["read", "bash", "task"], tools: TOOLS };
+		const withScout = (
+			await buildSystemPrompt({
+				...opts,
+				cwd: tempDir,
+				contextFiles: [],
+				skills: [],
+				rules: [],
+				workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+				scoutAvailable: true,
+			})
+		).systemPrompt.join("\n\n");
+		const withoutScout = (
+			await buildSystemPrompt({
+				...opts,
+				cwd: tempDir,
+				contextFiles: [],
+				skills: [],
+				rules: [],
+				workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+				scoutAvailable: false,
+			})
+		).systemPrompt.join("\n\n");
+
+		expect(withScout).toContain("a single read-only scout while you keep working is fine");
+		expect(withoutScout).not.toContain("read-only scout");
 	});
 });

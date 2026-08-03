@@ -13,6 +13,7 @@ import {
 	buildMiseUpgradeArgs,
 	buildNpmInstallArgs,
 	downloadVerifiedBinary,
+	isMuslLinuxForTest,
 	parseUpdateArgs,
 	pruneBunInstallCache,
 	replaceBinaryForUpdate,
@@ -74,6 +75,29 @@ describe("parseUpdateArgs", () => {
 		expect(parseUpdateArgs(["update", "-l"])).toEqual({ force: false, check: false, plugins: true });
 	});
 });
+
+describe("update-cli libc detection", () => {
+	it("does not mistake an installed musl loader for a glibc host", () => {
+		expect(
+			isMuslLinuxForTest({
+				platform: "linux",
+				alpineRelease: false,
+				lddOutput: "ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39",
+			}),
+		).toBe(false);
+	});
+
+	it("recognizes a musl host from ldd output", () => {
+		expect(
+			isMuslLinuxForTest({
+				platform: "linux",
+				alpineRelease: false,
+				lddOutput: "musl libc (x86_64)",
+			}),
+		).toBe(true);
+	});
+});
+
 describe("update-cli install target detection", () => {
 	it("uses bun update when prioritized omp is inside bun global bin", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
@@ -462,6 +486,31 @@ describe("update-cli release binary integrity", () => {
 			}),
 		).rejects.toThrow("received at least 2");
 		expect(pulls).toBe(1);
+		expect(await Bun.file(targetPath).exists()).toBe(false);
+	});
+
+	it("wraps a timeout during body streaming with a friendly message", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const body = new ReadableStream<Uint8Array>(
+			{
+				pull(controller) {
+					controller.enqueue(new Uint8Array(1));
+					controller.error(new DOMException("The operation timed out.", "TimeoutError"));
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+
+		await expect(
+			downloadVerifiedBinary({
+				url,
+				targetPath,
+				expectedSize: Buffer.byteLength(content),
+				expectedDigest: digest,
+				fetchImpl: async () => new Response(body),
+			}),
+		).rejects.toThrow("Timed out downloading release binary after 15 minutes");
 		expect(await Bun.file(targetPath).exists()).toBe(false);
 	});
 
