@@ -580,48 +580,6 @@ describe("AgentSession model persistence", () => {
 		});
 	});
 
-	it("restores the persisted agent profile instead of re-running initial routes", async () => {
-		const targetSessionFile = path.join(tempDir.path(), "profiled-session.jsonl");
-		const timestamp = "2026-08-02T00:00:00.000Z";
-		await Bun.write(
-			targetSessionFile,
-			`${[
-				{
-					type: "session",
-					version: 3,
-					id: "profiled-session",
-					timestamp,
-					cwd: tempDir.path(),
-					agentProfile: "reviewer",
-				},
-				{
-					type: "message",
-					id: "profiled-user",
-					parentId: null,
-					timestamp,
-					message: { role: "user", content: "Persist this identity", timestamp: 0 },
-				},
-			]
-				.map(entry => JSON.stringify(entry))
-				.join("\n")}\n`,
-		);
-		const settings = Settings.isolated({
-			agentProfiles: {
-				driver: { prompt: "DRIVER CONSTITUTION", hindsight: { bankId: "driver-bank" } },
-				reviewer: { prompt: "REVIEWER CONSTITUTION", hindsight: { bankId: "reviewer-bank" } },
-			},
-			agentProfileRoutes: [{ agentKind: "main", profile: "driver" }],
-		});
-
-		const resumed = await createStartupResumeSession(targetSessionFile, settings);
-		const rendered = resumed.session.agent.state.systemPrompt.join("\n\n");
-
-		expect(resumed.session.agentProfileId).toBe("reviewer");
-		expect(resumed.session.sessionManager.getHeader()?.agentProfile).toBe("reviewer");
-		expect(rendered).toContain("REVIEWER CONSTITUTION");
-		expect(rendered).not.toContain("DRIVER CONSTITUTION");
-	});
-
 	it("lists restorable temporary model before the default fallback", () => {
 		expect(
 			getRestorableSessionModels(

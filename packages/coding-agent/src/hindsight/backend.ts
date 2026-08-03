@@ -1,7 +1,7 @@
 /**
  * Hindsight memory backend.
  *
- * Wires the per-session lifecycle (recall before each root prompt, retain every Nth
+ * Wires the per-session lifecycle (recall on first turn, retain every Nth
  * agent_end, etc.) on top of the AgentSession event stream. Hindsight runtime
  * state is owned by the AgentSession so lifetime follows the actual domain
  * owner instead of a parallel session-id registry.
@@ -43,16 +43,12 @@ export const hindsightBackend: MemoryBackend = {
 		const sessionId = session.sessionId;
 		if (!sessionId) return;
 
-		// Subagents with the same memory scope alias the parent's state so
-		// auto-recall and auto-retain remain single-owner. A routed worker with a
-		// distinct profile scope installs its own state instead.
+		// Subagents alias the parent's state so recall/retain/reflect tool calls
+		// persist to the same Hindsight bank. Auto-recall and auto-retain stay
+		// with the parent — running them per subagent would double-recall and
+		// pollute the bank with internal exploration transcripts.
 		if (options.taskDepth > 0) {
 			const parent = options.parentHindsightSessionState;
-			if (!parent && !options.hindsightScope) return;
-			if (parent && options.hindsightScope && !bankScopesEqual(options.hindsightScope, parent)) {
-				await installPrimaryState(session, settings, new Set(), options.hindsightScope);
-				return;
-			}
 			if (!parent) return;
 			const previous = session.setHindsightSessionState(
 				new HindsightSessionState({
@@ -66,6 +62,7 @@ export const hindsightBackend: MemoryBackend = {
 					session,
 					banksSet: parent.banksSet,
 					lastRetainedTurn: 0,
+					hasRecalledForFirstTurn: true,
 					aliasOf: parent,
 				}),
 			);
@@ -83,7 +80,7 @@ export const hindsightBackend: MemoryBackend = {
 			return;
 		}
 
-		await installPrimaryState(session, settings, new Set(), options.hindsightScope);
+		await installPrimaryState(session, settings, new Set());
 	},
 
 	async buildDeveloperInstructions(_agentDir, settings, session): Promise<string | undefined> {
@@ -202,7 +199,6 @@ async function installPrimaryState(
 	session: AgentSession,
 	settings: Settings,
 	banksSet: Set<string>,
-	scopeOverride?: BankScope,
 ): Promise<HindsightSessionState | undefined> {
 	const sessionId = session.sessionId;
 	if (!sessionId) return undefined;
@@ -211,7 +207,7 @@ async function installPrimaryState(
 	if (!isHindsightConfigured(config)) return undefined;
 
 	const client = createHindsightClient(config);
-	const scope = scopeOverride ?? computeBankScope(config, session.sessionManager.getCwd());
+	const scope = computeBankScope(config, session.sessionManager.getCwd());
 
 	// Cleanup any stale state for this session (defensive — prevents leaks
 	// when a session is reused without going through dispose). Flush the
@@ -241,6 +237,7 @@ async function installPrimaryState(
 		session,
 		banksSet,
 		lastRetainedTurn: 0,
+		hasRecalledForFirstTurn: false,
 	});
 
 	// Subscribe BEFORE installing: if the operator manages to flip another
@@ -291,11 +288,11 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 		return;
 	}
 
-	const next = session.hindsightScope ?? computeBankScope(config, session.sessionManager.getCwd());
+	const next = computeBankScope(config, session.sessionManager.getCwd());
 	if (bankScopesEqual(next, current)) return;
 
 	// Preserve the banksSet so we don't re-PUT banks we've already confirmed.
-	await installPrimaryState(session, settings, current.banksSet, session.hindsightScope);
+	await installPrimaryState(session, settings, current.banksSet);
 }
 
 /** Tag-array equality: order matters because we never reorder on the way in. */

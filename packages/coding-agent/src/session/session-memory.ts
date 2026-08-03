@@ -30,7 +30,7 @@ export class SessionMemory {
 	readonly #host: SessionMemoryHost;
 	readonly #memoryAgentDir: string | undefined;
 	readonly #memoryTaskDepth: number;
-	readonly #hindsightScope: MemoryBackendStartOptions["hindsightScope"];
+	readonly #memoryEnabled: boolean;
 	readonly #createMemoryTools: (() => Promise<AgentTool[]>) | undefined;
 	#memoryBackendTransition: Promise<void> = Promise.resolve();
 	#localMemoryStartupAbort: AbortController | undefined;
@@ -41,14 +41,14 @@ export class SessionMemory {
 		options: {
 			memoryAgentDir?: string;
 			memoryTaskDepth?: number;
+			memoryEnabled?: boolean;
 			createMemoryTools?: () => Promise<AgentTool[]>;
-			hindsightScope?: MemoryBackendStartOptions["hindsightScope"];
 		},
 	) {
 		this.#host = host;
 		this.#memoryAgentDir = options.memoryAgentDir;
 		this.#memoryTaskDepth = options.memoryTaskDepth ?? 0;
-		this.#hindsightScope = options.hindsightScope;
+		this.#memoryEnabled = options.memoryEnabled !== false;
 		this.#createMemoryTools = options.createMemoryTools;
 	}
 
@@ -187,7 +187,7 @@ export class SessionMemory {
 		if (this.#host.isDisposed()) return;
 		try {
 			await this.#disposeMemoryBackendState();
-			if (this.#memoryAgentDir && this.#memoryTaskDepth === 0 && !this.#host.isDisposed()) {
+			if (this.#memoryEnabled && this.#memoryAgentDir && this.#memoryTaskDepth === 0 && !this.#host.isDisposed()) {
 				const backend = await resolveMemoryBackend(this.#host.settings);
 				await backend.start({
 					session: this.#host.memoryBackendSession(),
@@ -195,7 +195,6 @@ export class SessionMemory {
 					modelRegistry: this.#host.modelRegistry,
 					agentDir: this.#memoryAgentDir,
 					taskDepth: this.#memoryTaskDepth,
-					hindsightScope: this.#hindsightScope,
 				});
 			}
 			if (this.#host.isDisposed()) return;
@@ -216,7 +215,7 @@ export class SessionMemory {
 	}
 
 	async #refreshMemoryTools(): Promise<void> {
-		const tools = (await this.#createMemoryTools?.()) ?? [];
+		const tools = this.#memoryEnabled ? ((await this.#createMemoryTools?.()) ?? []) : [];
 		await this.#replaceMemoryTools(tools);
 	}
 

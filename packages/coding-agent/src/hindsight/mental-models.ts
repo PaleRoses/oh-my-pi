@@ -419,7 +419,7 @@ function longestCommonSubsequence(a: string[], b: string[]): string[] {
 	return out.reverse();
 }
 
-/** Awaited only while the initial prompt races mental-model bootstrap. */
+/** Awaited only by the first-turn race in `beforeAgentStartPrompt`. */
 export const MENTAL_MODEL_FIRST_TURN_DEADLINE_MS = 1500;
 
 /** Cache TTL: re-list models on `agent_end` once this many ms have elapsed. */

@@ -41,16 +41,16 @@ export interface SessionHeader {
 	parentSession?: string;
 	/** Provider prompt-cache identity inherited by exact-route full forks. */
 	providerPromptCacheKey?: string;
-	/** Sticky agent identity selected for this session. */
-	agentProfile?: string;
+	/** Immutable system-prompt profile selected when this transcript was created. */
+	systemPromptProfile?: string;
 }
 
 export interface NewSessionOptions {
 	parentSession?: string;
 	/** Provider prompt-cache identity to seed on the new session header. */
 	providerPromptCacheKey?: string;
-	/** Sticky agent identity to persist on the new session header. */
-	agentProfile?: string;
+	/** System-prompt profile inherited by the new transcript. */
+	systemPromptProfile?: string;
 	/** Skip flushing the current session and delete it instead of saving. */
 	drop?: boolean;
 	/** Additional workspace directories to seed on the new session. */

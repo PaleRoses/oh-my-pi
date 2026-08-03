@@ -56,12 +56,8 @@ describe("AgentSession.switchSession previous-context build", () => {
 		}
 	});
 
-	function buildSession(
-		tempDir: TempDir,
-		agentProfileId?: string,
-	): { session: AgentSession; sessionManager: SessionManager } {
+	function buildSession(tempDir: TempDir): { session: AgentSession; sessionManager: SessionManager } {
 		const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
-		if (agentProfileId !== undefined) void sessionManager.setAgentProfile(agentProfileId);
 		const agent = new Agent({
 			initialState: {
 				model,
@@ -75,7 +71,6 @@ describe("AgentSession.switchSession previous-context build", () => {
 			sessionManager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
-			agentProfileId,
 		});
 		sessions.push(session);
 		return { session, sessionManager };
@@ -135,46 +130,6 @@ describe("AgentSession.switchSession previous-context build", () => {
 		// The previous session's display context MUST NOT be materialized. Only
 		// the new target context (post-`setSessionFile`) should be built.
 		expect(calls).toEqual([{ sessionFile: targetSessionFile!, transcript: undefined }]);
-	});
-
-	it("rejects switching a populated AgentSession across profile identities", async () => {
-		const tempDir = TempDir.createSync("@pi-switch-agent-profile-");
-		tempDirs.push(tempDir);
-		const { session, sessionManager } = buildSession(tempDir, "driver");
-		sessionManager.appendMessage({ role: "user", content: "driver transcript", timestamp: 1 });
-		await sessionManager.flush();
-		const previousSessionFile = sessionManager.getSessionFile();
-
-		const workerSessionFile = path.join(tempDir.path(), "worker.jsonl");
-		const timestamp = "2026-08-02T00:00:00.000Z";
-		await Bun.write(
-			workerSessionFile,
-			`${[
-				{
-					type: "session",
-					version: 3,
-					id: "worker-session",
-					timestamp,
-					cwd: tempDir.path(),
-					agentProfile: "worker",
-				},
-				{
-					type: "message",
-					id: "worker-user",
-					parentId: null,
-					timestamp,
-					message: { role: "user", content: "worker transcript", timestamp: 2 },
-				},
-			]
-				.map(entry => JSON.stringify(entry))
-				.join("\n")}\n`,
-		);
-
-		await expect(session.switchSession(workerSessionFile!)).rejects.toThrow(
-			'Cannot switch agent profile from "driver" to "worker"',
-		);
-		expect(session.sessionFile).toBe(previousSessionFile);
-		expect(session.sessionManager.getHeader()?.agentProfile).toBe("driver");
 	});
 
 	it("builds the previous display context for same-session reloads", async () => {

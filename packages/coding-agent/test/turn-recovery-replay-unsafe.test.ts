@@ -68,7 +68,6 @@ function createHost(
 		appendSessionMessage: () => {},
 		sessionMessageAlreadyPersisted: () => false,
 		setModelWithProviderSessionReset: async () => {},
-		assertModelAllowed: () => {},
 		resetCurrentResponsesProviderSession: () => {},
 		maybeAutoRedeemCodexReset: async () => false,
 		runAutoCompaction: async () =>

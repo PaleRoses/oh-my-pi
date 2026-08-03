@@ -442,6 +442,8 @@ export class SessionManager {
 	#rewriteRequired = false;
 	/** Lazy gate crossed (ensureOnDisk / loaded file): every entry must persist from now on. */
 	#forceFileCreation = false;
+	/** Fresh fork whose prompt identity must be selected by its first AgentSession. */
+	#systemPromptProfileSelectionPending = false;
 	/**
 	 * Armed only when this manager observed a draft sidecar lifecycle that
 	 * materialized an otherwise metadata-only session file. Explicit
@@ -981,6 +983,7 @@ export class SessionManager {
 		this.#titleSource = undefined;
 		this.#titleUpdatedAt = "";
 		this.#hasTitleSlot = true;
+		this.#systemPromptProfileSelectionPending = false;
 
 		const timestamp = nowIso();
 		this.#header = {
@@ -991,7 +994,7 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: options?.parentSession,
 			providerPromptCacheKey: options?.providerPromptCacheKey,
-			agentProfile: options?.agentProfile ?? this.#header?.agentProfile,
+			systemPromptProfile: options?.systemPromptProfile,
 		};
 		const workspace = normalizeSessionWorkspace({
 			cwd: this.#cwd,
@@ -1324,7 +1327,7 @@ export class SessionManager {
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
 			parentSession: parentSessionId,
 			providerPromptCacheKey: this.#header.providerPromptCacheKey ?? parentSessionId,
-			agentProfile: this.#header.agentProfile,
+			systemPromptProfile: this.#header.systemPromptProfile,
 		};
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
@@ -2235,13 +2238,25 @@ export class SessionManager {
 		return this.#header;
 	}
 
-	/** Persist the sticky agent identity without materializing an otherwise empty session. */
-	async setAgentProfile(agentProfile: string | undefined): Promise<void> {
-		if (this.#header.agentProfile === agentProfile) return;
-		this.#header.agentProfile = agentProfile;
-		if (this.#persist && this.#sessionFile && this.#fileIsCurrent) {
-			await this.#rewriteAtomically();
+	needsSystemPromptProfileSelection(): boolean {
+		return this.#systemPromptProfileSelectionPending;
+	}
+
+	pinSystemPromptProfile(profileId: string | undefined): void {
+		if (this.#systemPromptProfileSelectionPending) {
+			this.#systemPromptProfileSelectionPending = false;
+			this.#header.systemPromptProfile = profileId;
+			this.#rewriteSynchronously();
+			return;
 		}
+		if (this.#header.systemPromptProfile === profileId) return;
+		if (this.#header.systemPromptProfile !== undefined || this.#entries.length > 0) {
+			throw new Error(
+				`System prompt profile "${this.#header.systemPromptProfile ?? "default"}" is immutable once a transcript has started`,
+			);
+		}
+		this.#header.systemPromptProfile = profileId;
+		this.#rewriteSynchronously();
 	}
 
 	/** All session entries (excludes header). Returns a shallow copy. */
@@ -2318,7 +2333,7 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: this.#persist ? sourceSessionFile : undefined,
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
-			agentProfile: this.#header.agentProfile,
+			systemPromptProfile: this.#header.systemPromptProfile,
 		};
 
 		const labels: LabelEntry[] = [];
@@ -2418,7 +2433,11 @@ export class SessionManager {
 		cwd: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
-		options?: { suppressBreadcrumb?: boolean; sessionFile?: string },
+		options?: {
+			suppressBreadcrumb?: boolean;
+			sessionFile?: string;
+			systemPromptProfile?: "inherit" | "select";
+		},
 	): Promise<SessionManager> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const manager = new SessionManager(cwd, dir, true, storage);
@@ -2434,10 +2453,14 @@ export class SessionManager {
 			{
 				parentSession: sourceHeader?.id,
 				providerPromptCacheKey: sourceHeader?.providerPromptCacheKey ?? sourceHeader?.id,
-				agentProfile: sourceHeader?.agentProfile,
+				systemPromptProfile: sourceHeader?.systemPromptProfile,
 			},
 			options?.sessionFile,
 		);
+		if (options?.systemPromptProfile === "select") {
+			manager.#systemPromptProfileSelectionPending = true;
+			manager.#header.systemPromptProfile = undefined;
+		}
 		manager.#header.title = sourceHeader?.title;
 		manager.#header.titleSource = sourceHeader?.titleSource;
 		manager.#additionalDirectories = (sourceHeader?.additionalDirectories ?? []).filter(d => d !== path.resolve(cwd));
@@ -2485,6 +2508,15 @@ export class SessionManager {
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 		await manager.setSessionFile(filePath);
 		return manager;
+	}
+
+	/** Read a persisted session header without acquiring its single-writer lock. */
+	static async peekHeader(
+		filePath: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<SessionHeader | undefined> {
+		const loaded = await loadEntriesFromFile(filePath, storage);
+		return loaded.find(entry => entry.type === "session") as SessionHeader | undefined;
 	}
 
 	/**

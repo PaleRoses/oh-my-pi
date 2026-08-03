@@ -360,10 +360,37 @@ enabledModels:
 | `enabledModels` | array | `[]` | Allow-list of models; supports [path-scoped entries](#path-scoped-arrays). Empty means all available models. |
 | `disabledProviders` | array | `[]` | Disabled model/discovery providers; supports path-scoped entries. See [above](#provider-and-source-disabling). |
 | `includeModelInPrompt` | boolean | `true` | Include the active model name in the system prompt. |
-| `agentProfiles` | record | `{}` | Named session identities. Each profile has exactly one of `prompt` or `promptFile` (a constitution layered over the maintained harness prompt), or `useDefaultPrompt: true` (no added constitution); required `hindsight.bankId`; optional Hindsight tags, model globs, exact tool allowlist, and `projectContextOnly`. |
-| `agentProfileRoutes` | array | `[]` | Ordered first-match initial routes by `agentKind` and/or canonical `provider/model` glob. A route selects `profile` or sets `deny: true`; the selected profile is persisted and remains sticky. See [System prompt customization](./system-prompt-customization.md). |
 
 See [Models](./models.md) for the `models.yml` schema and custom-provider definitions.
+
+#### System prompt profiles
+
+`systemPromptProfiles` defines named provider-facing prompt identities. `systemPromptProfileRoutes` selects the first matching identity from `agentKind` (`main` or `sub`) and an optional `model` glob over `provider/model`.
+
+```yaml
+systemPromptProfiles:
+  driver: {}
+  worker:
+    instructionsFile: ~/.omp/agent/prompts/worker-constitution.md
+    memory: false
+    mcpServerInstructions: false
+    projectContextOnly: true
+
+systemPromptProfileRoutes:
+  - agentKind: main
+    profile: driver
+  - agentKind: sub
+    profile: worker
+```
+
+A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `instructions` or `instructionsFile` adds a final profile-owned system block after generated prompt context. `projectContextOnly: true` excludes context files outside the session cwd and its additional workspace roots. A route may use `deny: true` and an optional `reason` instead of `profile`.
+
+OMP pins the selected profile ID when it creates the transcript. Resume, model cycling, prewalk, and retry fallback may continue only when routing still selects that ID. A live switch may enter only a transcript pinned to the same profile and leaves the current session intact if its saved model is incompatible. Changing prompt identity requires a new transcript.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `systemPromptProfiles` | record | `{}` | Named profiles with optional `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, and `mcpServerInstructions`. |
+| `systemPromptProfileRoutes` | array | `[]` | Ordered routes selected by optional `agentKind` and `model` glob. Each route names a `profile` or sets `deny: true`. |
 
 ### Advisor
 

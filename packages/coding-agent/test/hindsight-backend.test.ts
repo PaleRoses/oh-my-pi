@@ -213,52 +213,8 @@ describe("hindsightBackend.start", () => {
 		expect(subState?.banksSet).toBe(parentState?.banksSet);
 		// Aliases must not subscribe to session events — the parent owns auto-recall/auto-retain.
 		expect(subState?.unsubscribe).toBeUndefined();
-		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall");
-		const recalled = await hindsightBackend.beforeAgentStartPrompt?.(subSession as never, "subagent prompt");
-		expect(recalled).toBeUndefined();
-		expect(recallSpy).not.toHaveBeenCalled();
-	});
-
-	it("gives a differently scoped subagent an independent Hindsight state", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-			"hindsight.mentalModelsEnabled": false,
-		});
-		const parentSession = makeFakeSession({ sessionId: "profile-parent" });
-		await hindsightBackend.start({
-			session: parentSession as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-		const parentState = parentSession.getHindsightSessionState();
-		expect(parentState).toBeDefined();
-
-		const subSession = makeFakeSession({ sessionId: "profile-child" });
-		await hindsightBackend.start({
-			session: subSession as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 1,
-			parentHindsightSessionState: parentState,
-			hindsightScope: {
-				bankId: "worker-bank",
-				retainTags: ["mind:worker"],
-				recallTags: ["mind:worker"],
-				recallTagsMatch: "all_strict",
-			},
-		});
-
-		const subState = subSession.getHindsightSessionState();
-		expect(subState?.aliasOf).toBeUndefined();
-		expect(subState?.bankId).toBe("worker-bank");
-		expect(subState?.retainTags).toEqual(["mind:worker"]);
-		expect(subState?.recallTags).toEqual(["mind:worker"]);
-		expect(subState?.recallTagsMatch).toBe("all_strict");
-		expect(subState?.client).not.toBe(parentState?.client);
+		// hasRecalledForFirstTurn=true suppresses beforeAgentStartPrompt auto-recall on the sub.
+		expect(subState?.hasRecalledForFirstTurn).toBe(true);
 	});
 
 	it("returns silently for subagent runs when no primary state has been registered", async () => {
@@ -342,7 +298,7 @@ describe("hindsightBackend.preCompactionContext", () => {
 	});
 });
 
-describe("hindsightBackend per-prompt injection", () => {
+describe("hindsightBackend first-turn injection", () => {
 	beforeEach(() => {
 		resetSettingsForTest();
 	});
@@ -351,7 +307,7 @@ describe("hindsightBackend per-prompt injection", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("replaces recalled context on every root prompt without a duplicate agent_start recall", async () => {
+	it("returns a tagged block for the current first turn before agent_start", async () => {
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
@@ -368,81 +324,18 @@ describe("hindsightBackend per-prompt injection", () => {
 			taskDepth: 0,
 		});
 
-		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockImplementation(
-			async (_bankId, query) =>
-				({
-					results: [{ id: query, text: `memory selected for: ${query}` }],
-				}) as never,
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [{ id: "1", text: "Can prefers concise communication" }],
+		} as never);
+
+		const block = await hindsightBackend.beforeAgentStartPrompt?.(
+			session as never,
+			"What do I know about this user?",
 		);
-
-		const firstBlock = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "What do I know?");
-		const secondBlock = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "What did we decide?");
-
-		expect(firstBlock).toContain("memory selected for: What do I know?");
-		expect(secondBlock).toContain("memory selected for: What did we decide?");
-		expect(secondBlock).not.toContain("memory selected for: What do I know?");
-		expect(session.getHindsightSessionState()?.lastRecallSnippet).toBe(secondBlock);
-		expect(recallSpy).toHaveBeenCalledTimes(2);
-
-		session.emit({ type: "agent_start" });
-		await Bun.sleep(0);
-		expect(recallSpy).toHaveBeenCalledTimes(2);
-	});
-
-	it("removes the previous prompt's recalled context when the next recall is empty", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeFakeSession({ sessionId: "s-empty-recall" });
-		await hindsightBackend.start({
-			session: session as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-
-		vi.spyOn(HindsightApi.prototype, "recall")
-			.mockResolvedValueOnce({ results: [{ id: "1", text: "only relevant to the first prompt" }] } as never)
-			.mockResolvedValueOnce({ results: [] } as never);
-
-		const firstBlock = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "first topic");
-		expect(firstBlock).toContain("only relevant to the first prompt");
-		const refreshCallsBeforeEmptyRecall = session.refreshBaseSystemPrompt.mock.calls.length;
-
-		const secondBlock = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "unrelated topic");
-		expect(secondBlock).toBeUndefined();
-		expect(session.getHindsightSessionState()?.lastRecallSnippet).toBeUndefined();
-		expect(session.refreshBaseSystemPrompt).toHaveBeenCalledTimes(refreshCallsBeforeEmptyRecall + 1);
-	});
-
-	it("removes the previous prompt's recalled context when the next recall fails", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeFakeSession({ sessionId: "s-failed-recall" });
-		await hindsightBackend.start({
-			session: session as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-
-		vi.spyOn(HindsightApi.prototype, "recall")
-			.mockResolvedValueOnce({ results: [{ id: "1", text: "previous context" }] } as never)
-			.mockRejectedValueOnce(new Error("Hindsight unavailable"));
-
-		const firstBlock = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "first topic");
-		expect(firstBlock).toContain("previous context");
-		const refreshCallsBeforeFailedRecall = session.refreshBaseSystemPrompt.mock.calls.length;
-
-		const secondBlock = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "second topic");
-		expect(secondBlock).toBeUndefined();
-		expect(session.getHindsightSessionState()?.lastRecallSnippet).toBeUndefined();
-		expect(session.refreshBaseSystemPrompt).toHaveBeenCalledTimes(refreshCallsBeforeFailedRecall + 1);
+		expect(block).toContain("<memories>");
+		expect(block).toContain("Can prefers concise communication");
+		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(true);
+		expect(session.getHindsightSessionState()?.lastRecallSnippet).toBe(block);
 	});
 
 	it("keeps the <memories> wrapper in buildDeveloperInstructions", async () => {
@@ -726,7 +619,7 @@ describe("hindsightBackend live bank routing", () => {
 	});
 
 	// Same setting written with the same value MUST NOT rebuild — a rebuild
-	// would reset transcript tracking and force a
+	// would reset `lastRetainedTurn` / `hasRecalledForFirstTurn` and force a
 	// fresh mental-model bootstrap for no observable reason.
 	it("does not rebuild when the bank-routing setting is rewritten with the same value", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);

@@ -120,7 +120,6 @@ export interface TurnRecoveryHost {
 	persistedAssistantEntryId(message: AssistantMessage): string | undefined;
 	sessionMessageAlreadyPersisted(message: AssistantMessage): boolean;
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
-	assertModelAllowed(model: Model): void;
 	resetCurrentResponsesProviderSession(reason: string): void;
 	/**
 	 * Spend a saved Codex reset for the blocked pool, if eligible.
@@ -1071,16 +1070,6 @@ export class TurnRecovery {
 			currentModel,
 		);
 	}
-	#isModelAllowed(model: Model): boolean {
-		try {
-			this.#host.assertModelAllowed(model);
-			return true;
-		} catch (error) {
-			const warning = error instanceof Error ? error.message : String(error);
-			if (!this.#host.configWarnings.includes(warning)) this.#host.configWarnings.push(warning);
-			return false;
-		}
-	}
 
 	async applyRetryFallbackCandidate(
 		role: string,
@@ -1149,7 +1138,6 @@ export class TurnRecovery {
 			// A candidate whose effort floor exceeds the per-spawn ceiling would be
 			// clamped UP past the cap by its model floor — skip it entirely.
 			if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
-			if (!this.#isModelAllowed(candidate)) continue;
 			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
 			if (!apiKey) continue;
 			await this.applyRetryFallbackCandidate(role, selector, currentSelector, options);
@@ -1228,7 +1216,6 @@ export class TurnRecovery {
 		if (!model) return false;
 		const baseModel = this.#host.modelRegistry.find("fireworks", toFireworksBaseModelId(model.id));
 		if (!baseModel) return false;
-		if (!this.#isModelAllowed(baseModel)) return false;
 		const apiKey = await this.#host.modelRegistry.getApiKey(baseModel, this.#host.sessionId());
 		if (!apiKey) return false;
 		const baseSelector = formatModelStringWithRouting(baseModel);

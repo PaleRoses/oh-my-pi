@@ -76,12 +76,13 @@ interface SessionToolsOptions {
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
 	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
-	agentProfileId?: string;
 	getLocalCalendarDate?: () => string;
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	xdev?: XdevState;
 	setActiveToolNames?: (names: Iterable<string>) => void;
 	baseSystemPrompt: string[];
+	systemPromptProfileId?: string;
+	memoryEnabled?: boolean;
 	skills?: Skill[];
 	skillWarnings?: SkillWarning[];
 	skillsSettings?: SkillsSettings;
@@ -210,8 +211,9 @@ export class SessionTools {
 	#basePromptXdevNames: ReadonlySet<string> = new Set();
 	#mcpRefreshTail: Promise<void> = Promise.resolve();
 	#promptModelKey: string | undefined;
+	#systemPromptProfileId: string | undefined;
+	readonly #memoryEnabled: boolean;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
-	#agentProfileId: SessionToolsOptions["agentProfileId"];
 	#getLocalCalendarDate: () => string;
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
@@ -233,7 +235,6 @@ export class SessionTools {
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
 		this.#ensureWriteRegistered = options.ensureWriteRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
-		this.#agentProfileId = options.agentProfileId;
 		this.#getLocalCalendarDate = options.getLocalCalendarDate ?? formatLocalCalendarDate;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdev = options.xdev;
@@ -243,6 +244,8 @@ export class SessionTools {
 		if (this.#xdev) this.#xdev.decorateExecution = tool => this.#wrapToolForAcpPermission(tool);
 		this.#setActiveToolNames = options.setActiveToolNames;
 		this.#baseSystemPrompt = options.baseSystemPrompt;
+		this.#systemPromptProfileId = options.systemPromptProfileId;
+		this.#memoryEnabled = options.memoryEnabled !== false;
 		this.#skills = options.skills ?? [];
 		this.#skillWarnings = options.skillWarnings ?? [];
 		this.#skillsSettings = options.skillsSettings;
@@ -411,9 +414,9 @@ export class SessionTools {
 				: usesCodexTaskPrompt(model)
 					? "task-policy:gpt-5.6"
 					: "task-policy:default";
-		return this.#agentProfileId === undefined
-			? modelKey
-			: `${modelKey ?? "model:none"}\u0000agent-profile:${this.#agentProfileId}`;
+		return this.#systemPromptProfileId
+			? `system-prompt-profile:${this.#systemPromptProfileId}:${modelKey ?? "model:none"}`
+			: modelKey;
 	}
 
 	#logComputerState(message: string, enabled: boolean): void {
@@ -1126,9 +1129,7 @@ export class SessionTools {
 
 	/** Applies one-turn memory prompt injection before an agent run. */
 	async buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
-		if (this.#currentPromptModelKey() !== this.#promptModelKey) {
-			await this.refreshBaseSystemPrompt();
-		}
+		if (!this.#memoryEnabled) return this.#baseSystemPrompt;
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
 

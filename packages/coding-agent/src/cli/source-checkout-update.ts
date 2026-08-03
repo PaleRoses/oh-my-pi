@@ -13,11 +13,10 @@ const CONFIG_KEYS = {
 } as const;
 
 const FORK_VALIDATION_TESTS = [
-	"test/agent-profiles.test.ts",
-	"test/interactive-mode-agent-profile.test.ts",
-	"test/slash-commands/agent-profile.test.ts",
+	"test/system-prompt-profiles.test.ts",
+	"test/system-prompt-profiles-sdk.test.ts",
 	"test/system-prompt-model.test.ts",
-	"test/hindsight-backend.test.ts",
+	"test/agent-session-retry-fallback.test.ts",
 	"test/cli/update-cli.test.ts",
 	"test/source-checkout-update.test.ts",
 ];

@@ -4,8 +4,7 @@
 
 ### Added
 
-- Added session-scoped `agentProfiles` / `agentProfileRoutes` configuration that binds a selected constitution overlay, Hindsight scope, allowed model set, optional exact tool boundary, and optional project-only context boundary to a persisted identity. Profile prompts retain the maintained OMP harness instructions; `useDefaultPrompt: true` adds no profile constitution. `--agent-profile` selects one explicitly; top-level and task agents route independently; retries and model changes preserve the selected identity and reject out-of-policy models before mutation.
-- Added interactive `/agent-profile [id] [provider/model]` transitions. A switch closes the current profile session at an idle boundary, creates a fresh resumable transcript in the same process, reconstructs the prompt, Hindsight scope, tools, extensions, provider state, and agent lifecycle, and fails closed while turns, collaborative/live modes, or background jobs are active.
+- Added immutable `systemPromptProfiles` / `systemPromptProfileRoutes` configuration for routing main and subagent sessions by agent kind and model glob. Profiles may replace the maintained prompt, append trailing instructions, exclude user-global context files, and disable memory or MCP server instructions; the selected ID is persisted in the transcript and provider cache identity, model changes that would select another profile are rejected before mutation, and incompatible live session switches leave the current session intact.
 - Added guarded source-checkout updates for the development launcher. `omp update` now fetches a repository-configured upstream, validates and commits a detached-HEAD merge, and publishes the configured fork branch without force; `omp update --check` reports upstream availability without replacing the launcher with an official release.
 
 ### Fixed

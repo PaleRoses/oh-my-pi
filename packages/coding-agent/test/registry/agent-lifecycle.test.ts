@@ -555,38 +555,6 @@ describe("AgentLifecycleManager", () => {
 		expect(stub.disposeCalls()).toBe(0);
 		expect(lifecycle.has("8-Sub")).toBe(true);
 	});
-	it("dispose clears every non-main ref and a later session receives a fresh lifecycle generation", async () => {
-		const live = makeSessionStub();
-		const replacement = makeSessionStub();
-		registerIdleSub("Live-Sub", live.session);
-		const parked = registerIdleSub("Parked-Sub", null);
-		registry.setStatus("Parked-Sub", "parked", parked);
-		registry.register({
-			id: MAIN_AGENT_ID,
-			displayName: "main",
-			kind: "main",
-			session: makeSessionStub().session,
-			status: "idle",
-		});
-
-		await lifecycle.dispose();
-
-		expect(live.disposeCalls()).toBe(1);
-		expect(registry.get("Live-Sub")).toBeUndefined();
-		expect(registry.get("Parked-Sub")).toBeUndefined();
-		expect(registry.get(MAIN_AGENT_ID)).toBeDefined();
-
-		const renewed = AgentLifecycleManager.global();
-		expect(renewed).not.toBe(lifecycle);
-		registerIdleSub("Next-Sub", replacement.session);
-		renewed.adopt("Next-Sub", { idleTtlMs: 0 });
-
-		await lifecycle.dispose();
-
-		expect(registry.get("Next-Sub")?.session).toBe(replacement.session);
-		expect(replacement.disposeCalls()).toBe(0);
-	});
-
 	it("tombstone release keeps a killed ref as terminal `aborted` so a persisted-subagent rescan cannot resurrect it as parked", async () => {
 		using tempDir = TempDir.createSync("@omp-lifecycle-tombstone-");
 		const rootSessionFile = path.join(tempDir.path(), "main.jsonl");

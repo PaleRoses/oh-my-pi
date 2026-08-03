@@ -580,20 +580,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "agent-profile",
-		description: "Start a fresh session under another agent profile",
-		inlineHint: "[id] [provider/model]",
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => {
-			const profileId = runtime.ctx.session.agentProfileId;
-			return profileId ? `Agent profile: ${profileId}` : "Agent profile: none";
-		},
-		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleAgentProfileCommand(command.args || undefined);
-		},
-	},
-	{
 		name: "switch",
 		description: "Switch model for this session (same as alt+p)",
 		getTuiAutocompleteDescription: runtime => {

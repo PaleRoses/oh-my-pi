@@ -196,6 +196,7 @@ export interface SessionMaintenanceHost {
 	planReferencePath(): string;
 	nonMessageTokenSource(): NonMessageTokenSource;
 	memoryBackendSession(): MemoryBackendOperationContext["session"];
+	memoryEnabled(): boolean;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	schedulePostPromptTask(
@@ -942,6 +943,7 @@ export class SessionMaintenance {
 		messagesToSummarize: AgentMessage[];
 		turnPrefixMessages: AgentMessage[];
 	}): Promise<string | undefined> {
+		if (!this.#host.memoryEnabled()) return undefined;
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!backend.preCompactionContext) return undefined;
 		const messages = preparation.messagesToSummarize.concat(preparation.turnPrefixMessages);

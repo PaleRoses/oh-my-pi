@@ -59,6 +59,7 @@ function createCloneStub(overrides?: {
 	let listener: ((event: TanSessionEvent) => void) | undefined;
 	const clone = {
 		agent: { appendMessage },
+		systemPrompt: ["worker system prompt"],
 		sessionManager: overrides?.sessionManager,
 		setTodoPhases: vi.fn(),
 		subscribe: vi.fn((l: (event: TanSessionEvent) => void) => {
@@ -211,7 +212,11 @@ describe("TanCommandController", () => {
 			harness.tempDir.path(),
 			harness.parentFile.slice(0, -6),
 			undefined,
-			{ suppressBreadcrumb: true, sessionFile: expect.stringMatching(/Tan-.+\.jsonl$/) },
+			{
+				suppressBreadcrumb: true,
+				sessionFile: expect.stringMatching(/Tan-.+\.jsonl$/),
+				systemPromptProfile: "select",
+			},
 		);
 		expect(harness.register).toHaveBeenCalledWith("task", "/tan write the release note", expect.any(Function), {
 			ownerId: MAIN_AGENT_ID,
@@ -304,6 +309,7 @@ describe("TanCommandController", () => {
 				agentDisplayName: "tan",
 			}),
 		);
+		expect(createAgentSessionSpy.mock.calls[0]?.[0]?.systemPrompt).toBeUndefined();
 	});
 
 	it("parents the tan clone to the spawning agent, not to the clone itself", async () => {
@@ -328,9 +334,7 @@ describe("TanCommandController", () => {
 		expect(opts?.parentTaskPrefix).not.toBe("FocusedParent");
 	});
 
-	it("pins the parent's effective cache key when the parent itself carries a pinned promptCacheKey", async () => {
-		// A parent that is itself a fork/tan caches under `agent.promptCacheKey`,
-		// not its own session id — the clone must read that exact shard.
+	it("separates the worker prompt cache from a parent-pinned prompt identity", async () => {
 		const harness = createContext({ parentPromptCacheKey: "grandparent-cache-key" });
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const { clone } = createCloneStub();
@@ -345,7 +349,7 @@ describe("TanCommandController", () => {
 		await run({ jobId: "job-1", signal: new AbortController().signal, reportProgress: async () => {} });
 
 		const opts = createAgentSessionSpy.mock.calls[0]?.[0];
-		expect(opts?.providerPromptCacheKey).toBe("grandparent-cache-key");
+		expect(opts?.providerPromptCacheKey).toBe("parent-session");
 		expect(opts?.providerSessionId).toMatch(/^parent-session:tan:/);
 	});
 
@@ -374,7 +378,7 @@ describe("TanCommandController", () => {
 
 		expect(result).toBe("done");
 		expect(appendSessionInit).toHaveBeenCalledWith({
-			systemPrompt: "system prompt",
+			systemPrompt: "worker system prompt",
 			task: "park me",
 			tools: ["read", "bash"],
 		});

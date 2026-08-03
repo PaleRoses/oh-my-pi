@@ -69,7 +69,6 @@ describe("SessionManager batched JSONL persistence", () => {
 		const manager = SessionManager.create(cwd, sessionDir);
 		const sessionFile = manager.getSessionFile();
 		if (!sessionFile) throw new Error("Expected a persisted session file path");
-		await manager.setAgentProfile("driver");
 
 		manager.appendMessage({ role: "user", content: "queued before assistant", timestamp: Date.now() });
 		expect(fs.existsSync(sessionFile)).toBe(false);
@@ -79,7 +78,6 @@ describe("SessionManager batched JSONL persistence", () => {
 
 		let entries = readJsonl(sessionFile);
 		expect(entries).toHaveLength(3);
-		expect(entries[0]?.agentProfile).toBe("driver");
 		expect(messageRole(entries[1] ?? {})).toBe("user");
 		expect(messageRole(entries[2] ?? {})).toBe("assistant");
 

@@ -243,6 +243,7 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		modelRegistry: input.host.modelRegistry,
 		settings: scanSettings,
 		model: input.model,
+		agentKind: "sub",
 		getApiKey: createExactSecurityOAuthResolver({
 			authStorage: input.host.authStorage,
 			account: input.plan.account,

@@ -114,7 +114,6 @@ export class AgentLifecycleManager {
 	#persistedReviverFactory: PersistedSubagentReviverFactory | undefined;
 	/** TTL applied when a cold-revived ref is adopted on demand. */
 	#persistedReviveTtlMs = 0;
-	#disposePromise: Promise<void> | undefined;
 
 	constructor(registry: AgentRegistry = AgentRegistry.global()) {
 		this.#registry = registry;
@@ -402,30 +401,15 @@ export class AgentLifecycleManager {
 		return true;
 	}
 
-	/** Teardown every non-main agent and retire this process-global lifecycle generation. */
-	dispose(): Promise<void> {
-		this.#disposePromise ??= this.#disposeAll();
-		return this.#disposePromise;
-	}
-
-	async #disposeAll(): Promise<void> {
+	/** Teardown everything (process exit / main session dispose). */
+	async dispose(): Promise<void> {
 		this.#unsubscribe?.();
 		this.#unsubscribe = undefined;
-		try {
-			const ids = this.#registry
-				.list()
-				.filter(ref => ref.id !== MAIN_AGENT_ID)
-				.map(ref => ref.id);
-			await Promise.all(ids.map(id => this.release(id)));
-		} finally {
-			this.#adopted.clear();
-			this.#revivals.clear();
-			this.#parks.clear();
-			this.#persistedReviverFactory = undefined;
-			if (AgentLifecycleManager.#global === this) {
-				AgentLifecycleManager.#global = undefined;
-			}
-		}
+		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];
+		await Promise.all(ids.map(id => this.release(id)));
+		this.#revivals.clear();
+		this.#parks.clear();
+		this.#persistedReviverFactory = undefined;
 	}
 
 	async #revive(id: string, revive: AgentReviver, ref: AgentRef, adopted: AdoptedAgent): Promise<AgentSession> {

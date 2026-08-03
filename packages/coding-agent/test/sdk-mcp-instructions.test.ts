@@ -134,6 +134,43 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		}
 	}, 20_000);
 
+	it("omits server instructions when the selected system prompt profile disables them", async () => {
+		const settings = Settings.isolated({
+			systemPromptProfiles: {
+				worker: { mcpServerInstructions: false },
+			},
+			systemPromptProfileRoutes: [{ agentKind: "sub", profile: "worker" }],
+		});
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			agentKind: "sub",
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableLsp: false,
+			skipPythonPreflight: true,
+			enableMCP: true,
+			hasUI: false,
+		});
+		try {
+			const route = '- "do\\u0060thing" → `xd://mcp__instr_do_thing`';
+			const prompt = session.systemPrompt.join("\n");
+
+			expect(prompt).toContain(route);
+			expect(prompt).not.toContain(SERVER_INSTRUCTIONS);
+			expect(prompt).not.toContain("MCP Server Instructions");
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	it("renders a mounted Context Mode route when initialize omits instructions", async () => {
 		fs.writeFileSync(
 			path.join(tempDir, ".mcp.json"),

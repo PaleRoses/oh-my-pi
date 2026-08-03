@@ -68,13 +68,7 @@ export class TanCommandController {
 		}
 
 		const parentSessionId = session.sessionId;
-		// Providers route on `promptCacheKey ?? sessionId`, so the parent's live
-		// requests may cache under a pinned key that differs from its session id
-		// (the parent being itself a fork/tan). Mirror exactly what the parent
-		// populated the cache under — same rule as advisor and handoff calls.
-		const parentPromptCacheKey = session.agent.promptCacheKey ?? parentSessionId;
 		const thinkingLevel = session.configuredThinkingLevel();
-		const systemPrompt = [...session.systemPrompt];
 		const toolNames = session.getActiveToolNames();
 		const modelRegistry = session.modelRegistry;
 		const ownerId = session.getAgentId() ?? MAIN_AGENT_ID;
@@ -113,6 +107,7 @@ export class TanCommandController {
 			const cloneManager = await SessionManager.forkFrom(parentFile, cwd, sessionDir, undefined, {
 				suppressBreadcrumb: true,
 				sessionFile: cloneFile,
+				systemPromptProfile: "select",
 			});
 
 			jobId = manager.register(
@@ -128,10 +123,9 @@ export class TanCommandController {
 							sessionManager: cloneManager,
 							model,
 							thinkingLevel,
-							systemPrompt,
 							toolNames,
 							providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
-							providerPromptCacheKey: parentPromptCacheKey,
+							providerPromptCacheKey: parentSessionId,
 							modelRegistry,
 							authStorage: modelRegistry.authStorage,
 							settings,
@@ -149,7 +143,7 @@ export class TanCommandController {
 						});
 						clone = created.session;
 						clone.sessionManager?.appendSessionInit?.({
-							systemPrompt: clone.systemPrompt ? clone.systemPrompt.join("\n\n") : systemPrompt.join("\n\n"),
+							systemPrompt: clone.systemPrompt.join("\n\n"),
 							task: trimmedWork,
 							tools: clone.getActiveToolNames ? clone.getActiveToolNames() : toolNames,
 						});

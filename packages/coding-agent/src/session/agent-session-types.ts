@@ -32,7 +32,6 @@ import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
-import type { BankScope } from "../hindsight/bank";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { XdevState } from "../tools/xdev";
@@ -147,8 +146,6 @@ export interface AgentSessionConfig {
 	memoryAgentDir?: string;
 	/** Recursion depth used to suppress live backend replacement in subagents. */
 	memoryTaskDepth?: number;
-	/** Sticky agent-profile-owned Hindsight bank and tag scope. */
-	hindsightScope?: BankScope;
 	/** Creates built-in memory tools for the current backend. */
 	createMemoryTools?: () => Promise<AgentTool[]>;
 	/** Creates the built-in `computer` tool for session-scoped runtime enablement (see {@link AgentSession.setComputerToolEnabled}). */
@@ -196,10 +193,6 @@ export interface AgentSessionConfig {
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
 	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
-	/** Sticky agent identity used in prompt-cache and session-boundary checks. */
-	agentProfileId?: string;
-	/** Rejects model transitions outside the sticky profile policy. */
-	assertAgentProfileModelAllowed?: (model: Model) => void;
 	/** Local calendar date provider used by prompt-cache invalidation. */
 	getLocalCalendarDate?: () => string;
 	/** Tools mounted under `xd://`, for `/tools` display. */
@@ -226,6 +219,12 @@ export interface AgentSessionConfig {
 	agentId?: string;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
+	/** Immutable system-prompt profile selected for this transcript. */
+	systemPromptProfileId?: string;
+	/** Whether this prompt profile may read, inject, or mutate long-term memory. */
+	memoryEnabled?: boolean;
+	/** Rejects a model whose routed prompt profile differs from this transcript. */
+	assertSystemPromptProfileCompatible?: (model: Model | undefined) => void;
 	/** Provider-facing session ID override. */
 	providerSessionId?: string;
 	/** Whether the provider prompt-cache key was explicit or fork-inherited. */

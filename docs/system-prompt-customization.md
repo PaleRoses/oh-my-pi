@@ -1,12 +1,11 @@
 # System Prompt Customization
 
-How the coding-agent assembles the system prompt sent to the model, including session-scoped agent profiles, `SYSTEM.md`, `APPEND_SYSTEM.md`, and the matching CLI flags.
+How the coding-agent assembles the system prompt sent to the model, and what users can control via `SYSTEM.md`, `APPEND_SYSTEM.md`, and the matching CLI flags.
 
 Primary implementation:
 
 - `packages/coding-agent/src/system-prompt.ts` (`buildSystemPrompt`, `loadSystemPromptFiles`)
 - `packages/coding-agent/src/main.ts` (`discoverSystemPromptFile`, `discoverAppendSystemPromptFile`)
-- `packages/coding-agent/src/agent-profiles.ts` (profile validation, prompt loading, model policy, and ordered route resolution)
 - `packages/coding-agent/src/prompts/system/system-prompt.md` (default stable instruction template)
 - `packages/coding-agent/src/prompts/system/custom-system-prompt.md` (internal custom-prompt template; not the normal CLI `SYSTEM.md` path)
 - `packages/coding-agent/src/prompts/system/project-prompt.md` (project/environment footer)
@@ -15,71 +14,89 @@ Primary implementation:
 
 ## 1) Inputs
 
-Seven user-controllable inputs feed prompt assembly and agent identity selection. Prompt files and profile sources resolve before prompt rendering.
+Four user-controllable inputs feed prompt assembly. All four resolve a value as either a literal string or, if the argument looks like a file path, the contents of that file (`resolvePromptInput`).
 
 | Input | Source | Effect |
 |---|---|---|
-| `--agent-profile <id>` | CLI flag | Selects one session-scoped agent identity. It does not relocate config or session paths; that remains the distinct `--profile` bootstrap feature. |
-| `agentProfiles` | Settings record | Defines named constitution overlays, Hindsight scope, model policy, optional tool boundary, and optional project-only context boundary. |
-| `agentProfileRoutes` | Ordered settings array | Selects an initial profile or denies startup by `agentKind` and/or model glob. First match wins. |
-| `--system-prompt <text-or-file>` | CLI flag | Replaces the harness base prompt. A selected profile's constitution remains a distinct overlay, along with its memory, model, and capability policy. |
-| `SYSTEM.md` | `<cwd>/.omp/SYSTEM.md`, then `~/.omp/agent/SYSTEM.md` (and equivalent paths under `.claude`, `.codex`, `.gemini`) | Replaces the harness base only for an unprofiled session without an explicit prompt. |
-| `--append-system-prompt <text-or-file>` | CLI flag | Adds a prompt block after the selected base customization and before the preserved project/environment footer. |
+| `--system-prompt <text-or-file>` | CLI flag | Replaces block 0: the default stable instructions. Highest precedence. |
+| `SYSTEM.md` | `<cwd>/.omp/SYSTEM.md`, then `~/.omp/agent/SYSTEM.md` (and equivalent paths under `.claude`, `.codex`, `.gemini`) | Same effect as `--system-prompt`; used when the flag is absent. |
+| `--append-system-prompt <text-or-file>` | CLI flag | Adds a prompt block. Without a custom system prompt it goes after all default blocks; with one it goes after the custom block and before the preserved project/environment footer. |
 | `APPEND_SYSTEM.md` | Same discovery as `SYSTEM.md` | Same effect as `--append-system-prompt`; used when the flag is absent. |
 
 Discovery for `SYSTEM.md` / `APPEND_SYSTEM.md` uses `findConfigFile` (`packages/coding-agent/src/config.ts`): the first existing file across the ordered bases (`.omp`, `.claude`, `.codex`, `.gemini` — project-level at `<cwd>` first, then user-level at `~`) wins. **No ancestor walk-up.** Running `omp` from `<repo>/subdir` does not pick up `<repo>/.omp/SYSTEM.md`; the file must live directly under the cwd's config base or in the user-level location. See [`docs/config-usage.md`](./config-usage.md) for the full discovery contract.
 
-Identity selection is fail-closed:
+Precedence (highest first):
 
-1. an existing session header keeps its persisted profile; a conflicting `--agent-profile` is rejected;
-2. otherwise, explicit `--agent-profile` selects a configured profile;
-3. otherwise, the first matching `agentProfileRoutes` entry selects or denies;
-4. otherwise, the session remains unprofiled.
+1. `--system-prompt`
+2. project `SYSTEM.md`
+3. user `SYSTEM.md`
 
-Prompt composition then resolves independently. An explicit `--system-prompt` replaces the harness base. Otherwise a profiled session uses the bundled base, while an unprofiled session may use discovered `SYSTEM.md` before falling back to the bundled base. A selected profile's `prompt` or `promptFile` is layered once over that base; `useDefaultPrompt: true` adds no profile constitution. Append precedence remains `--append-system-prompt`, project `APPEND_SYSTEM.md`, then user `APPEND_SYSTEM.md`.
+For append, the same precedence applies between `--append-system-prompt`, project `APPEND_SYSTEM.md`, and user `APPEND_SYSTEM.md`.
+
+### Session-scoped prompt profiles
+
+`systemPromptProfiles` and `systemPromptProfileRoutes` parameterize prompt identity without changing CLI model selection. Routes are ordered and may match `agentKind` (`main` or `sub`) plus an optional `provider/model` glob:
+Task sessions derive `sub` from their task metadata. Internal SDK callers without task metadata set `agentKind` explicitly, so commit, security, and agent-creation workers do not inherit the main-session profile.
+
+```yaml
+systemPromptProfiles:
+  driver: {}
+  worker:
+    instructionsFile: ~/.omp/agent/prompts/worker-constitution.md
+    memory: false
+    mcpServerInstructions: false
+    projectContextOnly: true
+
+systemPromptProfileRoutes:
+  - agentKind: main
+    profile: driver
+  - agentKind: sub
+    profile: worker
+```
+
+Profiles support these prompt fields:
+
+- `prompt` or `promptFile` replaces ambient discovered `SYSTEM.md` while retaining normal generated prompt assembly. An explicit `--system-prompt` or SDK override still wins.
+- Omitting both keeps the maintained OMP prompt.
+- `instructions` or `instructionsFile` appends one profile-owned system block after the assembled prompt.
+- `projectContextOnly: true` removes context files outside the cwd and additional workspace roots. Repository `AGENTS.md` remains; user-global context such as `~/.claude/CLAUDE.md` does not.
+
+OMP resolves files and compiles model globs once at session creation. The selected profile ID is recorded in the transcript header, emitted as `<system-prompt-profile id="…">`, and included in the provider prompt-cache key. Model changes that route to another profile are rejected before model mutation; incompatible live session switches leave the current session intact. Start a new transcript to change prompt identity.
 
 ---
 
 ## 2) Replace vs. append
 
-Normal CLI startup resolves the session identity before composing provider-facing prompt blocks. Conceptually:
+Normal CLI startup builds the default provider-facing prompt blocks first, then applies CLI / discovered file overrides in `packages/coding-agent/src/main.ts`:
 
-```text
-selected agent profile = persisted profile
-                      ?? explicit --agent-profile
-                      ?? first matching initial route
-
-base prompt = explicit custom prompt
-           ?? discovered SYSTEM.md (unprofiled sessions only)
-           ?? bundled prompt
-
-profile constitution = selected profile prompt/promptFile
-                    ?? no additional block
+```ts
+if (resolvedSystemPrompt && resolvedAppendPrompt) {
+  options.systemPrompt = defaultPrompt => [resolvedSystemPrompt, resolvedAppendPrompt, ...defaultPrompt.slice(1)];
+} else if (resolvedSystemPrompt) {
+  options.systemPrompt = defaultPrompt => [resolvedSystemPrompt, ...defaultPrompt.slice(1)];
+} else if (resolvedAppendPrompt) {
+  options.systemPrompt = defaultPrompt => [...defaultPrompt, resolvedAppendPrompt];
+}
 ```
 
-The selected profile constitution is a distinct system block layered over the base. `APPEND_SYSTEM.md` / `--append-system-prompt` is composed independently.
+The default blocks come from `buildSystemPrompt`:
 
-The maintained blocks come from `buildSystemPrompt`:
-
-- block 0: `system-prompt.md` — the stable harness instructions (staff-engineer preamble, tool inventory, exploration rules, workflow rules, delivery contract, etc.), unless an explicit or unprofiled discovered custom base replaces it;
-- profile block, when `prompt` or `promptFile` is configured: exactly the selected constitution;
-- project block, when non-empty: `project-prompt.md` — dynamic project/environment context (workstation info, context files, dir-context list, workspace tree, current date/cwd, and other project footer content).
+- block 0: `system-prompt.md` — the stable default instructions (staff-engineer preamble, tool inventory, exploration rules, workflow rules, etc.);
+- block 1, when non-empty: `project-prompt.md` — dynamic project/environment context (workstation info, context files, dir-context list, workspace tree, current date/cwd, and other project footer content).
 
 Consequences for normal CLI use:
 
-- Providing `--system-prompt` replaces the harness base but not a selected profile constitution or its Hindsight, model, tool, context, and persisted-identity policy.
-- A selected `prompt` or `promptFile` is layered over the bundled base; `useDefaultPrompt: true` uses the bundled base without an additional constitution block.
-- Providing `SYSTEM.md` replaces the base only for an unprofiled session with no explicit prompt.
-- Providing `--append-system-prompt` or `APPEND_SYSTEM.md` composes with both the selected base and any profile constitution.
-- `projectContextOnly: true` retains project-rooted context files while omitting user-global context files; it does not remove the generated project/environment footer itself.
+- Providing `--system-prompt` or `SYSTEM.md` replaces only block 0. The stable default instructions are removed, but the dynamic project/environment footer from `project-prompt.md` remains as `defaultPrompt.slice(1)`.
+- Providing `--append-system-prompt` or `APPEND_SYSTEM.md` without a custom system prompt appends a new block after all default blocks.
+- Providing both a custom system prompt and an append prompt produces: custom system prompt block, append prompt block, then the preserved dynamic project/environment footer.
 
-Use an agent profile to bind a constitution overlay, memory, model policy, and tools as one session identity. Use `APPEND_SYSTEM.md` / `--append-system-prompt` for independent global or one-run additions.
+If you want to keep both default blocks and add to them, use `--append-system-prompt` / `APPEND_SYSTEM.md` without `--system-prompt` / `SYSTEM.md`. If you want to replace the stable default instructions while keeping the dynamic footer, use `--system-prompt` / `SYSTEM.md`.
 
 ---
 
 ## 3) Templating contract
 
-**Contents of agent-profile prompt files, `SYSTEM.md`, `APPEND_SYSTEM.md`, `--system-prompt`, and `--append-system-prompt` are treated as plain text.** They are resolved before prompt composition and are not rendered as Handlebars templates.
+**Contents of `SYSTEM.md`, `APPEND_SYSTEM.md`, `--system-prompt`, and `--append-system-prompt` are treated as plain text.** They are resolved before prompt-block replacement and are not rendered as Handlebars templates.
 
 The built-in prompt templates are Handlebars (`packages/utils/src/prompt.ts`), but user-provided strings are not compiled with that renderer. The secondary capability path can insert `systemPromptCustomization` into a Handlebars parent template, but a `{{value}}` reference in Handlebars still does not recursively render its substituted contents — the value is emitted as a string. Concretely:
 ```handlebars
@@ -137,64 +154,6 @@ The dynamic project/environment footer that remains after `SYSTEM.md` is only bl
 
 There is currently no supported CLI mode for "replace the stable default instructions but keep the generated skills/rules/tool guidance." If you need automatic skills loading, keep the default block and add your customization via `APPEND_SYSTEM.md`. If you fully replace with `SYSTEM.md`, you must hard-code any skill names/instructions you want the model to know about, and those will not track discovery automatically.
 
-### "Give the driver and summoned workers separate identities"
-
-Define named profiles and ordered initial routes in `config.yml`:
-
-```yaml
-agentProfiles:
-  driver:
-    useDefaultPrompt: true
-    hindsight:
-      bankId: omp
-    models:
-      - "anthropic/claude-fable-*"
-  worker:
-    promptFile: ~/.omp/agent/prompts/summoned-worker.md
-    hindsight:
-      bankId: omp-worker
-      retainTags: ["mind:worker"]
-      recallTags: ["mind:worker"]
-      recallTagsMatch: all_strict
-    models:
-      - "openai-codex/gpt-5.6-*"
-      - "kimi-code/*"
-      - "anthropic/claude-opus-*"
-    tools: [read, grep, bash, edit, task, hub]
-    projectContextOnly: true
-
-agentProfileRoutes:
-  - agentKind: main
-    model: "anthropic/claude-fable-*"
-    profile: driver
-  - agentKind: sub
-    profile: worker
-  - model: "*"
-    profile: worker
-```
-
-Every profile contains exactly one of `prompt`, `promptFile`, or `useDefaultPrompt: true`, plus a non-empty `hindsight.bankId`. `prompt` and `promptFile` add one selected constitution block over OMP's maintained harness prompt; `useDefaultPrompt: true` adds no profile-specific constitution. Optional retain/recall tags use the same Hindsight scope semantics as the global settings. Model patterns match canonical `provider/model-id` strings with `*`, `?`, and backslash escaping. A fallback or manual model change outside the selected profile's patterns is rejected before model mutation.
-
-`tools` is an exact upper bound intersected with the tools the caller supplies. Restricted profiles do not discover MCP tools unless the allowlist explicitly names one. `projectContextOnly: true` keeps context files rooted under the cwd or additional workspace roots and excludes user-global context files. Task subagents layer their task/agent contract onto the selected worker constitution.
-
-`agentKind` accepts `main` or `sub`. Routes may specify `agentKind`, `model`, or both; omission matches every value on that axis. Routes run only for initial selection. The selected profile is persisted in the session header and remains sticky across retries, fallback, resume, and model changes.
-
-In this routing table, only a fresh Fable-backed main session can select `driver`. Every task agent and every fresh non-Fable main session selects `worker`. A model change cannot move an existing session between profiles, so a Fable driver fails rather than handing its constitution or memory to a fallback model.
-
-A route can fail closed instead of selecting a profile:
-
-```yaml
-agentProfileRoutes:
-  - agentKind: main
-    model: anthropic/claude-opus-*
-    deny: true
-    reason: The driver role requires Fable.
-```
-
-Use `omp --agent-profile reviewer` for explicit selection. This is distinct from `omp --profile <name>`, which relocates the entire user config and runtime directory. Profile files and route shapes are validated during session construction.
-
-Within the interactive TUI, `/agent-profile` opens the profile selector. `/agent-profile <id> [provider/model]` starts a fresh session under the selected profile without restarting the OMP process. Omitting the model preserves the current model when the target permits it; otherwise OMP opens the model selector before closing the current session. The old transcript remains resumable, while the new session reconstructs its prompt, Hindsight state, tools, extensions, provider state, prompt-cache identity, and agent lifecycle. The transition fails closed while a turn, live/collaborative mode, or background job is active.
-
 ### "Customize automatic session titles"
 
 `SYSTEM.md` and `APPEND_SYSTEM.md` do not affect the model call that names a new session. Create the title-specific prompt file instead:
@@ -219,7 +178,7 @@ There is no built-in way to inherit specific sections from `system-prompt.md` wh
 
 ## 5) Deduplication
 
-The CLI path keeps discovered `SYSTEM.md` separate from an explicit override, so selecting one constitution never injects both copies.
+The CLI path avoids double-injecting discovered `SYSTEM.md` by replacing block 0 after the default prompt blocks are rendered. Any `systemPromptCustomization` from the secondary capability path would have been rendered into block 0, and that block is discarded when `main.ts` applies `[resolvedSystemPrompt, ...defaultPrompt.slice(1)]`.
 
 Inside `buildSystemPrompt` itself, secondary customization and always-apply rules are still deduplicated:
 
@@ -244,7 +203,6 @@ Net effect for CLI users: put `SYSTEM.md` / `APPEND_SYSTEM.md` directly under `<
 | Goal | Use |
 |---|---|
 | Add an instruction on top of the full default prompt | `APPEND_SYSTEM.md` or `--append-system-prompt` |
-| Bind distinct constitutions, memory scopes, models, and tools to main/sub agents | `agentProfiles` plus ordered `agentProfileRoutes` |
 | Replace the stable default instructions but keep project/environment context | `SYSTEM.md` or `--system-prompt` |
 | Preserve generated skills/rules/tool guidance while customizing | `APPEND_SYSTEM.md`; `SYSTEM.md` replaces that generated block |
 | Customize automatic session titles | `TITLE_SYSTEM.md`; chat-turn `SYSTEM.md` / `APPEND_SYSTEM.md` do not affect title generation |

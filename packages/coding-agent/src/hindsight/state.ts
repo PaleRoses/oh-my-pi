@@ -29,10 +29,10 @@ interface PendingRetainItem {
 	timestamp: Date;
 }
 
-type RecallOutcome =
-	| { readonly kind: "recalled"; readonly context: string }
-	| { readonly kind: "empty" }
-	| { readonly kind: "failed" };
+interface RecallOutcome {
+	context: string | null;
+	ok: boolean;
+}
 
 export interface HindsightSessionStateOptions {
 	/** Session id used for retain-queue metadata. */
@@ -48,6 +48,7 @@ export interface HindsightSessionStateOptions {
 	session: AgentSession;
 	banksSet: Set<string>;
 	lastRetainedTurn?: number;
+	hasRecalledForFirstTurn?: boolean;
 	/**
 	 * When set, this entry is a subagent alias that reuses the parent's bank,
 	 * scope, config, client, and banksSet. Aliases skip auto-recall and
@@ -223,6 +224,7 @@ export class HindsightSessionState {
 	// or silently retaining nothing forever. Hashing is orders of magnitude
 	// cheaper than the re-formatting this cache avoids.
 	#lastRetainedPrefixKey: string = "";
+	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	/** Cached `<mental_models>` block injected into developer instructions. */
 	mentalModelsSnippet?: string;
@@ -230,7 +232,7 @@ export class HindsightSessionState {
 	mentalModelsLoadedAt?: number;
 	/**
 	 * In-flight ensure+load promise. `beforeAgentStartPrompt` awaits this on
-	 * the initial turn so the MM block lands in the system prompt before the
+	 * the first turn so the MM block lands in the system prompt before the
 	 * LLM generates, even though `start()` returns before the load completes.
 	 */
 	mentalModelsLoadPromise?: Promise<void>;
@@ -259,6 +261,7 @@ export class HindsightSessionState {
 		this.#lastRetainedMessageIndex = 0;
 		this.#cachedTranscript = "";
 		this.#lastRetainedPrefixKey = "";
+		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
 		this.aliasOf = options.aliasOf;
 		this.retainQueue = new HindsightRetainQueue(this);
 	}
@@ -272,6 +275,7 @@ export class HindsightSessionState {
 
 	resetConversationTracking(): void {
 		this.lastRetainedTurn = 0;
+		this.hasRecalledForFirstTurn = false;
 		this.lastRecallSnippet = undefined;
 		this.#lastRetainedMessageIndex = 0;
 		this.#cachedTranscript = "";
@@ -295,17 +299,17 @@ export class HindsightSessionState {
 				tags: this.recallTags,
 				tagsMatch: this.recallTagsMatch,
 			});
-			if (signal?.aborted) return { kind: "failed" };
+			if (signal?.aborted) return { context: null, ok: false };
 			const results = response.results ?? [];
-			if (results.length === 0) return { kind: "empty" };
+			if (results.length === 0) return { context: null, ok: true };
 			const formatted = formatMemories(results);
 			const block = `<memories>\n${this.config.recallPromptPreamble}\nCurrent time: ${formatCurrentTime()} UTC\n\n${formatted}\n</memories>`;
-			return { kind: "recalled", context: block };
+			return { context: block, ok: true };
 		} catch (err) {
 			if (this.config.debug) {
 				logger.debug("Hindsight: recall failed", { bankId: this.bankId, error: String(err) });
 			}
-			return { kind: "failed" };
+			return { context: null, ok: false };
 		}
 	}
 
@@ -407,12 +411,30 @@ export class HindsightSessionState {
 		}
 	}
 
+	async maybeRecallOnAgentStart(): Promise<void> {
+		if (!this.config.autoRecall || this.hasRecalledForFirstTurn) return;
+		const messages = extractMessages(this.session.sessionManager);
+		const lastUser = messages.findLast(m => m.role === "user");
+		if (!lastUser) return;
+
+		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
+		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
+		const { context, ok } = await this.recallForContext(truncated);
+		if (!ok) return;
+
+		this.hasRecalledForFirstTurn = true;
+		if (!context) return;
+
+		this.lastRecallSnippet = context;
+		await this.#refreshBaseSystemPromptAfter("recall");
+	}
+
 	async beforeAgentStartPrompt(promptText: string): Promise<string | undefined> {
 		if (this.config.mentalModelsEnabled && this.mentalModelsLoadPromise && this.mentalModelsLoadedAt === undefined) {
 			await Promise.race([this.mentalModelsLoadPromise, Bun.sleep(MENTAL_MODEL_FIRST_TURN_DEADLINE_MS)]);
 		}
 
-		if (!this.config.autoRecall || this.aliasOf) return undefined;
+		if (!this.config.autoRecall || this.hasRecalledForFirstTurn) return undefined;
 
 		const latestPrompt = promptText.trim();
 		if (!latestPrompt) return undefined;
@@ -421,19 +443,14 @@ export class HindsightSessionState {
 		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
 		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
-		const outcome = await this.recallForContext(truncated);
-		const nextRecallSnippet = outcome.kind === "recalled" ? outcome.context : undefined;
-		if (nextRecallSnippet === this.lastRecallSnippet) return undefined;
+		const { context, ok } = await this.recallForContext(truncated);
+		if (!ok) return undefined;
 
-		this.lastRecallSnippet = nextRecallSnippet;
-		if (nextRecallSnippet) return nextRecallSnippet;
+		this.hasRecalledForFirstTurn = true;
+		if (!context) return undefined;
 
-		// Empty and failed recalls both project no memory into this turn. Remove
-		// the previous projection instead of silently carrying irrelevant context
-		// forward. There is no replacement block for the caller to promote, so
-		// refresh the canonical prompt here.
-		await this.#refreshBaseSystemPromptAfter("recall");
-		return undefined;
+		this.lastRecallSnippet = context;
+		return context;
 	}
 
 	async recallForCompaction(messages: HindsightMessage[]): Promise<string | undefined> {
@@ -442,8 +459,8 @@ export class HindsightSessionState {
 
 		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		const outcome = await this.recallForContext(truncated);
-		return outcome.kind === "recalled" ? outcome.context : undefined;
+		const { context } = await this.recallForContext(truncated);
+		return context ?? undefined;
 	}
 
 	async runMentalModelLoad(scope: BankScope): Promise<void> {
@@ -492,7 +509,9 @@ export class HindsightSessionState {
 	attachSessionListeners(): void {
 		this.unsubscribe?.();
 		this.unsubscribe = this.session.subscribe(event => {
-			if (event.type === "agent_end") {
+			if (event.type === "agent_start") {
+				void this.maybeRecallOnAgentStart();
+			} else if (event.type === "agent_end") {
 				void this.maybeRetainOnAgentEnd();
 				// Drain any queued tool-initiated retain calls now that the turn
 				// is settled. The queue is also debounced/size-bounded, but
