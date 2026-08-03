@@ -15,8 +15,8 @@ The behavior is visible by configuring this checkout for `upstream/main` and `or
 - [x] (2026-08-03 02:42Z) Exported the source checkout root from `packages/coding-agent/scripts/omp`.
 - [x] (2026-08-03 02:42Z) Routed source-launched updates through a guarded source updater before official release lookup.
 - [x] (2026-08-03 02:42Z) Configured this checkout's upstream and publication metadata.
-- [x] (2026-08-03 02:49Z) Exercised check-only, no-op, conflict rollback, validation-failure rollback, validation-drift rollback, remote-divergence refusal, and successful update behavior.
-- [x] (2026-08-03 02:51Z) Passed coding-agent checks, 60 updater validation tests, the binary build, and both active `omp update --check` and `omp update` commands.
+- [x] (2026-08-03 02:55Z) Exercised source-launcher dispatch, check-only, no-op, conflict rollback, validation-failure rollback, validation-drift rollback, remote-divergence refusal, and successful update behavior.
+- [x] (2026-08-03 02:55Z) Passed coding-agent checks, 62 fork validation tests, the binary build, and both active `omp update --check` and `omp update` commands.
 - [x] (2026-08-03 02:51Z) Published implementation commit `c5595e30bde76129fac5ffff02e045817015e1e7` to `origin/agent-profiles` through the ordinary update command and verified the remote ref matches.
 
 ## Surprises & Discoveries
@@ -47,7 +47,7 @@ The behavior is visible by configuring this checkout for `upstream/main` and `or
 
 ## Outcomes & Retrospective
 
-Implementation, behavioral validation, and publication are complete. The source launcher now owns its update path explicitly; official package installations retain the existing release updater. Transaction tests prove that check-only and no-op paths preserve `HEAD`, successful updates create and publish a two-parent merge while detached, and merge conflicts, validation failures, or validation worktree drift restore the original clean checkout. The ordinary `omp update` command validated and published implementation commit `c5595e30bde76129fac5ffff02e045817015e1e7`; the remote receipt matched exactly.
+Implementation, behavioral validation, and publication are complete. The source launcher now owns its update path explicitly; a regression test proves that this path dispatches before official release discovery, while official package installations retain the existing release updater. Transaction tests prove that check-only and no-op paths preserve `HEAD`, successful updates create and publish a two-parent merge while detached, and merge conflicts, validation failures, or validation worktree drift restore the original clean checkout. The ordinary `omp update` command validated and published implementation commit `c5595e30bde76129fac5ffff02e045817015e1e7`; the remote receipt matched exactly.
 
 ## Context and Orientation
 

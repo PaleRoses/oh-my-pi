@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as sourceCheckoutUpdate from "../../src/cli/source-checkout-update";
 import { runUpdateCommand } from "../../src/cli/update-cli";
 
 type FetchInput = string | URL | Request;
@@ -24,5 +25,35 @@ describe("runUpdateCommand fetch cancellation", () => {
 		await runUpdateCommand({ force: false, check: true });
 
 		expect(requestSignal).toBeInstanceOf(AbortSignal);
+	});
+});
+
+describe("runUpdateCommand source checkout dispatch", () => {
+	const originalSourceCheckout = Bun.env.OMP_SOURCE_CHECKOUT;
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		if (originalSourceCheckout === undefined) {
+			delete Bun.env.OMP_SOURCE_CHECKOUT;
+		} else {
+			Bun.env.OMP_SOURCE_CHECKOUT = originalSourceCheckout;
+		}
+	});
+
+	it("routes source launchers before official release discovery", async () => {
+		Bun.env.OMP_SOURCE_CHECKOUT = "/tmp/omp-source-checkout";
+		const sourceUpdate = vi
+			.spyOn(sourceCheckoutUpdate, "runSourceCheckoutUpdate")
+			.mockResolvedValue({ kind: "up-to-date", head: "source-head" });
+		const releaseFetch = vi.spyOn(globalThis, "fetch");
+
+		await runUpdateCommand({ force: true, check: false });
+
+		expect(sourceUpdate).toHaveBeenCalledWith({
+			check: false,
+			checkout: "/tmp/omp-source-checkout",
+			force: true,
+		});
+		expect(releaseFetch).not.toHaveBeenCalled();
 	});
 });

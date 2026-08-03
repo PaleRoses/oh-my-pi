@@ -12,12 +12,13 @@ const CONFIG_KEYS = {
 	publishBranch: "omp.updatePublishBranch",
 } as const;
 
-const PROFILE_TESTS = [
+const FORK_VALIDATION_TESTS = [
 	"test/agent-profiles.test.ts",
 	"test/interactive-mode-agent-profile.test.ts",
 	"test/slash-commands/agent-profile.test.ts",
 	"test/system-prompt-model.test.ts",
 	"test/hindsight-backend.test.ts",
+	"test/cli/update-cli.test.ts",
 	"test/source-checkout-update.test.ts",
 ];
 
@@ -152,7 +153,7 @@ async function validateSourceCheckout(checkout: string): Promise<void> {
 	const codingAgent = path.join(checkout, "packages", "coding-agent");
 	await runCommand(checkout, ["bun", "install", "--frozen-lockfile"]);
 	await runCommand(codingAgent, ["bun", "run", "check"]);
-	await runCommand(codingAgent, ["bun", "test", ...PROFILE_TESTS]);
+	await runCommand(codingAgent, ["bun", "test", ...FORK_VALIDATION_TESTS]);
 	await runCommand(codingAgent, ["bun", "run", "build"]);
 }
 
