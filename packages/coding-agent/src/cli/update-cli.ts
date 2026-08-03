@@ -15,6 +15,7 @@ import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
 import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
+import { runSourceCheckoutUpdate } from "./source-checkout-update";
 
 const REPO = "can1357/oh-my-pi";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
@@ -78,6 +79,10 @@ type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Resp
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -1166,6 +1171,17 @@ export async function updateViaBinaryAt(
  * Run the update command.
  */
 export async function runUpdateCommand(opts: { force: boolean; check: boolean }): Promise<void> {
+	const sourceCheckout = $env.OMP_SOURCE_CHECKOUT;
+	if (sourceCheckout) {
+		try {
+			await runSourceCheckoutUpdate({ checkout: sourceCheckout, force: opts.force, check: opts.check });
+		} catch (error) {
+			console.error(chalk.red(`Source update failed: ${errorMessage(error)}`));
+			process.exitCode = 1;
+		}
+		return;
+	}
+
 	console.log(chalk.dim(`Current version: ${VERSION}`));
 
 	// Check for updates

@@ -123,6 +123,12 @@ export interface FetchOptions {
 	readonly timeoutMs?: number;
 }
 
+export interface MergeOptions {
+	readonly noCommit?: boolean;
+	readonly noFastForward?: boolean;
+	readonly signal?: AbortSignal;
+}
+
 export interface CloneOptions {
 	readonly ref?: string;
 	readonly sha?: string;
@@ -1407,6 +1413,33 @@ export async function checkout(cwd: string, ref: string, signal?: AbortSignal): 
 	await runEffect(cwd, ["checkout", ref], { signal });
 }
 
+/** Merge a revision into the current checkout without changing branches. */
+export const merge = Object.assign(
+	async function merge(cwd: string, revision: string, options: MergeOptions = {}): Promise<void> {
+		const args = ["merge"];
+		if (options.noFastForward) args.push("--no-ff");
+		if (options.noCommit) args.push("--no-commit");
+		args.push(revision);
+		await runEffect(cwd, args, { signal: options.signal });
+	},
+	{
+		async abort(cwd: string, signal?: AbortSignal): Promise<void> {
+			await runEffect(cwd, ["merge", "--abort"], { signal });
+		},
+	},
+);
+
+export const mergeBase = {
+	/** Whether every commit reachable from `ancestor` is reachable from `descendant`. */
+	async isAncestor(cwd: string, ancestor: string, descendant: string, signal?: AbortSignal): Promise<boolean> {
+		const args = ["merge-base", "--is-ancestor", ancestor, descendant];
+		const result = await git(cwd, args, { readOnly: true, signal });
+		if (result.exitCode === 0) return true;
+		if (result.exitCode === 1) return false;
+		throw new GitCommandError(args, result);
+	},
+};
+
 /** Fetch a specific refspec from a remote. Network transfer: defaults to the {@link GIT_NETWORK_TIMEOUT_MS} deadline. */
 export async function fetch(
 	cwd: string,
@@ -1727,6 +1760,15 @@ export const revList = {
 	async range(cwd: string, base: string, head: string, signal?: AbortSignal): Promise<string[]> {
 		return splitLines(await runText(cwd, ["rev-list", "--reverse", `${base}..${head}`], { readOnly: true, signal }));
 	},
+	/** Number of commits in a revision range. */
+	async count(cwd: string, range: string, signal?: AbortSignal): Promise<number> {
+		const raw = (await runText(cwd, ["rev-list", "--count", range], { readOnly: true, signal })).trim();
+		const count = Number(raw);
+		if (!Number.isSafeInteger(count) || count < 0) {
+			throw new Error(`git rev-list returned an invalid count: ${raw}`);
+		}
+		return count;
+	},
 	/** Commits reachable from `ref` that touched `file`, newest first, capped at `limit`. */
 	async touching(cwd: string, ref: string, file: string, limit: number, signal?: AbortSignal): Promise<string[]> {
 		return splitLines(
@@ -1895,8 +1937,16 @@ export const config = {
 		return trimScalar(await tryText(cwd, ["config", "--get", key], { readOnly: true, signal }));
 	},
 
+	async getLocal(cwd: string, key: string, signal?: AbortSignal): Promise<string | undefined> {
+		return trimScalar(await tryText(cwd, ["config", "--local", "--get", key], { readOnly: true, signal }));
+	},
+
 	async set(cwd: string, key: string, value: string, signal?: AbortSignal): Promise<void> {
 		await runEffect(cwd, ["config", key, value], { signal });
+	},
+
+	async setLocal(cwd: string, key: string, value: string, signal?: AbortSignal): Promise<void> {
+		await runEffect(cwd, ["config", "--local", key, value], { signal });
 	},
 
 	async getBranch(cwd: string, branchName: string, key: string, signal?: AbortSignal): Promise<string | undefined> {
