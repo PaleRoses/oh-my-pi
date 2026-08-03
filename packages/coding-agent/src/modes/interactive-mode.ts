@@ -52,6 +52,7 @@ import {
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { createAgentProfileResolver } from "../agent-profiles";
 import { reset as resetCapabilities } from "../capability";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -353,6 +354,16 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 }
 
+export interface AgentProfileTransition {
+	profileId: string;
+	model: Model | undefined;
+	thinkingLevel: ConfiguredThinkingLevel | undefined;
+	cwd: string;
+	additionalDirectories: string[];
+	previousSessionId: string | undefined;
+	previousSessionFile: string | undefined;
+}
+
 /**
  * Anchored live-region container for the HUD/status rows between the transcript
  * and the editor (working loader, todo + subagent HUDs, transient notification
@@ -526,6 +537,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastEscapeTime = 0;
 	lastLeftTapTime = 0;
 	shutdownRequested = false;
+	#agentProfileSwitchRequest: Pick<AgentProfileTransition, "profileId" | "model" | "thinkingLevel"> | undefined;
 	#isShuttingDown = false;
 	/** True once `shutdown()` has begun teardown. Surfaced to the input
 	 *  controller so a Ctrl+C arriving while teardown is in flight can hard-
@@ -3973,7 +3985,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	async shutdown(): Promise<void> {
+	async shutdown(options: { quitProcess?: boolean; showResumeHint?: boolean; status?: string } = {}): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
 
@@ -3988,7 +4000,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// other cleanups (issue #3641). The await on the next line yields the
 		// event loop, giving requestRender() a tick to paint the status before
 		// dispose blocks.
-		this.showStatus("Closing session…");
+		this.showStatus(options.status ?? "Closing session…");
 
 		// Persist the draft and dispose the session through the shared teardown
 		// so a signal that arrives mid-shutdown cannot fire a second dispose.
@@ -4023,14 +4035,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		popTerminalTitle();
 		this.stop();
 
-		// Print resumption hint if this is a persisted session
-		const sessionId = this.sessionManager.getSessionId();
-		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionId && sessionFile) {
-			process.stderr.write(`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${sessionId}`)}\n`);
+		if (options.showResumeHint !== false) {
+			const sessionId = this.sessionManager.getSessionId();
+			const sessionFile = this.sessionManager.getSessionFile();
+			if (sessionId && sessionFile) {
+				process.stderr.write(`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${sessionId}`)}\n`);
+			}
 		}
 
-		await postmortem.quit(0);
+		if (options.quitProcess !== false) {
+			await postmortem.quit(0);
+		}
 	}
 
 	async checkShutdownRequested(): Promise<void> {
@@ -4452,6 +4467,161 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.vibeModeEnabled) return false;
 		this.showWarning("Exit vibe mode first.");
 		return true;
+	}
+
+	async handleAgentProfileCommand(request?: string): Promise<void> {
+		if (this.session.isStreaming || this.loadingAnimation) {
+			this.showWarning("Wait for the current operation to finish before switching agent profiles.");
+			return;
+		}
+		if (this.#liveCommandController.active) {
+			this.showWarning("End live mode before switching agent profiles.");
+			return;
+		}
+		if (this.#vibeSessionTransitionBlocked()) return;
+		if (this.collabHost) {
+			this.showWarning("Stop collab sharing before switching agent profiles.");
+			return;
+		}
+		if ((this.session.asyncJobManager?.getRunningJobs().length ?? 0) > 0) {
+			this.showWarning("Wait for or stop background jobs before switching agent profiles.");
+			return;
+		}
+		if (!this.onInputCallback) {
+			this.showError("Agent profile switching is unavailable outside the interactive input loop.");
+			return;
+		}
+
+		try {
+			const requestParts = request?.trim().split(/\s+/).filter(Boolean) ?? [];
+			if (requestParts.length > 2) {
+				throw new Error("Usage: /agent-profile [id] [provider/model]");
+			}
+			const [explicitProfileId, explicitModelId] = requestParts;
+			const resolver = await createAgentProfileResolver({
+				profiles: this.settings.get("agentProfiles"),
+				routes: this.settings.get("agentProfileRoutes"),
+				cwd: this.sessionManager.getCwd(),
+			});
+			const profiles = [...resolver.listProfiles()].sort((left, right) => left.id.localeCompare(right.id));
+			if (profiles.length === 0) {
+				this.showError("No agent profiles are configured.");
+				return;
+			}
+
+			const currentModelName = this.session.model ? formatModelString(this.session.model) : undefined;
+			const selectedProfileId =
+				explicitProfileId ||
+				(await this.showHookSelector(
+					"Switch agent profile",
+					profiles.map(profile => {
+						let modelNote = "current model";
+						try {
+							resolver.assertModelAllowed(profile, currentModelName);
+						} catch {
+							modelNote = "choose model";
+						}
+						return {
+							label: profile.id,
+							description: [
+								profile.id === this.session.agentProfileId ? "current" : undefined,
+								`bank ${profile.hindsight.bankId}`,
+								modelNote,
+							]
+								.filter(Boolean)
+								.join(" · "),
+						};
+					}),
+				));
+			if (!selectedProfileId) return;
+
+			const target = resolver.resolveProfile(selectedProfileId);
+			const compatibleModels = this.session.getAvailableModels().filter(model => {
+				try {
+					resolver.assertModelAllowed(target, formatModelString(model));
+					return true;
+				} catch {
+					return false;
+				}
+			});
+			let selectedModel: Model | undefined;
+			if (explicitModelId) {
+				const normalizedModelId = explicitModelId.toLowerCase();
+				const matches = compatibleModels.filter(
+					model =>
+						formatModelString(model).toLowerCase() === normalizedModelId ||
+						model.id.toLowerCase() === normalizedModelId,
+				);
+				if (matches.length === 0) {
+					throw new Error(
+						`Model "${explicitModelId}" is unavailable or not allowed by agent profile "${target.id}"`,
+					);
+				}
+				if (matches.length > 1) {
+					throw new Error(`Model "${explicitModelId}" is ambiguous; use provider/model`);
+				}
+				selectedModel = matches[0];
+			} else if (this.session.model) {
+				try {
+					resolver.assertModelAllowed(target, currentModelName);
+					selectedModel = this.session.model;
+				} catch {
+					// The target profile owns a disjoint model set; select below.
+				}
+			}
+			if (!selectedModel) {
+				if (compatibleModels.length === 0) {
+					throw new Error(`No available model is allowed by agent profile "${target.id}"`);
+				}
+				const selectedModelName =
+					compatibleModels.length === 1
+						? formatModelString(compatibleModels[0])
+						: await this.showHookSelector(
+								`Choose model for agent profile "${target.id}"`,
+								compatibleModels.map(formatModelString),
+							);
+				if (!selectedModelName) return;
+				selectedModel = compatibleModels.find(model => formatModelString(model) === selectedModelName);
+			}
+			if (!selectedModel) {
+				throw new Error(`Could not resolve a model for agent profile "${target.id}"`);
+			}
+
+			const modelChanged = !modelsAreEqual(selectedModel, this.session.model);
+			if (target.id === this.session.agentProfileId && !modelChanged) {
+				this.showStatus(`Agent profile "${target.id}" is already active.`);
+				return;
+			}
+
+			this.#agentProfileSwitchRequest = {
+				profileId: target.id,
+				model: selectedModel,
+				thinkingLevel: modelChanged
+					? this.session.resolveTemporaryModelThinkingLevel(selectedModel)
+					: this.session.configuredThinkingLevel(),
+			};
+			this.onInputCallback({
+				text: "",
+				customType: "agent-profile-switch",
+				cancelled: false,
+				started: false,
+			});
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	takeAgentProfileSwitchRequest(): AgentProfileTransition | undefined {
+		const request = this.#agentProfileSwitchRequest;
+		this.#agentProfileSwitchRequest = undefined;
+		if (!request) return undefined;
+		return {
+			...request,
+			cwd: this.sessionManager.getCwd(),
+			additionalDirectories: this.sessionManager.getAdditionalDirectories(),
+			previousSessionId: this.sessionManager.getSessionId(),
+			previousSessionFile: this.sessionManager.getSessionFile(),
+		};
 	}
 
 	#prepareSessionSwitch(): void {

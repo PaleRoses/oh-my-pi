@@ -56,6 +56,16 @@ describe("OPTIONAL_VALUE_FLAGS table is honored by args.ts parseArgs", () => {
 	}
 });
 
+describe("--agent-profile", () => {
+	it("selects a session identity without activating an OMP process profile", () => {
+		const result = parseArgs(["--agent-profile", "reviewer", "inspect this"]);
+
+		expect(result.agentProfile).toBe("reviewer");
+		expect(result.profile).toBeUndefined();
+		expect(result.messages).toEqual(["inspect this"]);
+	});
+});
+
 describe("--tools legacy aliases", () => {
 	it("maps search and find to grep and glob", () => {
 		const result = parseArgs(["--tools", "search,find,grep"]);

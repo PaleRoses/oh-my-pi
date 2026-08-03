@@ -197,7 +197,6 @@ import {
 import type { TodoPhase } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
 import { parseCommandArgs } from "../utils/command-args";
-import type { EditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
@@ -402,6 +401,10 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
+	/** Sticky identity selected for this AgentSession. */
+	readonly agentProfileId: string | undefined;
+	/** Agent-profile-owned Hindsight bank and tag scope. */
+	readonly hindsightScope: AgentSessionConfig["hindsightScope"];
 	/** Entries of tools mounted under `xd://`; empty when virtual devices are unmounted. */
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
@@ -412,6 +415,7 @@ export class AgentSession {
 	readonly configWarnings: string[] = [];
 
 	readonly #models: ModelControls;
+	readonly #assertAgentProfileModelAllowed: (model: Model) => void;
 	readonly #tools: SessionTools;
 	readonly #prewalk: PrewalkCoordinator;
 
@@ -820,7 +824,10 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.agentProfileId = config.agentProfileId;
+		this.hindsightScope = config.hindsightScope;
 		this.#modelRegistry = config.modelRegistry;
+		this.#assertAgentProfileModelAllowed = config.assertAgentProfileModelAllowed ?? (() => {});
 		const bashHost: BashRunnerHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -906,8 +913,6 @@ export class AgentSession {
 			model: () => this.model,
 			sessionId: () => this.sessionId,
 			promptGeneration: () => this.#promptGeneration,
-			resolveActiveEditMode: () => this.#tools.resolveActiveEditMode(),
-			syncAfterModelChange: previousEditMode => this.#tools.syncAfterModelChange(previousEditMode),
 			setModelWithProviderSessionReset: model => this.#setModelWithProviderSessionReset(model),
 			clearActiveRetryFallback: () => this.#recovery.clearActiveRetryFallback(),
 			clearInheritedProviderPromptCacheKey: () => this.#clearInheritedProviderPromptCacheKey(),
@@ -951,6 +956,7 @@ export class AgentSession {
 			appendSessionMessage: message => this.#appendSessionMessage(message),
 			sessionMessageAlreadyPersisted: message => this.#sessionMessageAlreadyPersisted(message),
 			setModelWithProviderSessionReset: model => this.#setModelWithProviderSessionReset(model),
+			assertModelAllowed: model => this.#assertAgentProfileModelAllowed(model),
 			resetCurrentResponsesProviderSession: reason => this.#resetCurrentResponsesProviderSession(reason),
 			maybeAutoRedeemCodexReset: () => this.#maybeAutoRedeemCodexReset(),
 			runAutoCompaction: (reason, willRetry, deferred, allowDefer, options) =>
@@ -987,6 +993,7 @@ export class AgentSession {
 		this.#memory = new SessionMemory(memoryHost, {
 			memoryAgentDir: config.memoryAgentDir,
 			memoryTaskDepth: config.memoryTaskDepth,
+			hindsightScope: config.hindsightScope,
 			createMemoryTools: config.createMemoryTools,
 		});
 		// Resolve the wire service-tier per request so the Fireworks Priority
@@ -1104,6 +1111,7 @@ export class AgentSession {
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
 			ensureWriteRegistered: config.ensureWriteRegistered,
 			rebuildSystemPrompt: config.rebuildSystemPrompt,
+			agentProfileId: config.agentProfileId,
 			getLocalCalendarDate: config.getLocalCalendarDate,
 			getMcpServerInstructions: config.getMcpServerInstructions,
 			xdev: config.xdev,
@@ -3960,14 +3968,6 @@ export class AgentSession {
 		return this.#tools.removeVibeToolsPreservingActive();
 	}
 
-	#resolveActiveEditMode(): EditMode {
-		return this.#tools.resolveActiveEditMode();
-	}
-
-	#syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
-		return this.#tools.syncAfterModelChange(previousEditMode);
-	}
-
 	/** Enabled MCP tools in their current presentation partition. */
 	getSelectedMCPToolNames(): string[] {
 		return this.#tools.getSelectedMCPToolNames();
@@ -4531,7 +4531,7 @@ export class AgentSession {
 			askToolName: "ask",
 			writeToolName: "write",
 			editToolName: "edit",
-			isHashlineEditMode: this.#resolveActiveEditMode() === "hashline",
+			isHashlineEditMode: this.#tools.resolveActiveEditMode() === "hashline",
 			reentry: state.reentry ?? false,
 			iterative: state.workflow === "iterative",
 		});
@@ -6494,6 +6494,8 @@ export class AgentSession {
 	}
 
 	async #setModelWithProviderSessionReset(model: Model): Promise<void> {
+		this.#assertAgentProfileModelAllowed(model);
+		const previousEditMode = this.#tools.resolveActiveEditMode();
 		const currentModel = this.model;
 		if (currentModel) {
 			this.#closeProviderSessionsForModelSwitch(currentModel, model);
@@ -6503,18 +6505,10 @@ export class AgentSession {
 		}
 		this.agent.setModel(model);
 
-		// Re-evaluate append-only context mode — provider or setting may have changed
+		// Re-evaluate every model-dependent session surface in one awaited cut.
+		// Retry fallback, explicit selection, cycling, and restoration all enter here.
 		this.#syncAppendOnlyContext(model);
-
-		// inspect_image auto mode keys off model image capability. Reconcile
-		// centrally here so retry-fallback model changes (turn-recovery.ts),
-		// which bypass syncAfterModelChange, cannot leave the tool set stale —
-		// callers await, so a scheduled retry never races the reconciled slate.
-		try {
-			await this.#tools.reconcileInspectImageAfterModelChange();
-		} catch (error) {
-			logger.warn("inspect_image reconcile after model change failed", { error: String(error) });
-		}
+		await this.#tools.syncAfterModelChange(previousEditMode);
 	}
 
 	#closeCodexProviderSessionsForHistoryRewrite(): void {
@@ -7021,6 +7015,12 @@ export class AgentSession {
 
 		try {
 			await this.sessionManager.setSessionFile(sessionPath);
+			const targetAgentProfileId = this.sessionManager.getHeader()?.agentProfile;
+			if (targetAgentProfileId !== this.agentProfileId) {
+				throw new Error(
+					`Cannot switch agent profile from "${this.agentProfileId ?? "default"}" to "${targetAgentProfileId ?? "default"}" inside a populated AgentSession`,
+				);
+			}
 			this.#bash.markSessionTransition(bashTransition);
 			if (switchingToDifferentSession) {
 				this.#freshProviderSessionId = undefined;
@@ -7081,6 +7081,7 @@ export class AgentSession {
 					if (shouldResetProviderState) {
 						await this.#setModelWithProviderSessionReset(match);
 					} else {
+						this.#assertAgentProfileModelAllowed(match);
 						this.agent.setModel(match);
 					}
 				}

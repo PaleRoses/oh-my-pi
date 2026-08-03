@@ -38,14 +38,24 @@ describe("discoverTitleSystemPromptFile", () => {
 });
 
 describe("applyResolvedSystemPromptInputs", () => {
-	it("routes SYSTEM.md content through template-aware session options", () => {
+	it("keeps discovered SYSTEM.md subordinate to routed profiles", () => {
 		const options: CreateAgentSessionOptions = {};
 
 		applyResolvedSystemPromptInputs(options, "project system prompt", "append prompt");
 
-		expect(options.customSystemPrompt).toBe("project system prompt");
+		expect(options.discoveredSystemPrompt).toBe("project system prompt");
+		expect(options.customSystemPrompt).toBeUndefined();
 		expect(options.appendSystemPrompt).toBe("append prompt");
 		expect(options.systemPrompt).toBeUndefined();
+	});
+
+	it("preserves an explicit CLI system prompt override", () => {
+		const options: CreateAgentSessionOptions = {};
+
+		applyResolvedSystemPromptInputs(options, "explicit prompt", undefined, true);
+
+		expect(options.customSystemPrompt).toBe("explicit prompt");
+		expect(options.discoveredSystemPrompt).toBeUndefined();
 	});
 });
 

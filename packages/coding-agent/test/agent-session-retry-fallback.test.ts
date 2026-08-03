@@ -135,6 +135,7 @@ describe("AgentSession retry fallback", () => {
 
 		const requestedModels: string[] = [];
 		const requestedContexts: string[] = [];
+		const requestedPrompts: string[] = [];
 		const retryStartEvents: Array<Extract<AgentSessionEvent, { type: "auto_retry_start" }>> = [];
 		const retryEndEvents: Array<Extract<AgentSessionEvent, { type: "auto_retry_end" }>> = [];
 		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
@@ -145,13 +146,14 @@ describe("AgentSession retry fallback", () => {
 			getApiKey: model => `${model.provider}-test-key`,
 			initialState: {
 				model: primaryModel,
-				systemPrompt: ["Test"],
+				systemPrompt: ["driver constitution"],
 				tools: [],
 				messages: [],
 			},
 			streamFn: (model, context, options) => {
 				requestedModels.push(`${model.provider}/${model.id}`);
-				requestedContexts.push(JSON.stringify(context));
+				requestedContexts.push(JSON.stringify(context.messages));
+				requestedPrompts.push(context.systemPrompt?.join("\n") ?? "");
 				if (model.provider === primaryModel.provider && model.id === primaryModel.id) {
 					mock.push({ throw: "overloaded_error: provider returned error 503" });
 				} else if (model.provider === firstFallback.provider && model.id === firstFallback.id) {
@@ -182,6 +184,10 @@ describe("AgentSession retry fallback", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
+			rebuildSystemPrompt: async () => ({
+				systemPrompt: ["driver constitution"],
+			}),
+			agentProfileId: "driver",
 		});
 
 		session.subscribe(event => {
@@ -208,6 +214,7 @@ describe("AgentSession retry fallback", () => {
 			`${secondFallback.provider}/${secondFallback.id}`,
 		]);
 		expect(new Set(requestedContexts).size).toBe(1);
+		expect(requestedPrompts).toEqual(["driver constitution", "driver constitution", "driver constitution"]);
 		expect(session.model?.provider).toBe(secondFallback.provider);
 		expect(session.model?.id).toBe(secondFallback.id);
 		expect(retryStartEvents.map(event => event.delayMs)).toEqual([0, 0]);
@@ -234,6 +241,7 @@ describe("AgentSession retry fallback", () => {
 				role: "default",
 			},
 		]);
+
 		const registry = new AgentRegistry();
 		registry.register({
 			id: "fallback-agent",
@@ -256,6 +264,47 @@ describe("AgentSession retry fallback", () => {
 		} finally {
 			hub.dispose();
 		}
+	});
+	it("rejects an out-of-profile retry fallback before model mutation", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			agentProfileId: "driver",
+			assertAgentProfileModelAllowed: model => {
+				if (model.provider === fallbackModel.provider && model.id === fallbackModel.id) {
+					throw new Error(`Agent profile "driver" does not allow model ${model.provider}/${model.id}`);
+				}
+			},
+		});
+
+		await session.prompt("Do not cross identities");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(session.model?.provider).toBe(primaryModel.provider);
+		expect(session.model?.id).toBe(primaryModel.id);
+		expect(session.configWarnings).toContain(
+			`Agent profile "driver" does not allow model ${fallbackModel.provider}/${fallbackModel.id}`,
+		);
 	});
 
 	it("confirms before crossing models when every pooled account is inside reserve", async () => {

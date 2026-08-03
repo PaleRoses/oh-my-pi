@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added session-scoped `agentProfiles` / `agentProfileRoutes` configuration that binds a selected constitution overlay, Hindsight scope, allowed model set, optional exact tool boundary, and optional project-only context boundary to a persisted identity. Profile prompts retain the maintained OMP harness instructions; `useDefaultPrompt: true` adds no profile constitution. `--agent-profile` selects one explicitly; top-level and task agents route independently; retries and model changes preserve the selected identity and reject out-of-policy models before mutation.
+- Added interactive `/agent-profile [id] [provider/model]` transitions. A switch closes the current profile session at an idle boundary, creates a fresh resumable transcript in the same process, reconstructs the prompt, Hindsight scope, tools, extensions, provider state, and agent lifecycle, and fails closed while turns, collaborative/live modes, or background jobs are active.
+
+### Fixed
+
+- Fixed Hindsight auto-recall freezing the first prompt's memories into every later turn. Root prompts now retrieve against their own bounded context, replace the previous recall projection, and remove stale recalled context when retrieval returns nothing or fails; subagents still reuse the parent's bank without issuing duplicate automatic recalls.
+
 ## [17.1.7] - 2026-07-27
 
 ### Fixed

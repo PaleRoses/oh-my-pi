@@ -296,6 +296,17 @@ type SettingDef =
 // Schema Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
+export type AgentProfileAgentKind = "main" | "sub";
+
+interface AgentProfileRouteSelector {
+	agentKind?: AgentProfileAgentKind;
+	model?: string;
+}
+
+export type AgentProfileRouteSetting =
+	| (AgentProfileRouteSelector & { profile: string; deny?: never; reason?: never })
+	| (AgentProfileRouteSelector & { deny: true; reason?: string; profile?: never });
+
 export interface ModelTagDef {
 	name: string;
 	color?: string;
@@ -311,10 +322,12 @@ export interface ModelTagsSettings {
 // under `as const` while still letting SettingValue infer the correct element type.
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
+const EMPTY_UNKNOWN_RECORD: Record<string, unknown> = {};
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
 const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["hub"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
+const EMPTY_AGENT_PROFILE_ROUTES: AgentProfileRouteSetting[] = [];
 const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	{
@@ -1210,6 +1223,11 @@ export const SETTINGS_SCHEMA = {
 			description: "Surface the active model identifier in the system prompt so the agent knows which model it is",
 		},
 	},
+
+	/** Named agent identities: one constitution, Hindsight scope, model policy, and optional tool boundary each. */
+	agentProfiles: { type: "record", default: EMPTY_UNKNOWN_RECORD },
+	/** Ordered first-match initial routing from agent kind/model glob to a profile or denial. */
+	agentProfileRoutes: { type: "array", default: EMPTY_AGENT_PROFILE_ROUTES },
 
 	includeWorkspaceTree: {
 		type: "boolean",
@@ -2942,7 +2960,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "memory",
 			group: "Hindsight",
 			label: "Hindsight Auto Recall",
-			description: "Recall memories on the first turn of each session",
+			description: "Recall memories before every root user prompt",
 			condition: "hindsightActive",
 		},
 	},

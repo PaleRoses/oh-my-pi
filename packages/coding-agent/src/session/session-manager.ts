@@ -952,6 +952,7 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: options?.parentSession,
 			providerPromptCacheKey: options?.providerPromptCacheKey,
+			agentProfile: options?.agentProfile ?? this.#header?.agentProfile,
 		};
 		const workspace = normalizeSessionWorkspace({
 			cwd: this.#cwd,
@@ -1284,6 +1285,7 @@ export class SessionManager {
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
 			parentSession: parentSessionId,
 			providerPromptCacheKey: this.#header.providerPromptCacheKey ?? parentSessionId,
+			agentProfile: this.#header.agentProfile,
 		};
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
@@ -2119,6 +2121,15 @@ export class SessionManager {
 		return this.#header;
 	}
 
+	/** Persist the sticky agent identity without materializing an otherwise empty session. */
+	async setAgentProfile(agentProfile: string | undefined): Promise<void> {
+		if (this.#header.agentProfile === agentProfile) return;
+		this.#header.agentProfile = agentProfile;
+		if (this.#persist && this.#sessionFile && this.#fileIsCurrent) {
+			await this.#rewriteAtomically();
+		}
+	}
+
 	/** All session entries (excludes header). Returns a shallow copy. */
 	getEntries(): SessionEntry[] {
 		return [...this.#entries];
@@ -2193,6 +2204,7 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: this.#persist ? sourceSessionFile : undefined,
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
+			agentProfile: this.#header.agentProfile,
 		};
 
 		const labels: LabelEntry[] = [];
@@ -2308,6 +2320,7 @@ export class SessionManager {
 			{
 				parentSession: sourceHeader?.id,
 				providerPromptCacheKey: sourceHeader?.providerPromptCacheKey ?? sourceHeader?.id,
+				agentProfile: sourceHeader?.agentProfile,
 			},
 			options?.sessionFile,
 		);

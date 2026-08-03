@@ -30,6 +30,7 @@ export class SessionMemory {
 	readonly #host: SessionMemoryHost;
 	readonly #memoryAgentDir: string | undefined;
 	readonly #memoryTaskDepth: number;
+	readonly #hindsightScope: MemoryBackendStartOptions["hindsightScope"];
 	readonly #createMemoryTools: (() => Promise<AgentTool[]>) | undefined;
 	#memoryBackendTransition: Promise<void> = Promise.resolve();
 	#localMemoryStartupAbort: AbortController | undefined;
@@ -41,11 +42,13 @@ export class SessionMemory {
 			memoryAgentDir?: string;
 			memoryTaskDepth?: number;
 			createMemoryTools?: () => Promise<AgentTool[]>;
+			hindsightScope?: MemoryBackendStartOptions["hindsightScope"];
 		},
 	) {
 		this.#host = host;
 		this.#memoryAgentDir = options.memoryAgentDir;
 		this.#memoryTaskDepth = options.memoryTaskDepth ?? 0;
+		this.#hindsightScope = options.hindsightScope;
 		this.#createMemoryTools = options.createMemoryTools;
 	}
 
@@ -192,6 +195,7 @@ export class SessionMemory {
 					modelRegistry: this.#host.modelRegistry,
 					agentDir: this.#memoryAgentDir,
 					taskDepth: this.#memoryTaskDepth,
+					hindsightScope: this.#hindsightScope,
 				});
 			}
 			if (this.#host.isDisposed()) return;

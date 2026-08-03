@@ -346,6 +346,7 @@ export interface InteractiveModeContext {
 	handleDumpCommand(): Promise<void>;
 	handleAdvisorDumpCommand(isRaw?: boolean): void;
 	handleDebugTranscriptCommand(): Promise<void>;
+	handleAgentProfileCommand(profileId?: string): Promise<void>;
 	handleClearCommand(): Promise<void>;
 	handleFreshCommand(): Promise<void>;
 	handleDropCommand(): Promise<void>;

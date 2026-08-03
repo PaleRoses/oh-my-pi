@@ -345,6 +345,8 @@ enabledModels:
 | `enabledModels` | array | `[]` | Allow-list of models; supports [path-scoped entries](#path-scoped-arrays). Empty means all available models. |
 | `disabledProviders` | array | `[]` | Disabled model/discovery providers; supports path-scoped entries. See [above](#provider-and-source-disabling). |
 | `includeModelInPrompt` | boolean | `true` | Include the active model name in the system prompt. |
+| `agentProfiles` | record | `{}` | Named session identities. Each profile has exactly one of `prompt` or `promptFile` (a constitution layered over the maintained harness prompt), or `useDefaultPrompt: true` (no added constitution); required `hindsight.bankId`; optional Hindsight tags, model globs, exact tool allowlist, and `projectContextOnly`. |
+| `agentProfileRoutes` | array | `[]` | Ordered first-match initial routes by `agentKind` and/or canonical `provider/model` glob. A route selects `profile` or sets `deny: true`; the selected profile is persisted and remains sticky. See [System prompt customization](./system-prompt-customization.md). |
 
 See [Models](./models.md) for the `models.yml` schema and custom-provider definitions.
 

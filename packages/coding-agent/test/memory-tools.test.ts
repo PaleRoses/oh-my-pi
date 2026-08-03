@@ -113,7 +113,6 @@ function registerState(client: HindsightApi, settings?: Settings, opts: Register
 		} as never,
 		banksSet: new Set(),
 		lastRetainedTurn: 0,
-		hasRecalledForFirstTurn: false,
 	});
 	void settings;
 }

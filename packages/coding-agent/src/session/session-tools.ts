@@ -73,6 +73,7 @@ interface SessionToolsOptions {
 	presentationPinnedToolNames?: ReadonlySet<string>;
 	ensureWriteRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>;
+	agentProfileId?: string;
 	getLocalCalendarDate?: () => string;
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	xdev?: XdevState;
@@ -179,6 +180,7 @@ export class SessionTools {
 	#mcpRefreshTail: Promise<void> = Promise.resolve();
 	#promptModelKey: string | undefined;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
+	#agentProfileId: SessionToolsOptions["agentProfileId"];
 	#getLocalCalendarDate: () => string;
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
@@ -200,6 +202,7 @@ export class SessionTools {
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
 		this.#ensureWriteRegistered = options.ensureWriteRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
+		this.#agentProfileId = options.agentProfileId;
 		this.#getLocalCalendarDate = options.getLocalCalendarDate ?? formatLocalCalendarDate;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdev = options.xdev;
@@ -371,8 +374,15 @@ export class SessionTools {
 	#currentPromptModelKey(): string | undefined {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
-		if (!model || this.#host.settings.get("includeModelInPrompt")) return model;
-		return usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default";
+		const modelKey =
+			!model || this.#host.settings.get("includeModelInPrompt")
+				? model
+				: usesCodexTaskPrompt(model)
+					? "task-policy:gpt-5.6"
+					: "task-policy:default";
+		return this.#agentProfileId === undefined
+			? modelKey
+			: `${modelKey ?? "model:none"}\u0000agent-profile:${this.#agentProfileId}`;
 	}
 
 	#logComputerState(message: string, enabled: boolean): void {
@@ -984,6 +994,9 @@ export class SessionTools {
 
 	/** Applies one-turn memory prompt injection before an agent run. */
 	async buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
+		if (this.#currentPromptModelKey() !== this.#promptModelKey) {
+			await this.refreshBaseSystemPrompt();
+		}
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
 

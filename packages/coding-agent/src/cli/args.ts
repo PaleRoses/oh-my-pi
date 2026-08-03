@@ -22,6 +22,8 @@ export interface Args {
 	/** Workspace directories beyond cwd for this session (repeatable `--add-dir`). */
 	addDir?: string[];
 	profile?: string;
+	/** Session-scoped agent identity; distinct from the bootstrap-global OMP profile. */
+	agentProfile?: string;
 	alias?: string;
 	allowHome?: boolean;
 	provider?: string;

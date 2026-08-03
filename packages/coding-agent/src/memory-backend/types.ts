@@ -9,6 +9,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
+import type { BankScope } from "../hindsight/bank";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { AgentSession } from "../session/agent-session";
@@ -88,6 +89,8 @@ export interface MemoryBackendStartOptions {
 	modelRegistry: ModelRegistry;
 	agentDir: string;
 	taskDepth: number;
+	/** Agent-profile-owned Hindsight bank and tag scope. */
+	hindsightScope?: BankScope;
 	parentHindsightSessionState?: HindsightSessionState;
 	parentMnemopiSessionState?: MnemopiSessionState;
 }
@@ -142,10 +145,10 @@ export interface MemoryBackend {
 	 * Optional hook to inject a backend-specific block into the current turn's
 	 * system prompt before the agent starts generating.
 	 *
-	 * This is the only place a backend can affect the very first answer of a
-	 * fresh session. The returned text is appended to the already-built base
-	 * system prompt for this turn only; callers may separately cache it and
-	 * surface it through `buildDeveloperInstructions()` on later rebuilds.
+	 * This is the only place a backend can derive memory from the current root
+	 * prompt before its answer. The returned text is appended to the already-built
+	 * base system prompt for this turn; callers may separately cache it and surface
+	 * it through `buildDeveloperInstructions()` on later rebuilds.
 	 */
 	beforeAgentStartPrompt?(session: AgentSession, promptText: string): Promise<string | undefined>;
 

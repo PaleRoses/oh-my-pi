@@ -480,6 +480,8 @@ export interface BuildSystemPromptOptions {
 	customPrompt?: string;
 	/** Already-loaded custom system prompt text; bypasses path resolution. */
 	resolvedCustomPrompt?: string;
+	/** Agent-profile constitution layered over the selected base prompt. */
+	profilePrompt?: string;
 	/** Tools to include in prompt. */
 	tools?: Map<string, SystemPromptToolMetadata>;
 	/** Tool names to include in prompt. */
@@ -563,6 +565,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const {
 		customPrompt,
 		resolvedCustomPrompt: providedResolvedCustomPrompt,
+		profilePrompt,
 		tools,
 		appendSystemPrompt,
 		inlineToolDescriptors: providedInlineToolDescriptors,
@@ -821,12 +824,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
 		resolvedCustomPrompt,
+		profilePrompt,
 		resolvedAppendPrompt,
 	]);
 	const contextPromptSources = contextFiles.map(file => file.content);
 	const promptSources = [
 		effectiveSystemPromptCustomization,
 		resolvedCustomPrompt,
+		profilePrompt,
 		resolvedAppendPrompt,
 		...contextPromptSources,
 	];
@@ -875,6 +880,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];
+	if (profilePrompt) {
+		systemPrompt.push(profilePrompt);
+	}
 	if (toolNames.includes("computer")) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}

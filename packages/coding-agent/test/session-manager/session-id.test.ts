@@ -23,16 +23,19 @@ describe("SessionManager session ids", () => {
 
 	it("generates a fresh UUIDv7 when starting a new session", async () => {
 		const session = SessionManager.inMemory();
+		await session.setAgentProfile("driver");
 		const firstId = expectUuidV7SessionId(session);
 
 		await session.newSession();
 
 		const secondId = expectUuidV7SessionId(session);
 		expect(secondId).not.toBe(firstId);
+		expect(session.getHeader()?.agentProfile).toBe("driver");
 	});
 
 	it("generates a UUIDv7 when branching a session", () => {
 		const session = SessionManager.inMemory();
+		void session.setAgentProfile("worker");
 		session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
 		const branchPointId = session.appendMessage({ role: "user", content: "follow up", timestamp: 2 });
 		const firstId = expectUuidV7SessionId(session);
@@ -41,11 +44,13 @@ describe("SessionManager session ids", () => {
 
 		const branchedId = expectUuidV7SessionId(session);
 		expect(branchedId).not.toBe(firstId);
+		expect(session.getHeader()?.agentProfile).toBe("worker");
 	});
 
 	it("generates a UUIDv7 when forking a persisted session", async () => {
 		using tempDir = TempDir.createSync("@pi-session-id-fork-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
+		await session.setAgentProfile("reviewer");
 		session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
 		await session.flush();
 		const firstId = expectUuidV7SessionId(session);
@@ -56,6 +61,7 @@ describe("SessionManager session ids", () => {
 		const forkedId = expectUuidV7SessionId(session);
 		expect(forkedId).not.toBe(firstId);
 		expect(session.getHeader()?.parentSession).toBe(firstId);
+		expect(session.getHeader()?.agentProfile).toBe("reviewer");
 	});
 
 	it("preserves existing session ids when reopening a saved session", async () => {

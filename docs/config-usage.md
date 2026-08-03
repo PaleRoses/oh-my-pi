@@ -83,6 +83,10 @@ Keybindings are the one exception: a named profile merges the default profile's 
 
 The other source bases are not profile-scoped and load identically under every profile: the external-tool bases (`~/.claude`, `~/.codex`, `~/.gemini`) belong to those tools, and the project-level bases (`<cwd>/.omp`, `<cwd>/.claude`, ...) are keyed to the working directory. Throughout this document, read `~/.omp/agent` as shorthand for the active profile's agent directory.
 
+Session-scoped agent identities are a separate feature. `omp --agent-profile <id>` selects a configured `agentProfiles` entry without relocating any paths; task agents can select different identities in the same process through `agentProfileRoutes`. See [System prompt customization](./system-prompt-customization.md#give-the-driver-and-summoned-workers-separate-identities).
+
+In the interactive TUI, `/agent-profile` opens the profile selector and `/agent-profile <id> [provider/model]` requests a fresh session under that identity. If the current model is outside the target profile's policy, choose an allowed model in the command or the model selector. The previous transcript remains resumable; the new session receives a fresh prompt, memory backend, provider state, tool set, extensions, and agent lifecycle. Switching is unavailable during an active turn, live/collaborative mode, or background jobs.
+
 ## Important constraint
 
 The generic helpers in `src/config.ts` do **not** include `.pi` in source discovery order.

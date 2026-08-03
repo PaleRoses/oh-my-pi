@@ -11,6 +11,7 @@ import { EventLoopKeepalive } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	$env,
+	APP_NAME,
 	directoryExists,
 	getLogPath,
 	getProjectDir,
@@ -56,7 +57,7 @@ import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
-import { InteractiveMode } from "./modes/interactive-mode";
+import { type AgentProfileTransition, InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
@@ -422,7 +423,8 @@ async function runInteractiveMode(
 	initialMessage?: string,
 	initialImages?: ImageContent[],
 	joinLink?: string,
-): Promise<void> {
+	suppressWelcomeIntro = false,
+): Promise<AgentProfileTransition> {
 	const mode = new InteractiveMode(
 		session,
 		version,
@@ -454,7 +456,7 @@ async function runInteractiveMode(
 	const playStartupSplash = showStartupSplash && setupScenes.length === 0;
 
 	await mode.init({
-		suppressWelcomeIntro: resuming || setupScenes.length > 0 || playStartupSplash,
+		suppressWelcomeIntro: suppressWelcomeIntro || resuming || setupScenes.length > 0 || playStartupSplash,
 		clearInitialTerminalHistory: true,
 	});
 
@@ -525,6 +527,15 @@ async function runInteractiveMode(
 
 	while (true) {
 		const input = await mode.getUserInput();
+		const transition = mode.takeAgentProfileSwitchRequest();
+		if (transition) {
+			await mode.shutdown({
+				quitProcess: false,
+				showResumeHint: false,
+				status: `Switching agent profile to "${transition.profileId}"…`,
+			});
+			return transition;
+		}
 		await submitInteractiveInput(mode, session, input);
 	}
 }
@@ -826,14 +837,16 @@ function discoverAppendSystemPromptFile(): string | undefined {
 	return undefined;
 }
 
-/** Apply resolved CLI/discovered prompt files without bypassing system prompt templates. */
+/** Apply resolved prompt files while preserving explicit CLI precedence over profile routing. */
 export function applyResolvedSystemPromptInputs(
 	options: CreateAgentSessionOptions,
 	resolvedSystemPrompt: string | undefined,
 	resolvedAppendPrompt: string | undefined,
+	explicitSystemPrompt = false,
 ): void {
 	if (resolvedSystemPrompt) {
-		options.customSystemPrompt = resolvedSystemPrompt;
+		if (explicitSystemPrompt) options.customSystemPrompt = resolvedSystemPrompt;
+		else options.discoveredSystemPrompt = resolvedSystemPrompt;
 	}
 	if (resolvedAppendPrompt) {
 		options.appendSystemPrompt = resolvedAppendPrompt;
@@ -852,6 +865,9 @@ export async function buildSessionOptions(
 		cwd: parsed.cwd ?? getProjectDir(),
 		autoApprove: parsed.autoApprove ?? false,
 	};
+	if (parsed.agentProfile !== undefined) {
+		options.agentProfile = parsed.agentProfile;
+	}
 	const cliDirs = parsed.addDir ?? [];
 	const settingsDirs = activeSettings.get("workspace.additionalDirectories");
 	if (cliDirs.length > 0 || settingsDirs.length > 0) {
@@ -887,6 +903,7 @@ export async function buildSessionOptions(
 			scopedModelOverride ||
 			parsed.model !== undefined ||
 			parsed.thinking !== undefined ||
+			parsed.agentProfile !== undefined ||
 			parsed.systemPrompt !== undefined ||
 			parsed.appendSystemPrompt !== undefined ||
 			parsed.tools !== undefined ||
@@ -1067,7 +1084,12 @@ export async function buildSessionOptions(
 	// (handled by caller before createAgentSession)
 
 	// System prompt
-	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
+	applyResolvedSystemPromptInputs(
+		options,
+		resolvedSystemPrompt,
+		resolvedAppendPrompt,
+		parsed.systemPrompt !== undefined,
+	);
 	// Replan-driven title refresh resolves the override from this same field on
 	// `AgentSession`, so threading it through `CreateAgentSessionOptions` keeps
 	// both first-input titling (`input-controller.ts`) and replan refresh
@@ -1522,29 +1544,32 @@ export async function runRootCommand(
 			stdoutIsTTY: process.stdout.isTTY,
 		});
 
-		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = await createSession({
+		const installPersistedSubagentReviver = (
+			created: CreateAgentSessionResult,
+			options: CreateAgentSessionOptions,
+		): void => {
+			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+				createPersistedSubagentReviverFactory({
+					session: created.session,
+					authStorage,
+					modelRegistry,
+					settings: settingsInstance,
+					enableLsp: options.enableLsp ?? true,
+				}),
+				Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
+			);
+		};
+
+		const initialSessionResult = await createSession({
 			...sessionOptions,
 			eventBus,
 			preloadedExtensions: extensionsResult,
 		});
+		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = initialSessionResult;
 
-		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
-		// scan, collab mirror, resumed process) has a sessionFile but no in-memory
-		// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
-		// factory — bound to THIS top-level session — that rebuilds the subagent from
-		// its persisted JSONL (see persisted-revive.ts). Scoped to the non-ACP
-		// bootstrap: ACP keeps several concurrent top-level sessions and a single
-		// process-global factory must not be clobbered by the most recent one.
-		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
-			createPersistedSubagentReviverFactory({
-				session,
-				authStorage,
-				modelRegistry,
-				settings: settingsInstance,
-				enableLsp: sessionOptions.enableLsp ?? true,
-			}),
-			Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
-		);
+		// Cold-revive support is bound to this top-level session generation. ACP
+		// owns several concurrent roots and therefore never installs this global.
+		installPersistedSubagentReviver(initialSessionResult, sessionOptions);
 		if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 			authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);
 		}
@@ -1600,9 +1625,91 @@ export async function runRootCommand(
 				}
 			}
 
+			const createProfileTransitionSession = async (transition: AgentProfileTransition) => {
+				const nextArgs: Args = {
+					...initialArgs,
+					cwd: transition.cwd,
+					agentProfile: transition.profileId,
+					continue: undefined,
+					resume: undefined,
+					fork: undefined,
+					providerSessionId: undefined,
+					providerPromptCacheKey: undefined,
+				};
+				const nextScopedModels = await resolveScopedModels(nextArgs, modelRegistry, settingsInstance);
+				const nextSessionManager = nextArgs.noSession
+					? SessionManager.inMemory(transition.cwd)
+					: SessionManager.create(transition.cwd, nextArgs.sessionDir);
+				const builtOptions = await buildSessionOptions(
+					nextArgs,
+					nextScopedModels,
+					nextSessionManager,
+					modelRegistry,
+					settingsInstance,
+				);
+				const nextOptions: CreateAgentSessionOptions = {
+					...builtOptions,
+					cwd: transition.cwd,
+					sessionManager: nextSessionManager,
+					agentProfile: transition.profileId,
+					model: transition.model,
+					modelPattern: undefined,
+					thinkingLevel: transition.thinkingLevel,
+					additionalDirectories: transition.additionalDirectories,
+					providerSessionId: undefined,
+					providerPromptCacheKey: undefined,
+					providerPromptCacheKeySource: undefined,
+					deadline: sessionOptions.deadline,
+					prewalk: undefined,
+					planYolo: undefined,
+					authStorage,
+					modelRegistry,
+					hasUI: true,
+					settings: settingsInstance,
+					telemetry: sessionOptions.telemetry,
+					extensions: [...(builtOptions.extensions ?? []), createWarpEventBridgeExtension()],
+				};
+				const nextEventBus = new EventBus();
+				const nextExtensions = await loadSessionExtensions(
+					nextOptions,
+					transition.cwd,
+					settingsInstance,
+					nextEventBus,
+				);
+				const nextExtensionFlagSink: ExtensionFlagSink = {
+					getFlags: () => ExtensionRunner.aggregateFlags(nextExtensions.extensions),
+					setFlagValue: (name, value) => {
+						nextExtensions.runtime.flagValues.set(name, value);
+					},
+				};
+				applyExtensionFlags(nextExtensionFlagSink, rawArgs);
+				const result = await createSession({
+					...nextOptions,
+					eventBus: nextEventBus,
+					preloadedExtensions: nextExtensions,
+				});
+				installPersistedSubagentReviver(result, nextOptions);
+				const notifications: (InteractiveModeNotify | null)[] = formatExtensionLoadNotifications(
+					nextExtensions.errors,
+				).map(message => ({ kind: "warn", message }));
+				if (result.modelFallbackMessage) {
+					notifications.push({ kind: "warn", message: result.modelFallbackMessage });
+				}
+				const newSessionId = result.session.sessionManager.getSessionId();
+				const previousResume =
+					transition.previousSessionId && transition.previousSessionFile
+						? ` Previous session: ${APP_NAME} --resume ${transition.previousSessionId}.`
+						: "";
+				notifications.unshift({
+					kind: "info",
+					message: `Agent profile "${transition.profileId}" active${newSessionId ? ` in session ${newSessionId}` : ""}.${previousResume}`,
+				});
+				return { result, notifications, eventBus: nextEventBus };
+			};
+
 			stopStartupWatchdog();
 			logger.endTiming();
-			await runInteractiveMode(
+			let transition = await runInteractiveMode(
 				session,
 				VERSION,
 				changelogMarkdown,
@@ -1620,6 +1727,40 @@ export async function runRootCommand(
 				initialImages,
 				parsedArgs.join,
 			);
+			while (true) {
+				const next = await createProfileTransitionSession(transition).catch(error => {
+					const detail = error instanceof Error ? error.message : String(error);
+					const previousResume =
+						transition.previousSessionId && transition.previousSessionFile
+							? ` Resume the previous session with ${APP_NAME} --resume ${transition.previousSessionId}.`
+							: "";
+					throw new Error(
+						`Failed to switch to agent profile "${transition.profileId}": ${detail}.${previousResume}`,
+						{
+							cause: error,
+						},
+					);
+				});
+				transition = await runInteractiveMode(
+					next.result.session,
+					VERSION,
+					changelogMarkdown,
+					next.notifications,
+					Promise.resolve(undefined),
+					[],
+					next.result.setToolUIContext,
+					next.result.lspServers,
+					next.result.mcpManager,
+					false,
+					false,
+					false,
+					next.eventBus,
+					undefined,
+					undefined,
+					undefined,
+					true,
+				);
+			}
 		} else {
 			// Branch-only single-shot runner: keep print-mode code out of normal interactive startup.
 			stopStartupWatchdog();
