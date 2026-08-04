@@ -80,10 +80,14 @@ function requireProfileId(value: unknown, label: string): string {
 	return profileId;
 }
 
-async function loadPromptFile(profileId: string, source: string, cwd: string): Promise<string> {
+export function resolveSystemPromptProfileFilePath(source: string, cwd: string): string {
 	const expanded =
 		source === "~" ? os.homedir() : source.startsWith("~/") ? path.join(os.homedir(), source.slice(2)) : source;
-	const profilePath = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+	return path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+}
+
+async function loadPromptFile(profileId: string, source: string, cwd: string): Promise<string> {
+	const profilePath = resolveSystemPromptProfileFilePath(source, cwd);
 	try {
 		const prompt = await Bun.file(profilePath).text();
 		if (prompt.trim().length === 0) {

@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "bun:test";
+import * as path from "node:path";
 import type {
 	SystemPromptProfileRouteSetting,
 	SystemPromptProfileSetting,
@@ -10,10 +11,16 @@ import {
 	type PromptProfileConfigurationRuntime,
 	type PromptProfileOperation,
 } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/prompt-profile";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 interface PromptSettingsStore {
 	systemPromptProfiles: Record<string, SystemPromptProfileSetting>;
 	systemPromptProfileRoutes: SystemPromptProfileRouteSetting[];
+}
+
+interface PromptEditorResults {
+	readonly editedMarkdown?: string | null;
+	readonly openedMarkdownFile?: boolean;
 }
 
 beforeAll(async () => {
@@ -38,7 +45,7 @@ async function settleOperation(): Promise<void> {
 	await Bun.sleep(0);
 }
 
-function createHarness(overrides: Partial<PromptSettingsStore> = {}) {
+function createHarness(overrides: Partial<PromptSettingsStore> = {}, editorResults: PromptEditorResults = {}) {
 	const store: PromptSettingsStore = {
 		systemPromptProfiles: { driver: {}, worker: {} },
 		systemPromptProfileRoutes: [
@@ -50,7 +57,10 @@ function createHarness(overrides: Partial<PromptSettingsStore> = {}) {
 	const set = vi.fn(<P extends keyof PromptSettingsStore>(path: P, value: PromptSettingsStore[P]) => {
 		store[path] = value;
 	});
-	const flush = vi.fn(async () => {});
+	const flushed = Promise.withResolvers<void>();
+	const flush = vi.fn(async () => {
+		flushed.resolve();
+	});
 	const runtime = {
 		cwd: process.cwd(),
 		settings: {
@@ -60,6 +70,8 @@ function createHarness(overrides: Partial<PromptSettingsStore> = {}) {
 		},
 	} as unknown as PromptProfileConfigurationRuntime;
 	const onApply = vi.fn((operation: PromptProfileOperation) => applyPromptProfileOperation(runtime, operation));
+	const onEditMarkdown = vi.fn(async () => editorResults.editedMarkdown);
+	const onOpenMarkdownFile = vi.fn(async () => editorResults.openedMarkdownFile);
 	const onClose = vi.fn();
 	const requestRender = vi.fn();
 	const component = new PromptProfileSelectorComponent(
@@ -73,9 +85,20 @@ function createHarness(overrides: Partial<PromptSettingsStore> = {}) {
 				source: "maintained-omp-prompt",
 			},
 		},
-		{ onApply, onClose, requestRender },
+		{ onApply, onClose, onEditMarkdown, onOpenMarkdownFile, requestRender },
 	);
-	return { component, flush, onApply, onClose, requestRender, set, store };
+	return {
+		component,
+		flush,
+		flushed: flushed.promise,
+		onApply,
+		onClose,
+		onEditMarkdown,
+		onOpenMarkdownFile,
+		requestRender,
+		set,
+		store,
+	};
 }
 
 describe("PromptProfileSelectorComponent", () => {
@@ -104,18 +127,20 @@ describe("PromptProfileSelectorComponent", () => {
 		expect(render(harness.component)).toContain("Restart OMP to load the new prompt identity");
 	});
 
-	it("edits and restores text fields through the same mutual-exclusion persistence owner", async () => {
-		const harness = createHarness({
-			systemPromptProfiles: { driver: { promptFile: "/stale/driver.md" }, worker: {} },
-		});
+	it("edits inline Markdown externally and restores it through the mutual-exclusion persistence owner", async () => {
+		const harness = createHarness(
+			{
+				systemPromptProfiles: { driver: { promptFile: "/stale/driver.md" }, worker: {} },
+			},
+			{ editedMarkdown: "INLINE DRIVER" },
+		);
 
 		harness.component.handleInput("\n");
 		harness.component.handleInput("\n");
-		harness.component.handleInput("\n");
-		harness.component.pasteText("INLINE DRIVER");
 		harness.component.handleInput("\n");
 		await settleOperation();
 
+		expect(harness.onEditMarkdown).toHaveBeenCalledWith("");
 		expect(harness.store.systemPromptProfiles.driver).toEqual({ prompt: "INLINE DRIVER" });
 
 		harness.component.handleInput("\n");
@@ -125,6 +150,42 @@ describe("PromptProfileSelectorComponent", () => {
 
 		expect(harness.store.systemPromptProfiles.driver).toEqual({});
 		expect(harness.flush).toHaveBeenCalledTimes(2);
+	});
+
+	it("opens a configured Markdown file and keeps path editing secondary", async () => {
+		const root = TempDir.createSync("@omp-prompt-profile-");
+		const instructionsFile = path.join(root.path(), "instructions.md");
+		try {
+			await Bun.write(instructionsFile, "# Worker\n");
+			const harness = createHarness(
+				{
+					systemPromptProfiles: { driver: { instructionsFile }, worker: {} },
+				},
+				{ openedMarkdownFile: true },
+			);
+
+			harness.component.handleInput("\n");
+			pressDown(harness.component, 3);
+			harness.component.handleInput("\n");
+			expect(render(harness.component)).toContain("Open Markdown");
+			harness.component.handleInput("\n");
+			await harness.flushed;
+			await settleOperation();
+
+			expect(harness.onOpenMarkdownFile).toHaveBeenCalledWith(instructionsFile);
+			expect(harness.store.systemPromptProfiles.driver).toEqual({ instructionsFile });
+			expect(harness.flush).toHaveBeenCalledTimes(1);
+
+			pressDown(harness.component, 3);
+			harness.component.handleInput("\n");
+			harness.component.handleInput("\x1b[B");
+			harness.component.handleInput("\n");
+
+			expect(render(harness.component)).toContain("Enter the Markdown file path");
+			expect(harness.onOpenMarkdownFile).toHaveBeenCalledTimes(1);
+		} finally {
+			await root.remove();
+		}
 	});
 
 	it("cancels profile creation without persistence, then creates and selects a validated profile", async () => {

@@ -40,17 +40,28 @@ export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
 
 export type PromptProfileField = keyof SystemPromptProfileSetting;
 
-export interface PromptProfileFieldDefinition {
-	readonly field: PromptProfileField;
-	readonly label: string;
-	readonly input: "text" | "toggle";
-}
+export type PromptProfileFieldDefinition =
+	| {
+			readonly field: "prompt" | "instructions";
+			readonly label: string;
+			readonly input: "markdown";
+	  }
+	| {
+			readonly field: "promptFile" | "instructionsFile";
+			readonly label: string;
+			readonly input: "file";
+	  }
+	| {
+			readonly field: "projectContextOnly" | "memory" | "mcpServerInstructions";
+			readonly label: string;
+			readonly input: "toggle";
+	  };
 
 export const PROMPT_PROFILE_FIELD_DEFINITIONS: readonly PromptProfileFieldDefinition[] = [
-	{ field: "prompt", label: "Base prompt", input: "text" },
-	{ field: "promptFile", label: "Base prompt file", input: "text" },
-	{ field: "instructions", label: "Appended instructions", input: "text" },
-	{ field: "instructionsFile", label: "Appended instructions file", input: "text" },
+	{ field: "prompt", label: "Base prompt", input: "markdown" },
+	{ field: "promptFile", label: "Base prompt file", input: "file" },
+	{ field: "instructions", label: "Appended instructions", input: "markdown" },
+	{ field: "instructionsFile", label: "Appended instructions file", input: "file" },
 	{ field: "projectContextOnly", label: "Project context only", input: "toggle" },
 	{ field: "memory", label: "Memory", input: "toggle" },
 	{ field: "mcpServerInstructions", label: "MCP server instructions", input: "toggle" },

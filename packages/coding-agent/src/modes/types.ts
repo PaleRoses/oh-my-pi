@@ -438,6 +438,8 @@ export interface InteractiveModeContext {
 	setToolsExpanded(expanded: boolean): void;
 	toggleThinkingBlockVisibility(): void;
 	openExternalEditor(): void;
+	editMarkdown(content: string): Promise<string | null | undefined>;
+	openMarkdownFile(filePath: string): Promise<boolean | undefined>;
 	registerExtensionShortcuts(): void;
 	handlePlanModeCommand(initialPrompt?: string): Promise<void>;
 	handleVibeModeCommand(initialPrompt?: string): Promise<void>;

@@ -34,7 +34,7 @@ import {
 	readTextFromClipboard,
 } from "../../utils/clipboard";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
-import { getEditorCommand, openInEditor } from "../../utils/external-editor";
+import { getEditorCommand, openFileInEditor, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
 
@@ -1977,39 +1977,54 @@ export class InputController {
 		}
 	}
 
-	async openExternalEditor(): Promise<void> {
+	async #withExternalEditor<T>(
+		run: (editorCmd: string, stdio: [number | "inherit", number | "inherit", number | "inherit"]) => Promise<T>,
+	): Promise<T | undefined> {
 		const editorCmd = getEditorCommand();
 		if (!editorCmd) {
 			this.ctx.showWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.");
-			return;
+			return undefined;
 		}
-
-		const currentText = this.ctx.editor.getExpandedText?.() ?? this.ctx.editor.getText();
 
 		let ttyHandle: fs.FileHandle | null = null;
 		try {
 			ttyHandle = await this.#openEditorTerminalHandle();
 			this.ctx.ui.stop();
-
 			const stdio: [number | "inherit", number | "inherit", number | "inherit"] = ttyHandle
 				? [ttyHandle.fd, ttyHandle.fd, ttyHandle.fd]
 				: ["inherit", "inherit", "inherit"];
-
-			const result = await openInEditor(editorCmd, currentText, { extension: ".omp.md", stdio });
-			if (result !== null) {
-				this.ctx.editor.setText(result);
-			}
+			return await run(editorCmd, stdio);
 		} catch (error) {
 			this.ctx.showWarning(
 				`Failed to open external editor: ${error instanceof Error ? error.message : String(error)}`,
 			);
+			return undefined;
 		} finally {
 			if (ttyHandle) {
 				await ttyHandle.close();
 			}
-
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender();
+		}
+	}
+
+	async editMarkdown(content: string): Promise<string | null | undefined> {
+		return this.#withExternalEditor((editorCmd, stdio) =>
+			openInEditor(editorCmd, content, { extension: ".md", stdio, trimTrailingNewline: false }),
+		);
+	}
+
+	async openMarkdownFile(filePath: string): Promise<boolean | undefined> {
+		return this.#withExternalEditor((editorCmd, stdio) => openFileInEditor(editorCmd, filePath, { stdio }));
+	}
+
+	async openExternalEditor(): Promise<void> {
+		const currentText = this.ctx.editor.getExpandedText?.() ?? this.ctx.editor.getText();
+		const result = await this.#withExternalEditor((editorCmd, stdio) =>
+			openInEditor(editorCmd, currentText, { extension: ".omp.md", stdio }),
+		);
+		if (result !== null && result !== undefined) {
+			this.ctx.editor.setText(result);
 		}
 	}
 

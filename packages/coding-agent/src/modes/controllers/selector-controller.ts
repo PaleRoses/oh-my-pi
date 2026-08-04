@@ -61,6 +61,7 @@ import {
 	toResetUsageAccounts,
 } from "../../slash-commands/helpers/reset-usage";
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
+import { resolveSystemPromptProfileFilePath } from "../../system-prompt-profiles";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -168,6 +169,7 @@ export class SelectorController {
 	showPromptProfileSelector(): void {
 		this.showSelector(done => {
 			const identity = this.ctx.session.effectiveIdentity;
+			const cwd = this.ctx.sessionManager.getCwd();
 			const selector = new PromptProfileSelectorComponent(
 				{
 					profiles: this.ctx.settings.get("systemPromptProfiles"),
@@ -183,11 +185,13 @@ export class SelectorController {
 					onApply: operation =>
 						applyPromptProfileOperation(
 							{
-								cwd: this.ctx.sessionManager.getCwd(),
+								cwd,
 								settings: this.ctx.settings,
 							},
 							operation,
 						),
+					onEditMarkdown: content => this.ctx.editMarkdown(content),
+					onOpenMarkdownFile: source => this.ctx.openMarkdownFile(resolveSystemPromptProfileFilePath(source, cwd)),
 					onClose: done,
 					requestRender: () => this.ctx.ui.requestRender(),
 				},

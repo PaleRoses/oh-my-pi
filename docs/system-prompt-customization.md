@@ -65,14 +65,23 @@ Profiles support these prompt fields:
 - `memory: false` disables automatic recall/retention and memory tools for the profile.
 - `mcpServerInstructions: false` omits MCP server instructions while leaving the configured MCP tools available.
 
-`/prompt` is the compact operator surface for these settings. `/prompt` or
-`/prompt status` shows the active immutable identity plus every configured
-profile and route; `/prompt show <profile>` expands one profile. Mutations use
-`/prompt use <profile> [main|sub]`, `/prompt unroute [main|sub]`,
-`/prompt set <profile> <field> <value>`, `/prompt unset <profile> <field>`,
-and `/prompt remove <profile>`. `set` accepts the exact fields above, creates a
-missing profile, validates the complete configuration (including referenced
-files) before writing, and persists to the active global `config.yml`.
+`/prompt` is the compact operator surface for these settings. Bare `/prompt` or
+`/prompts` opens the keyboard-driven profile menu in the interactive TUI.
+Selecting a configured `promptFile` or `instructionsFile` opens that resolved
+Markdown path directly in `$VISUAL` or `$EDITOR`; inline `prompt` and
+`instructions` content opens in the same external Markdown editor, while
+changing a file path remains a separate action. The edited source is validated
+before the profile configuration is persisted to the active global
+`config.yml`.
+
+Explicit commands and ACP retain the textual surface. `/prompt status` shows
+the active immutable identity plus every configured profile and route;
+`/prompt show <profile>` expands one profile. Mutations use `/prompt use
+<profile> [main|sub]`, `/prompt unroute [main|sub]`, `/prompt set <profile>
+<field> <value>`, `/prompt unset <profile> <field>`, and `/prompt remove
+<profile>`. `set` accepts the exact fields above, creates a missing profile, and
+validates the complete configuration, including referenced files, before
+writing.
 
 OMP resolves files and compiles model globs once at process/session creation. The selected profile ID is recorded in the transcript header, emitted as `<system-prompt-profile id="…">`, and included in the provider prompt-cache key. Model changes that route to another profile are rejected before model mutation; incompatible live session switches leave the current session intact. Relaunch OMP to load a changed prompt identity: `/new` inherits the current profile ID and does not recompile profile content. `/identity` reports the effective role, prompt principal/profile/source, model, session ID, memory permission/backend, and active Hindsight bank scope.
 

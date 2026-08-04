@@ -25,13 +25,30 @@ export function getEditorCommand(): string | undefined {
 	return undefined;
 }
 
-export interface OpenInEditorOptions {
-	/** File extension for the temp file (default: ".md"). */
-	extension?: string;
+export interface OpenFileInEditorOptions {
 	/** Custom stdio configuration (default: all "inherit"). */
 	stdio?: [number | "inherit", number | "inherit", number | "inherit"];
+}
+
+export interface OpenInEditorOptions extends OpenFileInEditorOptions {
+	/** File extension for the temp file (default: ".md"). */
+	extension?: string;
 	/** Keep the file's trailing newline instead of trimming it from the returned text. */
 	trimTrailingNewline?: boolean;
+}
+
+export async function openFileInEditor(
+	editorCmd: string,
+	filePath: string,
+	options?: OpenFileInEditorOptions,
+): Promise<boolean> {
+	const [editor, ...editorArgs] = editorCmd.split(" ");
+	const stdio = options?.stdio ?? ["inherit", "inherit", "inherit"];
+	const child = spawn(editor, [...editorArgs, filePath], { stdio, shell: process.platform === "win32" });
+	const { promise, reject, resolve } = Promise.withResolvers<number>();
+	child.once("exit", (code, signal) => resolve(code ?? (signal ? -1 : 0)));
+	child.once("error", error => reject(error));
+	return (await promise) === 0;
 }
 
 /**
@@ -51,23 +68,14 @@ export async function openInEditor(
 	try {
 		await Bun.write(tmpFile, content);
 
-		const [editor, ...editorArgs] = editorCmd.split(" ");
-		const stdio = options?.stdio ?? ["inherit", "inherit", "inherit"];
+		const completed = await openFileInEditor(editorCmd, tmpFile, { stdio: options?.stdio });
 
-		const child = spawn(editor, [...editorArgs, tmpFile], { stdio, shell: process.platform === "win32" });
-		const { promise, reject, resolve } = Promise.withResolvers<number>();
-		child.once("exit", (code, signal) => resolve(code ?? (signal ? -1 : 0)));
-		child.once("error", error => reject(error));
-		const exitCode = await promise;
-
-		if (exitCode === 0) {
-			const text = await Bun.file(tmpFile).text();
-			if (options?.trimTrailingNewline === false) {
-				return text;
-			}
-			return text.replace(/\n$/, "");
+		if (!completed) return null;
+		const text = await Bun.file(tmpFile).text();
+		if (options?.trimTrailingNewline === false) {
+			return text;
 		}
-		return null;
+		return text.replace(/\n$/, "");
 	} finally {
 		try {
 			await fs.rm(tmpFile, { force: true });

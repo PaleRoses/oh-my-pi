@@ -39,18 +39,22 @@ export interface PromptProfileSelectorModel extends PromptProfileConfiguration {
 
 export interface PromptProfileSelectorCallbacks {
 	readonly onApply: (operation: PromptProfileOperation) => Promise<PromptProfileUpdateReceipt>;
+	readonly onEditMarkdown: (content: string) => Promise<string | null | undefined>;
+	readonly onOpenMarkdownFile: (source: string) => Promise<boolean | undefined>;
 	readonly onClose: () => void;
 	readonly requestRender: () => void;
 }
+
+type PromptProfileFileDefinition = Extract<PromptProfileFieldDefinition, { readonly input: "file" }>;
 
 type PromptProfileSelectorScreen =
 	| { readonly type: "home" }
 	| { readonly type: "profile"; readonly profileId: string }
 	| { readonly type: "field"; readonly profileId: string; readonly definition: PromptProfileFieldDefinition }
 	| {
-			readonly type: "editText";
+			readonly type: "editPath";
 			readonly profileId: string;
-			readonly definition: PromptProfileFieldDefinition;
+			readonly definition: PromptProfileFileDefinition;
 			readonly value: string;
 	  }
 	| { readonly type: "create"; readonly value: string }
@@ -71,6 +75,7 @@ interface PromptProfileSelectorState {
 type PromptProfileSelectorEvent =
 	| { readonly type: "navigate"; readonly screen: PromptProfileSelectorScreen }
 	| { readonly type: "operationStarted"; readonly screen: PromptProfileSelectorScreen }
+	| { readonly type: "operationCancelled"; readonly screen: PromptProfileSelectorScreen }
 	| {
 			readonly type: "operationSucceeded";
 			readonly receipt: PromptProfileUpdateReceipt;
@@ -94,6 +99,8 @@ function reducePromptProfileSelectorState(
 			return { ...state, screen: event.screen, notice: undefined };
 		case "operationStarted":
 			return { ...state, screen: event.screen, notice: undefined, busy: true };
+		case "operationCancelled":
+			return { ...state, screen: event.screen, busy: false };
 		case "operationSucceeded":
 			return {
 				model: { ...state.model, ...event.receipt.configuration },
@@ -181,11 +188,6 @@ function sortedProfileIds(model: PromptProfileSelectorModel): string[] {
 	});
 }
 
-function textFieldInitialValue(profile: SystemPromptProfileSetting, field: PromptProfileField): string {
-	const value = profileFieldValue(profile, field);
-	return typeof value === "string" && !/[\r\n]/.test(value) ? value : "";
-}
-
 function isProfileReferenced(model: PromptProfileSelectorModel, profileId: string): boolean {
 	return model.routes.some(route => route.deny !== true && route.profile === profileId);
 }
@@ -246,6 +248,28 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		}
 	}
 
+	async #editAndApply(
+		screen: Extract<PromptProfileSelectorScreen, { type: "field" }>,
+		edit: () => Promise<PromptProfileOperation | undefined>,
+	): Promise<void> {
+		this.#dispatch({ type: "operationStarted", screen });
+		try {
+			const operation = await edit();
+			if (operation === undefined) {
+				this.#dispatch({ type: "operationCancelled", screen });
+				return;
+			}
+			const receipt = await this.#callbacks.onApply(operation);
+			this.#dispatch({
+				type: "operationSucceeded",
+				receipt,
+				screen: { type: "profile", profileId: screen.profileId },
+			});
+		} catch (error) {
+			this.#dispatch({ type: "operationFailed", message: errorText(error) });
+		}
+	}
+
 	#renderState(): void {
 		this.clear();
 		this.#interactive = undefined;
@@ -273,7 +297,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 			case "profile":
 				return `Profile: ${this.#state.screen.profileId}`;
 			case "field":
-			case "editText":
+			case "editPath":
 				return `${this.#state.screen.profileId}: ${this.#state.screen.definition.label}`;
 			case "create":
 				return "Create system prompt profile";
@@ -316,8 +340,8 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 				return [this.#profileSelector(this.#state.screen.profileId)];
 			case "field":
 				return [this.#fieldSelector(this.#state.screen.profileId, this.#state.screen.definition)];
-			case "editText":
-				return this.#textInput(this.#state.screen);
+			case "editPath":
+				return this.#pathInput(this.#state.screen);
 			case "create":
 				return this.#createInput(this.#state.screen.value);
 			case "route":
@@ -393,6 +417,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 	#fieldSelector(profileId: string, definition: PromptProfileFieldDefinition): SelectList {
 		const profile = this.#state.model.profiles[profileId] ?? {};
 		const back = () => this.#navigate({ type: "profile", profileId });
+		const fieldScreen = { type: "field", profileId, definition } as const;
 		const restore: SelectorAction = {
 			id: "restore",
 			label: "Restore default",
@@ -404,25 +429,72 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 				);
 			},
 		};
-		const actions: readonly SelectorAction[] =
-			definition.input === "text"
-				? [
+		switch (definition.input) {
+			case "markdown": {
+				const content = profile[definition.field] ?? "";
+				return this.#actionSelector(
+					[
 						{
-							id: "edit",
-							label: "Edit value",
-							description: describeProfileField(profile, definition.field),
+							id: "open",
+							label: content.length === 0 ? "Create inline Markdown" : "Open Markdown editor",
+							description: content.length === 0 ? "Stored in global config" : `inline (${content.length} chars)`,
+							run: () => {
+								void this.#editAndApply(fieldScreen, async () => {
+									const edited = await this.#callbacks.onEditMarkdown(content);
+									if (edited === null || edited === undefined) return undefined;
+									return { type: "setField", profileId, field: definition.field, value: edited };
+								});
+							},
+						},
+						restore,
+						{ id: "back", label: "Back", run: back },
+					],
+					back,
+				);
+			}
+			case "file": {
+				const source = profile[definition.field];
+				const openAction: SelectorAction[] =
+					source === undefined
+						? []
+						: [
+								{
+									id: "open",
+									label: "Open Markdown",
+									description: shortenPath(source),
+									run: () => {
+										void this.#editAndApply(fieldScreen, async () => {
+											const opened = await this.#callbacks.onOpenMarkdownFile(source);
+											if (opened !== true) return undefined;
+											return { type: "setField", profileId, field: definition.field, value: source };
+										});
+									},
+								},
+							];
+				return this.#actionSelector(
+					[
+						...openAction,
+						{
+							id: "path",
+							label: source === undefined ? "Set file path" : "Change file path",
+							description: source === undefined ? "Choose an existing Markdown file" : shortenPath(source),
 							run: () =>
 								this.#navigate({
-									type: "editText",
+									type: "editPath",
 									profileId,
 									definition,
-									value: textFieldInitialValue(profile, definition.field),
+									value: source ?? "",
 								}),
 						},
 						restore,
 						{ id: "back", label: "Back", run: back },
-					]
-				: [
+					],
+					back,
+				);
+			}
+			case "toggle":
+				return this.#actionSelector(
+					[
 						{
 							id: "on",
 							label: "On",
@@ -445,11 +517,13 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 						},
 						restore,
 						{ id: "back", label: "Back", run: back },
-					];
-		return this.#actionSelector(actions, back);
+					],
+					back,
+				);
+		}
 	}
 
-	#textInput(screen: Extract<PromptProfileSelectorScreen, { type: "editText" }>): Component[] {
+	#pathInput(screen: Extract<PromptProfileSelectorScreen, { type: "editPath" }>): Component[] {
 		const input = new Input();
 		input.setValue(screen.value);
 		input.setUseTerminalCursor(this.#useTerminalCursor);
@@ -463,16 +537,9 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		input.onEscape = () =>
 			this.#navigate({ type: "field", profileId: screen.profileId, definition: screen.definition });
 		this.#interactive = input;
-		const profile = this.#state.model.profiles[screen.profileId] ?? {};
-		const currentValue = profileFieldValue(profile, screen.definition.field);
 		return [
 			new Text(
-				theme.fg(
-					"dim",
-					typeof currentValue === "string" && /[\r\n]/.test(currentValue)
-						? "Current value is multiline; enter a replacement."
-						: "Enter a non-empty value.",
-				),
+				theme.fg("dim", "Enter the Markdown file path. Relative paths resolve from the working directory."),
 				1,
 				0,
 			),
@@ -565,7 +632,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		switch (this.#state.screen.type) {
 			case "home":
 				return "↑↓ navigate  enter select  esc close";
-			case "editText":
+			case "editPath":
 			case "create":
 				return "enter save  esc back";
 			default:

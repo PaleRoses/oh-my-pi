@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "bun:test";
+import * as path from "node:path";
 import { PromptProfileSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/prompt-profile-selector";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -47,5 +48,54 @@ describe("SelectorController prompt profiles", () => {
 
 		expect(children).toEqual([editor]);
 		expect(setFocus).toHaveBeenLastCalledWith(editor);
+	});
+
+	it("resolves and opens configured Markdown through the interactive editor owner", async () => {
+		const editor = { id: "editor" };
+		const children: unknown[] = [editor];
+		const opened = Promise.withResolvers<void>();
+		const openMarkdownFile = vi.fn(async () => {
+			opened.resolve();
+			return false;
+		});
+		const ctx = {
+			editMarkdown: vi.fn(),
+			openMarkdownFile,
+			editor,
+			editorContainer: {
+				children,
+				clear: () => children.splice(0),
+				addChild: (child: unknown) => children.push(child),
+			},
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			settings: {
+				get: (settingPath: string) =>
+					settingPath === "systemPromptProfiles" ? { driver: { instructionsFile: "prompts/driver.md" } } : [],
+			},
+			sessionManager: { getCwd: () => "/workspace" },
+			session: {
+				effectiveIdentity: {
+					role: "main",
+					prompt: {
+						profileId: "driver",
+						principal: "maintained-omp-prompt",
+						source: "maintained-omp-prompt",
+					},
+				},
+			},
+		} as unknown as InteractiveModeContext;
+		const controller = new SelectorController(ctx);
+
+		controller.showPromptProfileSelector();
+		const selector = children[0] as PromptProfileSelectorComponent;
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		selector.handleInput("\n");
+		await opened.promise;
+
+		expect(openMarkdownFile).toHaveBeenCalledWith(path.resolve("/workspace", "prompts/driver.md"));
 	});
 });

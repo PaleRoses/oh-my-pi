@@ -4956,6 +4956,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#inputController.openExternalEditor();
 	}
 
+	editMarkdown(content: string): Promise<string | null | undefined> {
+		return this.#inputController.editMarkdown(content);
+	}
+
+	openMarkdownFile(filePath: string): Promise<boolean | undefined> {
+		return this.#inputController.openMarkdownFile(filePath);
+	}
+
 	registerExtensionShortcuts(): void {
 		this.#inputController.registerExtensionShortcuts();
 	}
