@@ -13,6 +13,7 @@ const CONFIG_KEYS = {
 } as const;
 
 const FORK_VALIDATION_TESTS = [
+	"test/slash-commands/prompt.test.ts",
 	"test/system-prompt-profiles.test.ts",
 	"test/system-prompt-profiles-sdk.test.ts",
 	"test/system-prompt-model.test.ts",

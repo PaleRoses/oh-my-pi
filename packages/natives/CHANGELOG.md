@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [17.2.7] - 2026-08-03
+
+### Added
+
+- Added missing procps/BSD output format specifiers and aliases to the in-process `ps` shell builtin, including support for columns like `tpgid`, `pri`, `flags`, `wchan`, and various user/group/time fields.
+- Updated `ps -j` to include the TPGID column, `ps -l` to display the single-character S column, and the STAT column to support the `+` foreground process group flag.
+
+## [17.2.6] - 2026-08-03
+
+### Added
+
+- Added non-blocking, process-owned `FileLock` bindings using abstract Unix sockets on Linux, named mutexes on Windows, and persistent `flock(2)` sidecars on other Unix platforms.
+
 ## [17.2.5] - 2026-08-03
 
 ### Breaking Changes
