@@ -33,6 +33,7 @@ import {
 	PERMISSION_REQUIRED_TOOLS,
 } from "./acp-permission-gate";
 import type { ClientBridge, ClientBridgePermissionOutcome } from "./client-bridge";
+import type { EffectiveSessionIdentity } from "./identity";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -81,8 +82,7 @@ interface SessionToolsOptions {
 	xdev?: XdevState;
 	setActiveToolNames?: (names: Iterable<string>) => void;
 	baseSystemPrompt: string[];
-	systemPromptProfileId?: string;
-	memoryEnabled?: boolean;
+	identity: EffectiveSessionIdentity;
 	skills?: Skill[];
 	skillWarnings?: SkillWarning[];
 	skillsSettings?: SkillsSettings;
@@ -176,6 +176,20 @@ interface XdevMountNoticeDetails {
 	removed: string[];
 }
 
+export interface ModelChangeSyncSnapshot {
+	readonly activeToolNames: string[];
+	readonly agentTools: AgentTool[];
+	readonly mountedToolNames: string[];
+	readonly registry: Map<string, AgentTool>;
+	readonly builtInToolNames: Set<string>;
+	readonly runtimeSelectedToolNames: Set<string> | undefined;
+	readonly baseSystemPrompt: string[];
+	readonly lastAppliedToolSignature: string | undefined;
+	readonly basePromptXdevNames: Set<string>;
+	readonly promptModelKey: string | undefined;
+	readonly pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
+}
+
 /** Owns tool registration, presentation, prompt rebuilding, skills, and permissions. */
 export class SessionTools {
 	readonly #host: SessionToolsHost;
@@ -211,8 +225,7 @@ export class SessionTools {
 	#basePromptXdevNames: ReadonlySet<string> = new Set();
 	#mcpRefreshTail: Promise<void> = Promise.resolve();
 	#promptModelKey: string | undefined;
-	#systemPromptProfileId: string | undefined;
-	readonly #memoryEnabled: boolean;
+	readonly #identity: EffectiveSessionIdentity;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
 	#getLocalCalendarDate: () => string;
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
@@ -244,8 +257,7 @@ export class SessionTools {
 		if (this.#xdev) this.#xdev.decorateExecution = tool => this.#wrapToolForAcpPermission(tool);
 		this.#setActiveToolNames = options.setActiveToolNames;
 		this.#baseSystemPrompt = options.baseSystemPrompt;
-		this.#systemPromptProfileId = options.systemPromptProfileId;
-		this.#memoryEnabled = options.memoryEnabled !== false;
+		this.#identity = options.identity;
 		this.#skills = options.skills ?? [];
 		this.#skillWarnings = options.skillWarnings ?? [];
 		this.#skillsSettings = options.skillsSettings;
@@ -414,8 +426,8 @@ export class SessionTools {
 				: usesCodexTaskPrompt(model)
 					? "task-policy:gpt-5.6"
 					: "task-policy:default";
-		return this.#systemPromptProfileId
-			? `system-prompt-profile:${this.#systemPromptProfileId}:${modelKey ?? "model:none"}`
+		return this.#identity.prompt.profileId
+			? `system-prompt-profile:${this.#identity.prompt.profileId}:${modelKey ?? "model:none"}`
 			: modelKey;
 	}
 
@@ -429,6 +441,51 @@ export class SessionTools {
 		});
 	}
 
+	captureModelChangeSyncSnapshot(): ModelChangeSyncSnapshot {
+		const pending = this.#pendingXdevMountDelta;
+		return {
+			activeToolNames: this.getActiveToolNames(),
+			agentTools: [...this.#host.agent.state.tools],
+			mountedToolNames: [...(this.#xdev?.mountedNames ?? [])],
+			registry: new Map(this.#toolRegistry),
+			builtInToolNames: new Set(this.#builtInToolNames),
+			runtimeSelectedToolNames: this.#runtimeSelectedToolNames ? new Set(this.#runtimeSelectedToolNames) : undefined,
+			baseSystemPrompt: [...this.#baseSystemPrompt],
+			lastAppliedToolSignature: this.#lastAppliedToolSignature,
+			basePromptXdevNames: new Set(this.#basePromptXdevNames),
+			promptModelKey: this.#promptModelKey,
+			pendingXdevMountDelta: pending
+				? { added: new Set(pending.added), removed: new Set(pending.removed) }
+				: undefined,
+		};
+	}
+
+	restoreModelChangeSyncSnapshot(snapshot: ModelChangeSyncSnapshot): void {
+		this.#toolRegistry.clear();
+		for (const [name, tool] of snapshot.registry) this.#toolRegistry.set(name, tool);
+		this.#builtInToolNames = new Set(snapshot.builtInToolNames);
+		this.#runtimeSelectedToolNames = snapshot.runtimeSelectedToolNames
+			? new Set(snapshot.runtimeSelectedToolNames)
+			: undefined;
+		this.#baseSystemPrompt = [...snapshot.baseSystemPrompt];
+		this.#lastAppliedToolSignature = snapshot.lastAppliedToolSignature;
+		this.#basePromptXdevNames = new Set(snapshot.basePromptXdevNames);
+		this.#promptModelKey = snapshot.promptModelKey;
+		this.#pendingXdevMountDelta = snapshot.pendingXdevMountDelta
+			? {
+					added: new Set(snapshot.pendingXdevMountDelta.added),
+					removed: new Set(snapshot.pendingXdevMountDelta.removed),
+				}
+			: undefined;
+		this.#setMountedNames(snapshot.mountedToolNames);
+		this.#setActiveToolNames?.(snapshot.activeToolNames);
+		this.#host.agent.setTools(snapshot.agentTools);
+		const readTool = this.#toolRegistry.get("read") as
+			| { syncInspectImageState?: (available?: boolean) => boolean }
+			| undefined;
+		readTool?.syncInspectImageState?.(snapshot.activeToolNames.includes("inspect_image"));
+	}
+
 	/** Rebuilds model-dependent tool prompts after a model change. */
 	async syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
 		const currentEditMode = this.resolveActiveEditMode();
@@ -438,6 +495,9 @@ export class SessionTools {
 		if (editModeChanged || modelChanged) {
 			await this.refreshBaseSystemPrompt();
 		}
+		// inspect_image auto mode keys off model image capability, so a model
+		// switch can flip the tool either way.
+		await this.reconcileInspectImageAfterModelChange();
 		const computerExpected = this.#host.settings.get("computer.enabled");
 		const computerActive = this.getEnabledToolNames().includes("computer");
 		if (computerExpected && !computerActive) {
@@ -452,10 +512,6 @@ export class SessionTools {
 		} else if (computerExpected) {
 			this.#logComputerState("Computer tool retained after model change", true);
 		}
-
-		// inspect_image auto mode keys off model image capability, so a model
-		// switch can flip the tool either way.
-		await this.reconcileInspectImageAfterModelChange();
 	}
 
 	/** Enabled MCP tools in their current presentation partition. */
@@ -1129,7 +1185,7 @@ export class SessionTools {
 
 	/** Applies one-turn memory prompt injection before an agent run. */
 	async buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
-		if (!this.#memoryEnabled) return this.#baseSystemPrompt;
+		if (this.#identity.memory.status !== "enabled") return this.#baseSystemPrompt;
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
 

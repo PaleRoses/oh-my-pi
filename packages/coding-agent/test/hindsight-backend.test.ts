@@ -13,7 +13,9 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { hindsightBackend, reloadMentalModelsForSession } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { createEffectiveSessionIdentity, snapshotAgentIdentity } from "@oh-my-pi/pi-coding-agent/session/identity";
 
 interface FakeSessionDeps {
 	sessionId: string | null;
@@ -26,7 +28,14 @@ function makeFakeSession(deps: FakeSessionDeps) {
 	const listeners = new Set<AgentSessionEventListener>();
 	const entries = deps.entries ?? [];
 	let hindsightState: HindsightSessionState | undefined;
+	const effectiveIdentity = createEffectiveSessionIdentity({
+		role: "main",
+		promptSource: "maintained-omp-prompt",
+		memoryEnabled: true,
+	});
 	const session = {
+		effectiveIdentity,
+		model: undefined,
 		sessionId: deps.sessionId,
 		settings: deps.settings ?? Settings.isolated(),
 		sessionManager: {
@@ -62,6 +71,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 			return () => listeners.delete(listener);
 		},
 		refreshBaseSystemPrompt: vi.fn().mockResolvedValue(undefined),
+		emitNotice: vi.fn(),
 		getHindsightSessionState: () => hindsightState,
 		setHindsightSessionState(state: HindsightSessionState | undefined) {
 			const previous = hindsightState;
@@ -539,10 +549,12 @@ describe("hindsightBackend.clear", () => {
 describe("hindsightBackend live bank routing", () => {
 	beforeEach(() => {
 		resetSettingsForTest();
+		AgentRegistry.resetGlobalForTests();
 	});
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		AgentRegistry.resetGlobalForTests();
 	});
 
 	// Regression for issue #1902: changing `hindsight.bankId` during a live
@@ -584,6 +596,121 @@ describe("hindsightBackend live bank routing", () => {
 		expect(next?.bankId).toBe("Minigames");
 		// Must be a brand-new state — the old one was disposed.
 		expect(next).not.toBe(initial);
+		expect(session.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+	});
+
+	it("moves live subagent aliases with the parent while preserving queued retain routes", async () => {
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "global",
+		});
+		settings.set("hindsight.bankId", "omp");
+		const parentSession = makeFakeSession({ sessionId: "parent-live-route", settings });
+		await hindsightBackend.start({
+			session: parentSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const initial = parentSession.getHindsightSessionState();
+		expect(initial?.bankId).toBe("omp");
+
+		const childSession = makeFakeSession({ sessionId: "child-live-route", settings });
+		await hindsightBackend.start({
+			session: childSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 1,
+			parentHindsightSessionState: initial,
+		});
+		AgentRegistry.global().register({
+			id: "child-live-route",
+			displayName: "Child live route",
+			kind: "sub",
+			parentId: "Main",
+			session: childSession as never,
+		});
+		const alias = childSession.getHindsightSessionState();
+		expect(alias?.aliasOf).toBe(initial);
+		alias!.enqueueRetain("queued before parent route change");
+
+		settings.set("hindsight.bankId", "Minigames");
+		await Bun.sleep(0);
+
+		const next = parentSession.getHindsightSessionState();
+		expect(next).toBeDefined();
+		expect(next).not.toBe(initial);
+		expect(alias?.aliasOf).toBe(next);
+		expect(alias?.bankId).toBe("Minigames");
+		expect(alias?.client).toBe(next?.client);
+		expect(alias?.config).toBe(next?.config);
+		expect(alias?.banksSet).toBe(next?.banksSet);
+		expect(snapshotAgentIdentity(childSession as never).memory.hindsight).toMatchObject({
+			status: "active",
+			bank: "Minigames",
+			scope: "global",
+		});
+		expect(parentSession.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(childSession.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+
+		alias!.enqueueRetain("queued after parent route change");
+		await alias!.flushRetainQueue();
+
+		const retainedByBank = new Map(
+			retainBatchSpy.mock.calls.map(([bankId, items]) => [bankId, items.map(item => item.content)]),
+		);
+		expect(retainedByBank.get("omp")).toEqual(["queued before parent route change"]);
+		expect(retainedByBank.get("Minigames")).toEqual(["queued after parent route change"]);
+	});
+
+	it("keeps alias reflect on one captured route while the parent route changes", async () => {
+		const createBankSpy = vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const reflectSpy = vi.spyOn(HindsightApi.prototype, "reflect").mockResolvedValue({ text: "old route" } as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "global",
+		});
+		settings.set("hindsight.bankId", "omp");
+		const parentSession = makeFakeSession({ sessionId: "parent-reflect-route", settings });
+		await hindsightBackend.start({
+			session: parentSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const initial = parentSession.getHindsightSessionState();
+		const childSession = makeFakeSession({ sessionId: "child-reflect-route", settings });
+		await hindsightBackend.start({
+			session: childSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 1,
+			parentHindsightSessionState: initial,
+		});
+		const alias = childSession.getHindsightSessionState();
+		alias!.banksSet.clear();
+		createBankSpy.mockClear();
+		createBankSpy.mockImplementation(async bankId => {
+			if (bankId === "omp") {
+				settings.set("hindsight.bankId", "Minigames");
+				await Bun.sleep(0);
+			}
+			return {} as never;
+		});
+
+		await expect(alias!.reflect("where did this run?")).resolves.toBe("old route");
+
+		expect(createBankSpy).toHaveBeenCalledWith("omp", expect.anything());
+		expect(reflectSpy).toHaveBeenCalledWith("omp", "where did this run?", expect.anything());
+		expect(alias!.bankId).toBe("Minigames");
 	});
 
 	// Same regression, exercising the `hindsight.scoping` axis: switching

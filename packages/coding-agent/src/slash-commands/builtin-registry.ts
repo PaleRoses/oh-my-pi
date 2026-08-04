@@ -42,6 +42,7 @@ import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-ta
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
+import { formatAgentIdentityReport, snapshotAgentIdentity } from "../session/identity";
 import { resolveResumableSession } from "../session/session-listing";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import type { ComputerTool } from "../tools/computer";
@@ -62,6 +63,7 @@ import { formatDuration } from "./helpers/format";
 import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSlashCommand, parseSubcommand, usage } from "./helpers/parse";
+import { handlePromptProfileCommand, PROMPT_PROFILE_SUBCOMMANDS } from "./helpers/prompt-profile";
 import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
 import { handleSecurityCommand } from "./helpers/security";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
@@ -578,6 +580,31 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			runtime.ctx.showModelSelector();
 			runtime.ctx.editor.setText("");
 		},
+	},
+	{
+		name: "identity",
+		description: "Show this agent's identity and memory scope",
+		acpDescription: "Show this agent's identity and memory scope",
+		getTuiAutocompleteDescription: runtime => {
+			const identity = snapshotAgentIdentity(runtime.ctx.session);
+			return `Identity: ${identity.prompt.principal}`;
+		},
+		handle: async (_command, runtime) => {
+			await runtime.output(formatAgentIdentityReport(snapshotAgentIdentity(runtime.session)));
+			return commandConsumed();
+		},
+	},
+	{
+		name: "prompt",
+		aliases: ["prompts"],
+		description: "Inspect and configure system-prompt profiles",
+		acpDescription: "Manage system-prompt profiles",
+		acpInputHint: "[status|show|use|unroute|set|unset|remove|help]",
+		subcommands: PROMPT_PROFILE_SUBCOMMANDS,
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime =>
+			`Prompt: ${runtime.ctx.session.effectiveIdentity.prompt.profileId ?? "default"}`,
+		handle: handlePromptProfileCommand,
 	},
 	{
 		name: "switch",

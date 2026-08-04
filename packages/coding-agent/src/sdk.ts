@@ -144,6 +144,12 @@ import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/
 import type { AuthStorage } from "./session/auth-storage";
 import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import {
+	createEffectiveSessionIdentity,
+	deriveAgentIdentitySnapshot,
+	formatAgentIdentitySystemPrompt,
+	snapshotAgentIdentity,
+} from "./session/identity";
+import {
 	type CustomMessage,
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
@@ -1244,6 +1250,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 }
 
 async function createAgentSessionScoped(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
+	const structurallySubagent = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix !== undefined;
+	if (options.agentKind === "main" && structurallySubagent) {
+		throw new Error('agentKind "main" contradicts subagent task metadata.');
+	}
+	const agentKind = options.agentKind ?? (structurallySubagent ? ("sub" as const) : ("main" as const));
 	const cwd = options.cwd ?? getProjectDir();
 	const agentDir = options.agentDir ?? getAgentDir();
 	const eventBus = options.eventBus ?? new EventBus();
@@ -1666,9 +1677,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
-	const agentKind =
-		options.agentKind ??
-		((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? ("sub" as const) : ("main" as const));
 	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
 	let registeredAgentRef: AgentRef | undefined;
 	/**
@@ -2572,7 +2580,25 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			selectedSystemPromptProfile = decision.type === "profile" ? decision.profile : undefined;
 			sessionManager.pinSystemPromptProfile(selectedSystemPromptProfile?.id);
 		}
-		const profileMemoryEnabled = selectedSystemPromptProfile?.memoryEnabled ?? true;
+		const effectivePromptSource =
+			options.systemPrompt !== undefined ||
+			(options.customSystemPrompt !== undefined && options.customSystemPromptSource !== "discovered")
+				? "explicit-system-prompt"
+				: selectedSystemPromptProfile?.prompt !== undefined ||
+						selectedSystemPromptProfile?.instructions !== undefined
+					? "system-prompt-profile"
+					: selectedSystemPromptProfile === undefined &&
+							options.customSystemPrompt !== undefined &&
+							options.customSystemPromptSource === "discovered"
+						? "discovered-system-prompt"
+						: "maintained-omp-prompt";
+		const effectiveIdentity = createEffectiveSessionIdentity({
+			role: agentKind,
+			promptSource: effectivePromptSource,
+			memoryEnabled: selectedSystemPromptProfile?.memoryEnabled ?? true,
+			...(selectedSystemPromptProfile ? { profileId: selectedSystemPromptProfile.id } : {}),
+		});
+		const profileMemoryEnabled = effectiveIdentity.memory.status === "enabled";
 		const profileMcpServerInstructionsEnabled = selectedSystemPromptProfile?.mcpServerInstructionsEnabled ?? true;
 		if (!profileMemoryEnabled) {
 			const memoryToolNames = new Set<string>([...MEMORY_BACKEND_TOOL_NAMES, "manage_skill"]);
@@ -3013,25 +3039,32 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				activeRepoContext,
 			});
 
-			const withProfileIdentity = (result: BuildSystemPromptResult): BuildSystemPromptResult =>
-				selectedSystemPromptProfile
-					? {
-							...result,
-							systemPrompt: [
-								...result.systemPrompt,
-								...(selectedSystemPromptProfile.instructions ? [selectedSystemPromptProfile.instructions] : []),
-								`<system-prompt-profile id="${selectedSystemPromptProfile.id}" />`,
-							],
-						}
-					: result;
+			const withRuntimeIdentity = (result: BuildSystemPromptResult): BuildSystemPromptResult => {
+				const identity = hasSession
+					? snapshotAgentIdentity(session)
+					: deriveAgentIdentitySnapshot({
+							effectiveIdentity,
+							model,
+							sessionId: sessionManager.getSessionId() ?? "initializing",
+							memoryBackend: settings.get("memory.backend"),
+						});
+				return {
+					...result,
+					systemPrompt: [
+						...result.systemPrompt,
+						...(selectedSystemPromptProfile?.instructions ? [selectedSystemPromptProfile.instructions] : []),
+						formatAgentIdentitySystemPrompt(identity),
+					],
+				};
+			};
 			if (options.systemPrompt === undefined) {
-				return withProfileIdentity(defaultPrompt);
+				return withRuntimeIdentity(defaultPrompt);
 			}
 			const customPrompt =
 				typeof options.systemPrompt === "function"
 					? options.systemPrompt(defaultPrompt.systemPrompt)
 					: options.systemPrompt;
-			return withProfileIdentity({
+			return withRuntimeIdentity({
 				systemPrompt: typeof customPrompt === "string" ? [customPrompt] : customPrompt,
 			});
 		};
@@ -3049,6 +3082,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			!explicitlyRequestedToolNames.includes("yield")
 		) {
 			explicitlyRequestedToolNames.push("yield");
+		}
+		// Interactive sessions always retain their user-input boundary. An explicit
+		// tool list narrows ordinary capabilities, but must not make clarification
+		// contracts in loaded skills impossible to satisfy.
+		if (
+			!restrictToolNames &&
+			explicitlyRequestedToolNames &&
+			builtInToolNames.includes("ask") &&
+			!explicitlyRequestedToolNames.includes("ask")
+		) {
+			explicitlyRequestedToolNames.push("ask");
 		}
 		// Auto-learn builtins are force-included into the registry by `createTools`
 		// for enabled top-level sessions (tools/index.ts), but — like `yield` above —
@@ -3475,7 +3519,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			toolRegistry,
 			memoryAgentDir: agentDir,
 			memoryTaskDepth: taskDepth,
-			memoryEnabled: profileMemoryEnabled,
 			createMemoryTools:
 				restrictToolNames || !profileMemoryEnabled
 					? undefined
@@ -3510,26 +3553,28 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
 			setActiveToolNames,
 			ensureWriteRegistered,
-			getMcpServerInstructions: mcpManager
-				? () => {
-						const raw = mcpManager.getServerInstructions();
-						if (!raw || raw.size === 0) return raw;
-						const out = new Map<string, string>();
-						for (const [name, text] of raw) {
-							out.set(
-								name,
-								text.length > MAX_MCP_INSTRUCTIONS_LENGTH ? text.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH) : text,
-							);
+			getMcpServerInstructions:
+				profileMcpServerInstructionsEnabled && mcpManager
+					? () => {
+							const raw = mcpManager.getServerInstructions();
+							if (!raw || raw.size === 0) return raw;
+							const out = new Map<string, string>();
+							for (const [name, text] of raw) {
+								out.set(
+									name,
+									text.length > MAX_MCP_INSTRUCTIONS_LENGTH
+										? text.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH)
+										: text,
+								);
+							}
+							return out;
 						}
-						return out;
-					}
-				: undefined,
+					: undefined,
 			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
-			agentKind,
-			systemPromptProfileId: selectedSystemPromptProfile?.id,
+			effectiveIdentity,
 			assertSystemPromptProfileCompatible: targetModel =>
 				systemPromptProfileResolver.assertCompatible(selectedSystemPromptProfile?.id, {
 					agentKind,
@@ -3728,6 +3773,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 			});
+			if (memoryBackend.id === "hindsight") await session.refreshBaseSystemPrompt();
 		};
 
 		const runAutoLearnCapture = createAutoLearnCaptureRunner({
@@ -3780,10 +3826,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		});
 
 		// Auto-learn can immediately trigger a private capture after the first real
-		// stop. When a memory backend is selected, install that backend's
-		// per-session state first so the capture turn's `learn` tool observes the
-		// same initialized state as normal memory tools. Other sessions keep memory
-		// startup in the background to preserve the existing startup profile.
+		// stop. Hindsight also installs synchronously because its active bank,
+		// project, and scope are part of the provider-facing identity prompt. Other
+		// sessions keep memory startup in the background to preserve the existing
+		// startup profile.
 		//
 		// Gated on `autolearn.enabled` to match the tools: `createTools` builds the
 		// `learn`/`manage_skill` registry ONCE at session start and no settings
@@ -3794,15 +3840,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// mid-session DISABLE. The subscription lives for the session's lifetime; the
 		// reference is intentionally discarded (the listener retains it).
 		if (!restrictToolNames && profileMemoryEnabled) {
-			if (settings.get("autolearn.enabled") && taskDepth === 0) {
+			const autoLearnEnabled = settings.get("autolearn.enabled") && taskDepth === 0;
+			if (autoLearnEnabled || settings.get("memory.backend") === "hindsight") {
 				await logger.time("startMemoryStartupTask", startMemoryBackend);
+			} else {
+				void logger.time("startMemoryStartupTask", startMemoryBackend);
+			}
+			if (autoLearnEnabled) {
 				new AutoLearnController({
 					session,
 					settings,
 					capture: content => session.runAutolearnCapture(signal => runAutoLearnCapture(content, signal)),
 				});
-			} else {
-				void logger.time("startMemoryStartupTask", startMemoryBackend);
 			}
 		}
 

@@ -139,6 +139,7 @@ describe("AgentSession retry fallback", () => {
 		const retryEndEvents: Array<Extract<AgentSessionEvent, { type: "auto_retry_end" }>> = [];
 		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
 		const fallbackSucceededEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>> = [];
+		const renderedPromptModels: string[] = [];
 
 		const mock = createMockModel();
 		const agent = new Agent({
@@ -182,6 +183,12 @@ describe("AgentSession retry fallback", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
+			rebuildSystemPrompt: async () => {
+				const active = session?.model;
+				const rendered = active ? `${active.provider}/${active.id}` : "none";
+				renderedPromptModels.push(rendered);
+				return { systemPrompt: [`model:${rendered}`] };
+			},
 		});
 
 		session.subscribe(event => {
@@ -207,9 +214,16 @@ describe("AgentSession retry fallback", () => {
 			`${firstFallback.provider}/${firstFallback.id}`,
 			`${secondFallback.provider}/${secondFallback.id}`,
 		]);
-		expect(new Set(requestedContexts).size).toBe(1);
+		expect(new Set(requestedContexts.map(serialized => JSON.stringify(JSON.parse(serialized).messages))).size).toBe(
+			1,
+		);
 		expect(session.model?.provider).toBe(secondFallback.provider);
 		expect(session.model?.id).toBe(secondFallback.id);
+		expect(renderedPromptModels).toEqual([
+			`${firstFallback.provider}/${firstFallback.id}`,
+			`${secondFallback.provider}/${secondFallback.id}`,
+		]);
+		expect(session.agent.state.systemPrompt).toEqual([`model:${secondFallback.provider}/${secondFallback.id}`]);
 		expect(retryStartEvents.map(event => event.delayMs)).toEqual([0, 0]);
 		expect(fallbackAppliedEvents).toEqual([
 			{

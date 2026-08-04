@@ -1,7 +1,15 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
+import { formatIdentityModel } from "../session/identity";
 import { type BankScope, ensureBankExists } from "./bank";
-import type { HindsightApi, MemoryItemInput } from "./client";
+import type {
+	HindsightApi,
+	MemoryItemInput,
+	MemoryProvenanceKey,
+	MemoryProvenanceMetadata,
+	MemoryProvenanceSource,
+	RecallResult,
+} from "./client";
 import type { HindsightConfig } from "./config";
 import {
 	composeRecallQuery,
@@ -22,11 +30,25 @@ import { extractMessages } from "./transcript";
 
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
+const RETENTION_METADATA_VALUE_MAX_CHARS = 512;
+
+interface HindsightRouteSnapshot {
+	readonly client: HindsightApi;
+	readonly bankId: string;
+	readonly projectLabel: string;
+	readonly retainTags?: string[];
+	readonly recallTags?: string[];
+	readonly recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	readonly config: HindsightConfig;
+	readonly banksSet: Set<string>;
+}
 
 interface PendingRetainItem {
-	content: string;
-	context?: string;
-	timestamp: Date;
+	readonly content: string;
+	readonly context?: string;
+	readonly timestamp: Date;
+	readonly metadata: Record<string, string>;
+	readonly route: HindsightRouteSnapshot;
 }
 
 interface RecallOutcome {
@@ -34,29 +56,36 @@ interface RecallOutcome {
 	ok: boolean;
 }
 
-export interface HindsightSessionStateOptions {
+interface HindsightSessionStateBaseOptions {
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
-	client: HindsightApi;
-	bankId: string;
-	/** Tags applied to every retain — non-empty in per-project-tagged mode. */
-	retainTags?: string[];
-	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
-	recallTags?: string[];
-	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
-	config: HindsightConfig;
 	session: AgentSession;
-	banksSet: Set<string>;
 	lastRetainedTurn?: number;
 	hasRecalledForFirstTurn?: boolean;
-	/**
-	 * When set, this entry is a subagent alias that reuses the parent's bank,
-	 * scope, config, client, and banksSet. Aliases skip auto-recall and
-	 * auto-retain — those run on the parent only — but the recall/retain/reflect
-	 * tools resolve via the alias so they persist to the same bank as the parent.
-	 */
-	aliasOf?: HindsightSessionState;
 }
+
+interface HindsightPrimarySessionStateOptions extends HindsightSessionStateBaseOptions, HindsightRouteSnapshot {
+	aliasOf?: never;
+}
+
+interface HindsightAliasSessionStateOptions extends HindsightSessionStateBaseOptions {
+	/**
+	 * A subagent alias resolves every operation through the primary parent's
+	 * live state slot. It therefore follows parent bank, scope, config, client,
+	 * tags, and bank cache replacements without rebuilding the child session.
+	 */
+	aliasOf: HindsightSessionState;
+	client?: never;
+	bankId?: never;
+	projectLabel?: never;
+	retainTags?: never;
+	recallTags?: never;
+	recallTagsMatch?: never;
+	config?: never;
+	banksSet?: never;
+}
+
+export type HindsightSessionStateOptions = HindsightPrimarySessionStateOptions | HindsightAliasSessionStateOptions;
 
 /**
  * Debounced batch queue for tool-initiated `retain` calls owned by one
@@ -85,7 +114,14 @@ export class HindsightRetainQueue {
 		if (this.#closed) {
 			throw new Error("Hindsight retain queue is closed.");
 		}
-		this.#items.push({ content, context, timestamp: new Date() });
+		const route = this.#state.captureRoute();
+		this.#items.push({
+			content,
+			context,
+			timestamp: new Date(),
+			metadata: buildRetentionMetadata(this.#state, "agent-retain", route.projectLabel),
+			route,
+		});
 
 		if (this.#items.length >= RETAIN_FLUSH_BATCH_SIZE) {
 			void this.flush();
@@ -148,33 +184,47 @@ export class HindsightRetainQueue {
 			return;
 		}
 
-		try {
-			await ensureBankExists(state.client, state.bankId, state.config, state.banksSet);
-			const batch: MemoryItemInput[] = items.map(item => ({
-				content: item.content,
-				context: item.context ?? state.config.retainContext,
-				metadata: { session_id: sessionId },
-				tags: state.retainTags,
-				timestamp: item.timestamp,
-			}));
-			await state.client.retainBatch(state.bankId, batch, { async: true });
-			if (state.config.debug) {
-				logger.debug("Hindsight retain queue: batch flushed", {
-					sessionId,
-					bankId: state.bankId,
-					items: items.length,
-				});
+		const groups = items.reduce((grouped, item) => {
+			const group = grouped.get(item.route);
+			if (group) {
+				group.push(item);
+			} else {
+				grouped.set(item.route, [item]);
 			}
-		} catch (err) {
-			const errorText = err instanceof Error ? err.message : String(err);
-			logger.warn("Hindsight retain queue: batch flush failed", {
-				sessionId,
-				bankId: state.bankId,
-				items: items.length,
-				error: errorText,
-			});
-			this.#notifyRetainFailure(items.length, errorText);
-		}
+			return grouped;
+		}, new Map<HindsightRouteSnapshot, PendingRetainItem[]>());
+
+		await Promise.all(
+			Array.from(groups, async ([route, routeItems]) => {
+				try {
+					await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
+					const batch: MemoryItemInput[] = routeItems.map(item => ({
+						content: item.content,
+						context: item.context ?? route.config.retainContext,
+						metadata: item.metadata,
+						tags: route.retainTags,
+						timestamp: item.timestamp,
+					}));
+					await route.client.retainBatch(route.bankId, batch, { async: true });
+					if (route.config.debug) {
+						logger.debug("Hindsight retain queue: batch flushed", {
+							sessionId,
+							bankId: route.bankId,
+							items: routeItems.length,
+						});
+					}
+				} catch (err) {
+					const errorText = err instanceof Error ? err.message : String(err);
+					logger.warn("Hindsight retain queue: batch flush failed", {
+						sessionId,
+						bankId: route.bankId,
+						items: routeItems.length,
+						error: errorText,
+					});
+					this.#notifyRetainFailure(routeItems.length, errorText);
+				}
+			}),
+		);
 	}
 
 	#notifyRetainFailure(count: number, errorText: string): void {
@@ -191,27 +241,51 @@ export class HindsightRetainQueue {
 function retentionPrefixKey(messages: HindsightMessage[], count: number): string {
 	let key = "";
 	for (let i = 0; i < count; i++) {
-		const m = messages[i];
-		if (m === undefined) break;
-		key = Bun.hash(`${key}\u0000${m.role}\u0000${m.content}`).toString(36);
+		const message = messages[i];
+		if (message === undefined) break;
+		key = Bun.hash(`${key}\u0000${message.role}\u0000${message.content}`).toString(36);
 	}
 	return key;
+}
+
+function buildRetentionMetadata(
+	state: HindsightSessionState,
+	source: MemoryProvenanceSource,
+	projectLabel = state.projectLabel,
+): Record<string, string> {
+	const metadata: Record<string, string> = {};
+	const add = (key: MemoryProvenanceKey, value: unknown): void => {
+		const bounded = boundedMetadataValue(value);
+		if (bounded) metadata[key] = bounded;
+	};
+
+	add("session_id", state.sessionId);
+	const identity = state.session.effectiveIdentity;
+	add("agent_kind", identity.role);
+	add("prompt_profile", identity.prompt.profileId ?? "default");
+	add("prompt_principal", identity.prompt.principal);
+	add("prompt_source", identity.prompt.source);
+	add("model", formatIdentityModel(state.session.model));
+	add("project", projectLabel);
+	add("cwd", state.session.sessionManager.getCwd());
+	add("source", source);
+	return metadata satisfies MemoryProvenanceMetadata;
+}
+
+function boundedMetadataValue(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim().replace(/\s+/g, " ");
+	if (!normalized) return undefined;
+	return normalized.slice(0, RETENTION_METADATA_VALUE_MAX_CHARS);
 }
 
 /** Per-session Hindsight runtime state owned by its AgentSession. */
 export class HindsightSessionState {
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
-	client: HindsightApi;
-	bankId: string;
-	/** Tags applied to every retain — non-empty in per-project-tagged mode. */
-	retainTags?: string[];
-	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
-	recallTags?: string[];
-	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
-	config: HindsightConfig;
-	session: AgentSession;
-	banksSet: Set<string>;
+	readonly session: AgentSession;
+	readonly #route?: HindsightRouteSnapshot;
+	readonly #primarySession?: AgentSession;
 	lastRetainedTurn: number;
 	#lastRetainedMessageIndex: number = 0;
 	#cachedTranscript: string = "";
@@ -243,27 +317,85 @@ export class HindsightSessionState {
 	 * Only set on primary states; aliases inherit the parent's subscription.
 	 */
 	unsubscribeScope?: () => void;
-	/** Alias states delegate persistence config to a primary parent state. */
-	aliasOf?: HindsightSessionState;
 	readonly retainQueue: HindsightRetainQueue;
 
 	constructor(options: HindsightSessionStateOptions) {
 		this.sessionId = options.sessionId;
-		this.client = options.client;
-		this.bankId = options.bankId;
-		this.retainTags = options.retainTags;
-		this.recallTags = options.recallTags;
-		this.recallTagsMatch = options.recallTagsMatch;
-		this.config = options.config;
 		this.session = options.session;
-		this.banksSet = options.banksSet;
+		if (options.aliasOf) {
+			const primary = options.aliasOf.aliasOf ?? options.aliasOf;
+			this.#primarySession = primary.session;
+		} else {
+			this.#route = {
+				client: options.client,
+				bankId: options.bankId,
+				projectLabel: options.projectLabel,
+				retainTags: options.retainTags,
+				recallTags: options.recallTags,
+				recallTagsMatch: options.recallTagsMatch,
+				config: options.config,
+				banksSet: options.banksSet,
+			};
+		}
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
 		this.#lastRetainedMessageIndex = 0;
 		this.#cachedTranscript = "";
 		this.#lastRetainedPrefixKey = "";
 		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
-		this.aliasOf = options.aliasOf;
 		this.retainQueue = new HindsightRetainQueue(this);
+	}
+
+	get isAlias(): boolean {
+		return this.#primarySession !== undefined;
+	}
+
+	/** The primary state currently installed in the parent session. */
+	get aliasOf(): HindsightSessionState | undefined {
+		const state = this.#primarySession?.getHindsightSessionState();
+		return state?.isAlias ? state.aliasOf : state;
+	}
+
+	captureRoute(): HindsightRouteSnapshot {
+		const primary = this.aliasOf;
+		const route = primary ? primary.#route : this.#route;
+		if (!route) {
+			throw new Error("Hindsight parent route is no longer active.");
+		}
+		return route;
+	}
+
+	get client(): HindsightApi {
+		return this.captureRoute().client;
+	}
+
+	get bankId(): string {
+		return this.captureRoute().bankId;
+	}
+
+	get projectLabel(): string {
+		return this.captureRoute().projectLabel;
+	}
+
+	/** Tags applied to every retain — non-empty in per-project-tagged mode. */
+	get retainTags(): string[] | undefined {
+		return this.captureRoute().retainTags;
+	}
+
+	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
+	get recallTags(): string[] | undefined {
+		return this.captureRoute().recallTags;
+	}
+
+	get recallTagsMatch(): "any" | "all" | "any_strict" | "all_strict" | undefined {
+		return this.captureRoute().recallTagsMatch;
+	}
+
+	get config(): HindsightConfig {
+		return this.captureRoute().config;
+	}
+
+	get banksSet(): Set<string> {
+		return this.captureRoute().banksSet;
 	}
 
 	setSessionId(sessionId: string): void {
@@ -290,32 +422,69 @@ export class HindsightSessionState {
 		await this.retainQueue.flush();
 	}
 
-	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
+	async recallResults(query: string): Promise<RecallResult[]> {
+		const route = this.captureRoute();
 		try {
-			const response = await this.client.recall(this.bankId, query, {
-				budget: this.config.recallBudget,
-				maxTokens: this.config.recallMaxTokens,
-				types: this.config.recallTypes.length > 0 ? this.config.recallTypes : undefined,
-				tags: this.recallTags,
-				tagsMatch: this.recallTagsMatch,
+			await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
+			const response = await route.client.recall(route.bankId, query, {
+				budget: route.config.recallBudget,
+				maxTokens: route.config.recallMaxTokens,
+				types: route.config.recallTypes.length > 0 ? route.config.recallTypes : undefined,
+				tags: route.recallTags,
+				tagsMatch: route.recallTagsMatch,
+			});
+			return response.results ?? [];
+		} catch (err) {
+			logger.warn("recall failed", { bankId: route.bankId, error: String(err) });
+			throw err instanceof Error ? err : new Error(String(err));
+		}
+	}
+
+	async reflect(query: string, context?: string): Promise<string> {
+		const route = this.captureRoute();
+		try {
+			await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
+			const response = await route.client.reflect(route.bankId, query, {
+				context,
+				budget: route.config.recallBudget,
+				tags: route.recallTags,
+				tagsMatch: route.recallTagsMatch,
+			});
+			return response.text?.trim() || "No relevant information found to reflect on.";
+		} catch (err) {
+			logger.warn("reflect failed", { bankId: route.bankId, error: String(err) });
+			throw err instanceof Error ? err : new Error(String(err));
+		}
+	}
+
+	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
+		const route = this.captureRoute();
+		try {
+			const response = await route.client.recall(route.bankId, query, {
+				budget: route.config.recallBudget,
+				maxTokens: route.config.recallMaxTokens,
+				types: route.config.recallTypes.length > 0 ? route.config.recallTypes : undefined,
+				tags: route.recallTags,
+				tagsMatch: route.recallTagsMatch,
 			});
 			if (signal?.aborted) return { context: null, ok: false };
 			const results = response.results ?? [];
 			if (results.length === 0) return { context: null, ok: true };
 			const formatted = formatMemories(results);
-			const block = `<memories>\n${this.config.recallPromptPreamble}\nCurrent time: ${formatCurrentTime()} UTC\n\n${formatted}\n</memories>`;
+			const block = `<memories>\n${route.config.recallPromptPreamble}\nCurrent time: ${formatCurrentTime()} UTC\n\n${formatted}\n</memories>`;
 			return { context: block, ok: true };
 		} catch (err) {
-			if (this.config.debug) {
-				logger.debug("Hindsight: recall failed", { bankId: this.bankId, error: String(err) });
+			if (route.config.debug) {
+				logger.debug("Hindsight: recall failed", { bankId: route.bankId, error: String(err) });
 			}
 			return { context: null, ok: false };
 		}
 	}
 
 	async retainSession(messages: HindsightMessage[]): Promise<void> {
+		const route = this.captureRoute();
 		const retainedAt = new Date();
-		const retainFullWindow = this.config.retainMode === "full-session";
+		const retainFullWindow = route.config.retainMode === "full-session";
 		let documentId: string;
 		let transcript: string;
 		let nextCachedTranscript: string | undefined;
@@ -334,7 +503,7 @@ export class HindsightSessionState {
 			nextCachedTranscript = this.#cachedTranscript ? `${this.#cachedTranscript}\n\n${newPart}` : newPart;
 			transcript = nextCachedTranscript;
 		} else {
-			const windowTurns = this.config.retainEveryNTurns + this.config.retainOverlapTurns;
+			const windowTurns = route.config.retainEveryNTurns + route.config.retainOverlapTurns;
 			const target = sliceLastTurnsByUserBoundary(messages, windowTurns);
 			documentId = `${this.sessionId}-${retainedAt.getTime()}`;
 			this.#lastRetainedMessageIndex = 0;
@@ -344,13 +513,14 @@ export class HindsightSessionState {
 			if (!windowTranscript) return;
 			transcript = windowTranscript;
 		}
+		const metadata = buildRetentionMetadata(this, "session-auto-retain", route.projectLabel);
 
-		await ensureBankExists(this.client, this.bankId, this.config, this.banksSet);
-		await this.client.retain(this.bankId, transcript, {
+		await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
+		await route.client.retain(route.bankId, transcript, {
 			documentId,
-			context: this.config.retainContext,
-			metadata: { session_id: this.sessionId },
-			tags: this.retainTags,
+			context: route.config.retainContext,
+			metadata,
+			tags: route.retainTags,
 			timestamp: retainedAt,
 			async: true,
 		});
@@ -464,22 +634,23 @@ export class HindsightSessionState {
 	}
 
 	async runMentalModelLoad(scope: BankScope): Promise<void> {
-		if (!this.config.mentalModelsEnabled) return;
+		const route = this.captureRoute();
+		if (!route.config.mentalModelsEnabled) return;
 
 		// Create/ensure the bank BEFORE the first mental-model POST so we don't
 		// land `createMentalModel` against a bank the server has never seen —
 		// that surfaces as a FK / 404 on Hindsight's side. `ensureBankExists`
 		// is idempotent (PUT) and skips after the first call via `banksSet`.
-		await ensureBankExists(this.client, this.bankId, this.config, this.banksSet);
+		await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
 
 		// Seeding is opt-in (`hindsight.mentalModelAutoSeed`). Default behaviour is
 		// read-only: we surface whatever models the operator has curated on the
 		// bank, but we do NOT POST to create new ones unless they explicitly
 		// asked. `/memory mm seed` remains the explicit-write entry point.
-		if (this.config.mentalModelAutoSeed) {
-			const seeds = resolveSeedsForScope(scope, this.config.scoping);
+		if (route.config.mentalModelAutoSeed) {
+			const seeds = resolveSeedsForScope(scope, route.config.scoping);
 			if (seeds.length > 0) {
-				await ensureMentalModels(this.client, this.bankId, seeds, this.config.debug);
+				await ensureMentalModels(route.client, route.bankId, seeds, route.config.debug);
 			}
 		}
 
@@ -488,18 +659,19 @@ export class HindsightSessionState {
 	}
 
 	async refreshMentalModelsSnippet(): Promise<void> {
+		const route = this.captureRoute();
 		const snippet = await loadMentalModelsBlock(
-			this.client,
-			this.bankId,
-			this.config.mentalModelMaxRenderChars,
-			this.recallTags,
+			route.client,
+			route.bankId,
+			route.config.mentalModelMaxRenderChars,
+			route.recallTags,
 		);
 		this.mentalModelsSnippet = snippet;
 		this.mentalModelsLoadedAt = Date.now();
 	}
 
 	async reloadMentalModels(): Promise<boolean> {
-		if (this.aliasOf) return false;
+		if (this.isAlias) return false;
 		if (!this.config.mentalModelsEnabled) return false;
 		await this.refreshMentalModelsSnippet();
 		await this.#refreshBaseSystemPromptAfter("MM reload");

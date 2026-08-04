@@ -31,7 +31,12 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
-import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
+import {
+	type BuildSessionContextOptions,
+	buildSessionContext,
+	getRestorableSessionModelsFromEntries,
+	type SessionContext,
+} from "./session-context";
 import {
 	type BranchSummaryEntry,
 	type CompactionEntry,
@@ -2543,6 +2548,24 @@ export class SessionManager {
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 		await manager.setSessionFile(filePath);
 		return manager;
+	}
+
+	/** Read the prompt profile and effective restorable models without taking the writer lock. */
+	static async peekResumeState(
+		filePath: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<{ header: SessionHeader | undefined; targetModelStrings: string[] }> {
+		const loaded = await loadEntriesFromFile(filePath, storage);
+		if (loaded.length === 0) return { header: undefined, targetModelStrings: [] };
+		migrateToCurrentVersion(loaded);
+		const header = loaded.find(entry => entry.type === "session") as SessionHeader | undefined;
+		const entries = loaded.filter(entry => entry.type !== "session") as SessionEntry[];
+		const index = new SessionEntryIndex();
+		index.rebuild(entries);
+		return {
+			header,
+			targetModelStrings: getRestorableSessionModelsFromEntries(entries, index.leafId(), index.entriesById()),
+		};
 	}
 
 	/** Read a persisted session header without acquiring its single-writer lock. */

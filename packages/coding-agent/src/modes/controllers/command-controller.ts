@@ -683,7 +683,7 @@ export class CommandController {
 		const arg = parts[1];
 
 		const state = this.ctx.session.getHindsightSessionState();
-		const primary = state && !state.aliasOf ? state : undefined;
+		const primary = state && !state.isAlias ? state : undefined;
 		if (!primary) {
 			this.ctx.showError("Hindsight backend is not active for this session.");
 			return;

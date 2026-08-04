@@ -453,6 +453,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		: toolNames && toolNames.length > 0
 			? normalizeToolNames(toolNames)
 			: undefined;
+	if (requestedTools && !restrictToolNames && session.settings.get("ask.enabled") && !requestedTools.includes("ask")) {
+		requestedTools.push("ask");
+	}
 	const goalEnabled = session.settings.get("goal.enabled");
 	const goalModeActive = !restrictToolNames && goalEnabled && session.getGoalModeState?.()?.enabled === true;
 	if (goalModeActive && requestedTools && !requestedTools.includes("goal")) {

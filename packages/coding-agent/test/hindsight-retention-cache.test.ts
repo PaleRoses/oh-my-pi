@@ -10,6 +10,7 @@ import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config
 import type { HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { createEffectiveSessionIdentity } from "@oh-my-pi/pi-coding-agent/session/identity";
 
 const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig => ({
 	hindsightApiUrl: "http://localhost:8888",
@@ -42,6 +43,22 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	mentalModelMaxRenderChars: 16_000,
 	...overrides,
 });
+const TEST_IDENTITY = createEffectiveSessionIdentity({
+	role: "main",
+	promptSource: "maintained-omp-prompt",
+	memoryEnabled: true,
+});
+
+function makeSession(entries: readonly unknown[] = []): AgentSession {
+	return {
+		sessionId: "test-session",
+		effectiveIdentity: TEST_IDENTITY,
+		sessionManager: {
+			getCwd: () => "/tmp",
+			getEntries: () => entries,
+		},
+	} as object as AgentSession;
+}
 
 class FakeHindsightApi extends HindsightApi {
 	calls: { bankId: string; transcript: string; options?: RetainOptions }[] = [];
@@ -64,15 +81,14 @@ describe("Hindsight incremental full-session retention cache", () => {
 	it("Append-only growth: accumulates transcript content incrementally across successive retains", async () => {
 		const client = new FakeHindsightApi();
 		const config = makeConfig({ retainMode: "full-session" });
-		const session = {
-			sessionId: "test-session",
-		} as object as AgentSession;
+		const session = makeSession();
 		const banksSet = new Set<string>();
 
 		const state = new HindsightSessionState({
 			sessionId: "test-session",
 			client,
 			bankId: "test-bank",
+			projectLabel: "test-project",
 			config,
 			session,
 			banksSet,
@@ -108,15 +124,14 @@ describe("Hindsight incremental full-session retention cache", () => {
 	it("Branch shrink (rewind): self-heals when message list shrinks, rebuilding and retaining full shorter transcript", async () => {
 		const client = new FakeHindsightApi();
 		const config = makeConfig({ retainMode: "full-session" });
-		const session = {
-			sessionId: "test-session",
-		} as object as AgentSession;
+		const session = makeSession();
 		const banksSet = new Set<string>();
 
 		const state = new HindsightSessionState({
 			sessionId: "test-session",
 			client,
 			bankId: "test-bank",
+			projectLabel: "test-project",
 			config,
 			session,
 			banksSet,
@@ -161,15 +176,14 @@ describe("Hindsight incremental full-session retention cache", () => {
 	it("Branch rewrite at same length: self-heals when tail message is replaced, avoiding stale prefix cache", async () => {
 		const client = new FakeHindsightApi();
 		const config = makeConfig({ retainMode: "full-session" });
-		const session = {
-			sessionId: "test-session",
-		} as object as AgentSession;
+		const session = makeSession();
 		const banksSet = new Set<string>();
 
 		const state = new HindsightSessionState({
 			sessionId: "test-session",
 			client,
 			bankId: "test-bank",
+			projectLabel: "test-project",
 			config,
 			session,
 			banksSet,
@@ -211,15 +225,14 @@ describe("Hindsight incremental full-session retention cache", () => {
 	it("rebuilds when an earlier retained message is rewritten but the boundary message is unchanged", async () => {
 		const client = new FakeHindsightApi();
 		const config = makeConfig({ retainMode: "full-session" });
-		const session = {
-			sessionId: "test-session",
-		} as object as AgentSession;
+		const session = makeSession();
 		const banksSet = new Set<string>();
 
 		const state = new HindsightSessionState({
 			sessionId: "test-session",
 			client,
 			bankId: "test-bank",
+			projectLabel: "test-project",
 			config,
 			session,
 			banksSet,
@@ -267,24 +280,20 @@ describe("Hindsight incremental full-session retention cache", () => {
 			{ role: "user", content: "hello first turn" },
 			{ role: "assistant", content: "hi there first response" },
 		];
-		const session = {
-			sessionId: "test-session",
-			sessionManager: {
-				getEntries: () => [
-					{ type: "message", message: { role: "user", content: "hello first turn" } },
-					{
-						type: "message",
-						message: { role: "assistant", content: [{ type: "text", text: "hi there first response" }] },
-					},
-				],
+		const session = makeSession([
+			{ type: "message", message: { role: "user", content: "hello first turn" } },
+			{
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "hi there first response" }] },
 			},
-		} as object as AgentSession;
+		]);
 		const banksSet = new Set<string>();
 
 		const state = new HindsightSessionState({
 			sessionId: "test-session",
 			client,
 			bankId: "test-bank",
+			projectLabel: "test-project",
 			config,
 			session,
 			banksSet,

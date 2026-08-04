@@ -36,6 +36,7 @@ import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
+import type { EffectiveSessionIdentity } from "./identity";
 import type { SessionManager } from "./session-manager";
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
@@ -217,12 +218,10 @@ export interface AgentSessionConfig {
 	asyncJobManager?: AsyncJobManager;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
-	/** Whether this is a top-level or subagent session. */
+	/** Role used only when a low-level caller omits an already-resolved effectiveIdentity. */
 	agentKind?: "main" | "sub";
-	/** Immutable system-prompt profile selected for this transcript. */
-	systemPromptProfileId?: string;
-	/** Whether this prompt profile may read, inject, or mutate long-term memory. */
-	memoryEnabled?: boolean;
+	/** Immutable prompt identity and capability decision resolved by the SDK boundary. */
+	effectiveIdentity?: EffectiveSessionIdentity;
 	/** Rejects a model whose routed prompt profile differs from this transcript. */
 	assertSystemPromptProfileCompatible?: (model: Model | undefined) => void;
 	/** Provider-facing session ID override. */

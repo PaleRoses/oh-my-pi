@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,10 +10,25 @@ import {
 	parseSkillInvocation,
 	type Skill,
 } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
+
+const originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+let isolatedAgentDir: string;
+
+beforeAll(async () => {
+	isolatedAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-skills-agent-"));
+	setAgentDir(isolatedAgentDir);
+});
+
+afterAll(async () => {
+	if (originalAgentDirEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = originalAgentDirEnv;
+	__resetDirsFromEnvForTests();
+	await removeWithRetries(isolatedAgentDir);
+});
 
 const longSkillName = "this-is-a-very-long-skill-name-that-exceeds-the-sixty-four-character-limit-set-by-the-standard";
 const expectedFixtureSkillOrder: string[] = [

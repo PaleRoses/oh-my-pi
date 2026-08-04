@@ -187,6 +187,14 @@ describe("AgentSession model-change prompt refresh", () => {
 		return [defaultPolicy, codexPolicy];
 	}
 
+	function pickModelsAcrossImageCapability(): [Model, Model] {
+		const all = modelRegistry.getAll();
+		const imageModel = all.find(model => model.input?.includes("image"));
+		const textModel = all.find(model => !model.input?.includes("image"));
+		if (!imageModel || !textModel) throw new Error("Expected image-capable and text-only models");
+		return [imageModel, textModel];
+	}
+
 	function newSession(
 		model: Model,
 		settings: Settings,
@@ -266,5 +274,57 @@ describe("AgentSession model-change prompt refresh", () => {
 		await session.setModel(modelB);
 		expect(rebuildCount).toBe(1);
 		expect(session.agent.state.systemPrompt).toEqual(["policy changed"]);
+	});
+
+	it("rolls back model, prompt, tools, and cache when model-dependent tool sync fails", async () => {
+		const [modelA, modelB] = pickModelsAcrossImageCapability();
+		authStorage.setRuntimeApiKey(modelA.provider, "key-a");
+		authStorage.setRuntimeApiKey(modelB.provider, "key-b");
+		const inspectImageTool = {
+			name: "inspect_image",
+			label: "Inspect image",
+			description: "Inspect an image",
+			parameters: {},
+			execute: async () => ({ content: [], details: {} }),
+		} as never;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: modelA, systemPrompt: ["initial"], tools: [], messages: [] },
+		});
+		let rebuildCount = 0;
+		let failInspectRebuild = true;
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false, "inspect_image.mode": "auto" }),
+			modelRegistry,
+			toolRegistry: new Map([["inspect_image", inspectImageTool]]),
+			builtInToolNames: ["inspect_image"],
+			rebuildSystemPrompt: async () => {
+				rebuildCount++;
+				if (failInspectRebuild && rebuildCount === 2) throw new Error("model tool rebuild failed");
+				return { systemPrompt: [`rebuilt:${rebuildCount}`] };
+			},
+		});
+		session.agent.promptCacheKey = "cache-before";
+		let modelChangedEvents = 0;
+		const unsubscribe = session.subscribe(event => {
+			if (event.type === "model_changed") modelChangedEvents++;
+		});
+
+		await expect(session.setModel(modelB)).rejects.toThrow("model tool rebuild failed");
+
+		expect(session.model).toEqual(modelA);
+		expect(session.agent.state.systemPrompt).toEqual(["initial"]);
+		expect(session.getActiveToolNames()).toEqual([]);
+		expect(session.agent.promptCacheKey).toBe("cache-before");
+		expect(modelChangedEvents).toBe(0);
+
+		failInspectRebuild = false;
+		await session.setModel(modelB);
+		expect(session.model).toEqual(modelB);
+		expect(session.getActiveToolNames()).toContain("inspect_image");
+		expect(modelChangedEvents).toBe(1);
+		unsubscribe();
 	});
 });

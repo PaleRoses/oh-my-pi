@@ -271,6 +271,7 @@ import {
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
 } from "./exit-diagnostics";
+import { createEffectiveSessionIdentity, type EffectiveSessionIdentity } from "./identity";
 import { IrcBridge, type IrcBridgeHost } from "./irc-bridge";
 import {
 	type BashExecutionMessage,
@@ -417,7 +418,7 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
-	readonly systemPromptProfileId: string | undefined;
+	readonly effectiveIdentity: EffectiveSessionIdentity;
 	/** Entries of tools mounted under `xd://`; empty when virtual devices are unmounted. */
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
@@ -519,7 +520,6 @@ export class AgentSession {
 		| undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
-	#agentKind: "main" | "sub" = "main";
 	readonly #assertSystemPromptProfileCompatible: ((model: Model | undefined) => void) | undefined;
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
@@ -901,6 +901,13 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.effectiveIdentity =
+			config.effectiveIdentity ??
+			createEffectiveSessionIdentity({
+				role: config.agentKind ?? "main",
+				promptSource: "explicit-system-prompt",
+				memoryEnabled: true,
+			});
 		this.#modelRegistry = config.modelRegistry;
 		this.#codexResetCoordinator = config.codexResetCoordinator ?? defaultCodexAutoRedeemCoordinator;
 		const bashHost: BashRunnerHost = {
@@ -966,7 +973,7 @@ export class AgentSession {
 			sessionManager: this.sessionManager,
 			settings: this.settings,
 			model: () => this.model,
-			agentKind: () => this.#agentKind,
+			agentKind: () => this.agentKind,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
 			promptGeneration: () => this.#promptGeneration,
@@ -988,8 +995,6 @@ export class AgentSession {
 			model: () => this.model,
 			sessionId: () => this.sessionId,
 			promptGeneration: () => this.#promptGeneration,
-			resolveActiveEditMode: () => this.#tools.resolveActiveEditMode(),
-			syncAfterModelChange: previousEditMode => this.#tools.syncAfterModelChange(previousEditMode),
 			setModelWithProviderSessionReset: model => this.#setModelWithProviderSessionReset(model),
 			clearActiveRetryFallback: () => this.#recovery.clearActiveRetryFallback(),
 			clearInheritedProviderPromptCacheKey: () => this.#clearInheritedProviderPromptCacheKey(),
@@ -1068,9 +1073,9 @@ export class AgentSession {
 			replaceMemoryTools: tools => this.#tools.replaceMemoryTools(tools),
 		};
 		this.#memory = new SessionMemory(memoryHost, {
+			identity: this.effectiveIdentity,
 			memoryAgentDir: config.memoryAgentDir,
 			memoryTaskDepth: config.memoryTaskDepth,
-			memoryEnabled: config.memoryEnabled,
 			createMemoryTools: config.createMemoryTools,
 		});
 		// Resolve the wire service-tier per request so the Fireworks Priority
@@ -1160,7 +1165,7 @@ export class AgentSession {
 			modelRegistry: this.#modelRegistry,
 			extensionRunner: () => this.#extensionRunner,
 			clientBridge: () => this.#clientBridge,
-			agentKind: () => this.#agentKind,
+			agentKind: () => this.agentKind,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
 			queuedMessageCount: () => this.queuedMessageCount,
@@ -1193,12 +1198,11 @@ export class AgentSession {
 			xdev: config.xdev,
 			setActiveToolNames: config.setActiveToolNames,
 			baseSystemPrompt: this.agent.state.systemPrompt,
+			identity: this.effectiveIdentity,
 			skills: config.skills,
 			skillWarnings: config.skillWarnings,
 			skillsSettings: config.skillsSettings,
 			skillsReloadable: config.skillsReloadable,
-			systemPromptProfileId: config.systemPromptProfileId,
-			memoryEnabled: config.memoryEnabled,
 		});
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
 		const ttsrHost: TtsrCoordinatorHost = {
@@ -1244,8 +1248,6 @@ export class AgentSession {
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
-		this.#agentKind = config.agentKind ?? "main";
-		this.systemPromptProfileId = config.systemPromptProfileId;
 		this.#assertSystemPromptProfileCompatible = config.assertSystemPromptProfileCompatible;
 		this.#scoutAllowedBySpawnPolicy = config.scoutAllowedBySpawnPolicy ?? true;
 		this.#providerSessionId = config.providerSessionId;
@@ -1340,7 +1342,7 @@ export class AgentSession {
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
 			onSseEvent: this.#onSseEvent,
-			agentKind: () => this.#agentKind,
+			agentKind: () => this.agentKind,
 			isDisposed: () => this.#isDisposed,
 			abortInProgress: () => this.#abortInProgress,
 			allowAgentInitiatedTurns: () => this.#allowAcpAgentInitiatedTurns,
@@ -1408,7 +1410,7 @@ export class AgentSession {
 			planReferencePath: () => this.#planReferencePath,
 			nonMessageTokenSource: () => this,
 			memoryBackendSession: () => this,
-			memoryEnabled: () => config.memoryEnabled !== false,
+			memoryEnabled: () => this.effectiveIdentity.memory.status === "enabled",
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			schedulePostPromptTask: (task, options) => this.#schedulePostPromptTask(task, options),
@@ -3221,7 +3223,7 @@ export class AgentSession {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
-		if (this.#agentKind === "sub" || !this.#extensionRunner?.hasHandlers("session_stop")) {
+		if (this.agentKind === "sub" || !this.#extensionRunner?.hasHandlers("session_stop")) {
 			return false;
 		}
 		const generation = this.#promptGeneration;
@@ -3789,6 +3791,16 @@ export class AgentSession {
 		return this.agent.state;
 	}
 
+	/** Whether this session owns the primary agent loop or a delegated subagent loop. */
+	get agentKind(): "main" | "sub" {
+		return this.effectiveIdentity.role;
+	}
+
+	/** Immutable prompt profile selected for this transcript, when one owns the prompt. */
+	get systemPromptProfileId(): string | undefined {
+		return this.effectiveIdentity.prompt.profileId;
+	}
+
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model | undefined {
 		return this.agent.state.model;
@@ -4115,10 +4127,6 @@ export class AgentSession {
 
 	#resolveActiveEditMode(): EditMode {
 		return this.#tools.resolveActiveEditMode();
-	}
-
-	#syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
-		return this.#tools.syncAfterModelChange(previousEditMode);
 	}
 
 	/** Enabled MCP tools in their current presentation partition. */
@@ -5961,7 +5969,7 @@ export class AgentSession {
 		// focus a live subagent from the Agent Hub, where the status line renders
 		// its session name — so keep the refresh there and only skip subagents when
 		// no focusable UI exists (print/RPC/ACP/eval/SDK/CI).
-		if (this.#agentKind === "sub" && !isInteractiveHost()) return;
+		if (this.agentKind === "sub" && !isInteractiveHost()) return;
 		if (this.#replanTitleRefreshInFlight) return;
 		if (!this.settings.get("title.refreshOnReplan")) return;
 		if (this.sessionManager.titleSource === "user") return;
@@ -6348,6 +6356,9 @@ export class AgentSession {
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
 		this.#assertVibeSessionTransitionAllowed("move the session");
 		await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		// Memory scoping is cwd-derived. Rebuild once at this boundary so the
+		// installed state, bank/tag target, and retained project label stay aligned.
+		await this.#memory.applyMemoryBackend();
 	}
 
 	// =========================================================================
@@ -6714,44 +6725,36 @@ export class AgentSession {
 
 	async #setModelWithProviderSessionReset(model: Model): Promise<void> {
 		this.#assertSystemPromptProfileCompatible?.(model);
-		const currentModel = this.model;
-		const isChanging = !currentModel || !modelsAreEqual(currentModel, model);
-		if (currentModel) {
-			this.#closeProviderSessionsForModelSwitch(currentModel, model);
-			if (isChanging) {
-				this.#clearInheritedProviderPromptCacheKey();
-			}
-		}
+		const previousEditMode = this.#tools.resolveActiveEditMode();
+		const previousModel = this.agent.state.model;
+		const isChanging = !modelsAreEqual(previousModel, model);
+		const toolSnapshot = this.#tools.captureModelChangeSyncSnapshot();
+		const previousSystemPrompt = [...this.agent.state.systemPrompt];
+		const previousPromotionSnapshot = this.#memory.promotionSnapshot;
+		const previousInheritedPromptCacheKey = this.#inheritedProviderPromptCacheKey;
+		const previousAgentPromptCacheKey = this.agent.promptCacheKey;
+
 		this.agent.setModel(model);
-		// Model mutations driven through ModelControls (explicit /model, prewalk
-		// hand-offs, retry-fallback, model cycling) funnel through this method,
-		// so this is the single point that notifies subscribers (ACP config
-		// sync, RPC, TUI status line) — callers that bypass ModelControls never
-		// need to remember to notify separately. `switchSession`'s rollback
-		// restores via `agent.setModel` directly and emits its own corrective
-		// event.
-		//
-		// Fan-out uses the synchronous `#emit`, matching `thinking_level_changed`:
-		// `model_changed` has no extension-facing hook (`#emitExtensionEvent`
-		// never maps it), so routing it through `#emitSessionEvent` would only
-		// add an extension-delivery await inside every model switch — including
-		// retry-fallback on the error path.
+		try {
+			await this.#tools.syncAfterModelChange(previousEditMode);
+		} catch (error) {
+			this.agent.setModel(previousModel);
+			this.#tools.restoreModelChangeSyncSnapshot(toolSnapshot);
+			this.#memory.restorePromotionSnapshot(previousPromotionSnapshot);
+			this.agent.setSystemPrompt(previousSystemPrompt);
+			this.#inheritedProviderPromptCacheKey = previousInheritedPromptCacheKey;
+			this.agent.promptCacheKey = previousAgentPromptCacheKey;
+			throw error;
+		}
+
+		// Provider state and observers cross the transition only after every
+		// fallible model-dependent prompt/tool projection has committed.
 		if (isChanging) {
+			this.#closeProviderSessionsForModelSwitch(previousModel, model);
+			this.#clearInheritedProviderPromptCacheKey();
 			this.#emit({ type: "model_changed" });
 		}
-
-		// Re-evaluate append-only context mode — provider or setting may have changed
 		this.#syncAppendOnlyContext(model);
-
-		// inspect_image auto mode keys off model image capability. Reconcile
-		// centrally here so retry-fallback model changes (turn-recovery.ts),
-		// which bypass syncAfterModelChange, cannot leave the tool set stale —
-		// callers await, so a scheduled retry never races the reconciled slate.
-		try {
-			await this.#tools.reconcileInspectImageAfterModelChange();
-		} catch (error) {
-			logger.warn("inspect_image reconcile after model change failed", { error: String(error) });
-		}
 	}
 
 	#closeCodexProviderSessionsForHistoryRewrite(): void {
@@ -7176,6 +7179,20 @@ export class AgentSession {
 	// Session Management
 	// =========================================================================
 
+	#resolveRestorableSessionModel(targetModelStrings: readonly string[]): Model | undefined {
+		if (targetModelStrings.length === 0) return undefined;
+		const availableModels = this.#modelRegistry.getAvailable();
+		return targetModelStrings
+			.map(targetModelStr => {
+				const slashIndex = targetModelStr.indexOf("/");
+				if (slashIndex <= 0) return undefined;
+				const provider = targetModelStr.slice(0, slashIndex);
+				const modelId = targetModelStr.slice(slashIndex + 1);
+				return availableModels.find(model => model.provider === provider && model.id === modelId);
+			})
+			.find((model): model is Model => model !== undefined);
+	}
+
 	/**
 	 * Reload the current session from disk.
 	 *
@@ -7199,13 +7216,16 @@ export class AgentSession {
 		const switchingToDifferentSession = previousSessionFile
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
 			: true;
+		let preflightTargetModel: Model | undefined;
 		if (switchingToDifferentSession) {
-			const targetHeader = await SessionManager.peekHeader(sessionPath);
-			if (targetHeader?.systemPromptProfile !== this.systemPromptProfileId) {
+			const target = await SessionManager.peekResumeState(sessionPath);
+			if (target.header?.systemPromptProfile !== this.systemPromptProfileId) {
 				throw new Error(
-					`Cannot switch from system prompt profile "${this.systemPromptProfileId ?? "default"}" to "${targetHeader?.systemPromptProfile ?? "default"}" in one live session.`,
+					`Cannot switch from system prompt profile "${this.systemPromptProfileId ?? "default"}" to "${target.header?.systemPromptProfile ?? "default"}" in one live session.`,
 				);
 			}
+			preflightTargetModel = this.#resolveRestorableSessionModel(target.targetModelStrings);
+			if (preflightTargetModel) this.#assertSystemPromptProfileCompatible?.(preflightTargetModel);
 		}
 		// Emit session_before_switch event (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
@@ -7317,25 +7337,16 @@ export class AgentSession {
 				this.sessionManager.getLastModelChangeRole(),
 			);
 			if (targetModelStrings.length > 0) {
-				const availableModels = this.#modelRegistry.getAvailable();
-				let match: Model | undefined;
-				for (const targetModelStr of targetModelStrings) {
-					const slashIdx = targetModelStr.indexOf("/");
-					if (slashIdx <= 0) continue;
-					const provider = targetModelStr.slice(0, slashIdx);
-					const modelId = targetModelStr.slice(slashIdx + 1);
-					match = availableModels.find(m => m.provider === provider && m.id === modelId);
-					if (match) break;
-				}
+				const match = switchingToDifferentSession
+					? preflightTargetModel
+					: this.#resolveRestorableSessionModel(targetModelStrings);
 				if (match) {
-					this.#assertSystemPromptProfileCompatible?.(match);
-					const currentModel = this.model;
+					const currentModel = this.agent.state.model;
 					const shouldResetProviderState =
 						switchingToDifferentSession ||
-						(currentModel !== undefined &&
-							(currentModel.provider !== match.provider ||
-								currentModel.id !== match.id ||
-								currentModel.api !== match.api));
+						currentModel.provider !== match.provider ||
+						currentModel.id !== match.id ||
+						currentModel.api !== match.api;
 					if (shouldResetProviderState) {
 						await this.#setModelWithProviderSessionReset(match);
 					} else {

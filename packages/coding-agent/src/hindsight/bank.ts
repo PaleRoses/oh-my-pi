@@ -27,7 +27,7 @@ import type { HindsightApi } from "./client";
 import type { HindsightConfig } from "./config";
 
 const DEFAULT_BANK_NAME = "omp";
-const PROJECT_TAG_PREFIX = "project:";
+export const PROJECT_TAG_PREFIX = "project:";
 const UNKNOWN_PROJECT = "unknown";
 const MISSION_SET_CAP = 10_000;
 
@@ -68,10 +68,14 @@ function baseBankId(config: HindsightConfig): string {
  * `git.repo.primaryRootSync` walks `.git`/`commondir` with sync file reads —
  * no subprocess — so the cost is one or two `stat`s and a small `readFile`.
  */
-function projectLabel(directory: string): string {
+export function resolveProjectLabel(directory: string): string {
 	if (!directory) return UNKNOWN_PROJECT;
-	const primary = git.repo.primaryRootSync(directory);
-	return path.basename(primary ?? directory) || UNKNOWN_PROJECT;
+	try {
+		const primary = git.repo.primaryRootSync(directory);
+		return path.basename(primary ?? directory) || UNKNOWN_PROJECT;
+	} catch {
+		return path.basename(directory) || UNKNOWN_PROJECT;
+	}
 }
 
 /**
@@ -80,15 +84,15 @@ function projectLabel(directory: string): string {
  * Always returns a non-empty `bankId`. Tag fields are populated only for
  * `per-project-tagged`.
  */
-export function computeBankScope(config: HindsightConfig, directory: string): BankScope {
+export function computeBankScope(config: HindsightConfig, directory: string, projectLabel?: string): BankScope {
 	const base = baseBankId(config);
 	switch (config.scoping) {
 		case "global":
 			return { bankId: base };
 		case "per-project":
-			return { bankId: `${base}-${projectLabel(directory)}` };
+			return { bankId: `${base}-${projectLabel ?? resolveProjectLabel(directory)}` };
 		case "per-project-tagged": {
-			const tag = `${PROJECT_TAG_PREFIX}${projectLabel(directory)}`;
+			const tag = `${PROJECT_TAG_PREFIX}${projectLabel ?? resolveProjectLabel(directory)}`;
 			return {
 				bankId: base,
 				retainTags: [tag],
@@ -99,15 +103,6 @@ export function computeBankScope(config: HindsightConfig, directory: string): Ba
 			};
 		}
 	}
-}
-
-/**
- * Backwards-compatible thin wrapper: just return the bank id portion of the
- * scope. New code should prefer `computeBankScope` directly so it can also
- * apply the tag fields.
- */
-export function deriveBankId(config: HindsightConfig, directory: string): string {
-	return computeBankScope(config, directory).bankId;
 }
 
 /**

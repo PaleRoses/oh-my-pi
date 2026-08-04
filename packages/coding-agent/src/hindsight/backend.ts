@@ -11,8 +11,9 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { onHindsightScopeChanged, type Settings } from "../config/settings";
 import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
+import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
-import { type BankScope, computeBankScope } from "./bank";
+import { type BankScope, computeBankScope, resolveProjectLabel } from "./bank";
 import { createHindsightClient } from "./client";
 import { isHindsightConfigured, loadHindsightConfig } from "./config";
 import { type HindsightMessage, hasSubstantiveContent } from "./content";
@@ -53,14 +54,7 @@ export const hindsightBackend: MemoryBackend = {
 			const previous = session.setHindsightSessionState(
 				new HindsightSessionState({
 					sessionId,
-					client: parent.client,
-					bankId: parent.bankId,
-					retainTags: parent.retainTags,
-					recallTags: parent.recallTags,
-					recallTagsMatch: parent.recallTagsMatch,
-					config: parent.config,
 					session,
-					banksSet: parent.banksSet,
 					lastRetainedTurn: 0,
 					hasRecalledForFirstTurn: true,
 					aliasOf: parent,
@@ -88,7 +82,7 @@ export const hindsightBackend: MemoryBackend = {
 		if (!isHindsightConfigured(config)) return undefined;
 
 		const state = session?.getHindsightSessionState();
-		const primary = state?.aliasOf ?? state;
+		const primary = state?.isAlias ? state.aliasOf : state;
 		const recallSnippet = primary?.lastRecallSnippet;
 		const mentalModelsSnippet = primary?.mentalModelsSnippet;
 
@@ -125,7 +119,7 @@ export const hindsightBackend: MemoryBackend = {
 
 	async enqueue(_agentDir, _cwd, session): Promise<void> {
 		const state = session?.getHindsightSessionState();
-		const primary = state?.aliasOf ? undefined : state;
+		const primary = state && !state.isAlias ? state : undefined;
 		if (!primary) return;
 		await primary.flushRetainQueue();
 		await primary.forceRetainCurrentSession();
@@ -195,10 +189,16 @@ function schedulePrimaryStateRebuild(session: AgentSession): void {
  * subscription so subsequent `hindsight.bankId` / `bankIdPrefix` / `scoping`
  * edits trigger another rebuild from the same wiring.
  */
+interface ResolvedBankTarget {
+	readonly scope: BankScope;
+	readonly projectLabel: string;
+}
+
 async function installPrimaryState(
 	session: AgentSession,
 	settings: Settings,
 	banksSet: Set<string>,
+	resolvedTarget?: ResolvedBankTarget,
 ): Promise<HindsightSessionState | undefined> {
 	const sessionId = session.sessionId;
 	if (!sessionId) return undefined;
@@ -207,7 +207,9 @@ async function installPrimaryState(
 	if (!isHindsightConfigured(config)) return undefined;
 
 	const client = createHindsightClient(config);
-	const scope = computeBankScope(config, session.sessionManager.getCwd());
+	const cwd = session.sessionManager.getCwd();
+	const projectLabel = resolvedTarget?.projectLabel ?? resolveProjectLabel(cwd);
+	const scope = resolvedTarget?.scope ?? computeBankScope(config, cwd, projectLabel);
 
 	// Cleanup any stale state for this session (defensive — prevents leaks
 	// when a session is reused without going through dispose). Flush the
@@ -230,6 +232,7 @@ async function installPrimaryState(
 		sessionId,
 		client,
 		bankId: scope.bankId,
+		projectLabel,
 		retainTags: scope.retainTags,
 		recallTags: scope.recallTags,
 		recallTagsMatch: scope.recallTagsMatch,
@@ -275,7 +278,15 @@ async function installPrimaryState(
  */
 async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<void> {
 	const current = session.getHindsightSessionState();
-	if (!current || current.aliasOf) return;
+	if (!current || current.isAlias) return;
+	const aliasSessions = AgentRegistry.global()
+		.list()
+		.flatMap(ref => {
+			const candidate = ref.session;
+			return candidate?.getHindsightSessionState()?.aliasOf === current ? [candidate] : [];
+		});
+	const refreshIdentityPrompts = () =>
+		Promise.all([session, ...aliasSessions].map(candidate => candidate.refreshBaseSystemPrompt()));
 
 	const settings = session.settings;
 	const config = loadHindsightConfig(settings);
@@ -285,14 +296,18 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 		await current.flushRetainQueue();
 		const previous = session.setHindsightSessionState(undefined);
 		previous?.dispose();
+		await session.refreshBaseSystemPrompt();
 		return;
 	}
 
-	const next = computeBankScope(config, session.sessionManager.getCwd());
-	if (bankScopesEqual(next, current)) return;
+	const cwd = session.sessionManager.getCwd();
+	const projectLabel = resolveProjectLabel(cwd);
+	const next = computeBankScope(config, cwd, projectLabel);
+	if (bankScopesEqual(next, projectLabel, current)) return;
 
 	// Preserve the banksSet so we don't re-PUT banks we've already confirmed.
-	await installPrimaryState(session, settings, current.banksSet);
+	await installPrimaryState(session, settings, current.banksSet, { scope: next, projectLabel });
+	await refreshIdentityPrompts();
 }
 
 /** Tag-array equality: order matters because we never reorder on the way in. */
@@ -313,9 +328,11 @@ function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): bo
  */
 function bankScopesEqual(
 	scope: BankScope,
-	state: Pick<HindsightSessionState, "bankId" | "retainTags" | "recallTags" | "recallTagsMatch">,
+	projectLabel: string,
+	state: Pick<HindsightSessionState, "bankId" | "projectLabel" | "retainTags" | "recallTags" | "recallTagsMatch">,
 ): boolean {
 	return (
+		projectLabel === state.projectLabel &&
 		scope.bankId === state.bankId &&
 		stringArraysEqual(scope.retainTags, state.retainTags) &&
 		stringArraysEqual(scope.recallTags, state.recallTags) &&

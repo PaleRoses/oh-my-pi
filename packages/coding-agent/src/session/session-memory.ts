@@ -8,6 +8,7 @@ import type { HindsightSessionState } from "../hindsight/state";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import type { EffectiveSessionIdentity } from "./identity";
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface SessionMemoryHost {
@@ -30,7 +31,7 @@ export class SessionMemory {
 	readonly #host: SessionMemoryHost;
 	readonly #memoryAgentDir: string | undefined;
 	readonly #memoryTaskDepth: number;
-	readonly #memoryEnabled: boolean;
+	readonly #identity: EffectiveSessionIdentity;
 	readonly #createMemoryTools: (() => Promise<AgentTool[]>) | undefined;
 	#memoryBackendTransition: Promise<void> = Promise.resolve();
 	#localMemoryStartupAbort: AbortController | undefined;
@@ -39,16 +40,16 @@ export class SessionMemory {
 	constructor(
 		host: SessionMemoryHost,
 		options: {
+			identity: EffectiveSessionIdentity;
 			memoryAgentDir?: string;
 			memoryTaskDepth?: number;
-			memoryEnabled?: boolean;
 			createMemoryTools?: () => Promise<AgentTool[]>;
 		},
 	) {
 		this.#host = host;
+		this.#identity = options.identity;
 		this.#memoryAgentDir = options.memoryAgentDir;
 		this.#memoryTaskDepth = options.memoryTaskDepth ?? 0;
-		this.#memoryEnabled = options.memoryEnabled !== false;
 		this.#createMemoryTools = options.createMemoryTools;
 	}
 
@@ -100,7 +101,7 @@ export class SessionMemory {
 	#resetHindsightConversationTrackingIfHindsight(): boolean {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;
 		const state = this.#host.getHindsightSessionState();
-		if (!state || state.aliasOf) return false;
+		if (!state || state.isAlias) return false;
 		state.resetConversationTracking();
 		return true;
 	}
@@ -187,7 +188,12 @@ export class SessionMemory {
 		if (this.#host.isDisposed()) return;
 		try {
 			await this.#disposeMemoryBackendState();
-			if (this.#memoryEnabled && this.#memoryAgentDir && this.#memoryTaskDepth === 0 && !this.#host.isDisposed()) {
+			if (
+				this.#identity.memory.status === "enabled" &&
+				this.#memoryAgentDir &&
+				this.#memoryTaskDepth === 0 &&
+				!this.#host.isDisposed()
+			) {
 				const backend = await resolveMemoryBackend(this.#host.settings);
 				await backend.start({
 					session: this.#host.memoryBackendSession(),
@@ -215,7 +221,7 @@ export class SessionMemory {
 	}
 
 	async #refreshMemoryTools(): Promise<void> {
-		const tools = this.#memoryEnabled ? ((await this.#createMemoryTools?.()) ?? []) : [];
+		const tools = this.#identity.memory.status === "enabled" ? ((await this.#createMemoryTools?.()) ?? []) : [];
 		await this.#replaceMemoryTools(tools);
 	}
 

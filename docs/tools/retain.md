@@ -10,6 +10,7 @@
   - `packages/coding-agent/src/hindsight/backend.ts` — session bootstrap, prompt injection, subagent aliasing.
   - `packages/coding-agent/src/hindsight/bank.ts` — bank id derivation, tag scoping, first-use bank/mission setup.
   - `packages/coding-agent/src/hindsight/client.ts` — HTTP `retain` / `retainBatch` calls.
+  - `packages/coding-agent/src/session/identity.ts` — immutable effective prompt/model identity projected into retention provenance.
   - `packages/coding-agent/src/hindsight/content.ts` — retention transcript shaping, memory-tag stripping.
   - `packages/coding-agent/src/hindsight/mental-models.ts` — bank-scoped mental-model seeding and cache rendering.
   - `packages/coding-agent/src/hindsight/seeds.json` — built-in mental-model seed definitions.
@@ -24,7 +25,7 @@
 
 | Field | Type | Required | Description |
 |---|---|---:|---|
-| `items` | `Array<{ content: string; context?: string }>` | Yes | One or more memories to store. `minItems: 1`. Each item must be self-contained; `context` is optional per-item provenance. |
+| `items` | `Array<{ content: string; context?: string }>` | Yes | One or more memories to store. `minItems: 1`. Each item must be self-contained; `context` is optional source context sent as its own Hindsight item field, separate from OMP-authored provenance metadata. |
 
 ## Outputs
 The output depends on the active `memory.backend`.
@@ -52,7 +53,16 @@ Mnemopi:
    - it fetches `session.getHindsightSessionState()` and throws if the backend was not started;
    - each input item is handed to `HindsightSessionState.enqueueRetain(...)`;
    - `HindsightRetainQueue.enqueue(...)` appends the item and either flushes immediately when the queue reaches `RETAIN_FLUSH_BATCH_SIZE`, or starts a debounce timer for `RETAIN_FLUSH_INTERVAL_MS`;
-   - on flush, `HindsightRetainQueue.#doFlush(...)` verifies ownership, best-effort ensures the bank exists via `ensureBankExists(...)`, maps items to `MemoryItemInput` with `context ?? config.retainContext`, `metadata.session_id`, and bank-scope tags, then sends one async `retainBatch(...)` request.
+   - on flush, `HindsightRetainQueue.#doFlush(...)` verifies ownership, best-effort ensures the bank exists via `ensureBankExists(...)`, serializes each item as canonical `content`, `timestamp`, `context`, `metadata`, and optional `tags`, then sends one async `retainBatch(...)` request.
+
+### Hindsight retained-item provenance
+- Tool-called items snapshot their timestamp, optional input context, and provenance when `enqueueRetain(...)` runs. A later queue flush never resamples the session identity, model, prompt profile, project, working directory, or source.
+- OMP-authored provenance metadata is string-only and emitted in this fixed key order: `session_id`, `agent_kind`, `prompt_profile`, `prompt_principal`, `prompt_source`, `model`, `project`, `cwd`, `source`. Fields that cannot be resolved are omitted.
+- `prompt_principal` identifies the immutable prompt authority selected for the session. `prompt_source` is one of `maintained-omp-prompt`, `discovered-system-prompt`, `explicit-system-prompt`, or `system-prompt-profile`. `model` is `<provider>/<model id>`. `project` is the project label owned by the active Hindsight bank scope, and `cwd` is the corresponding session working directory.
+- `source` has exactly two OMP-authored variants: `agent-retain` for explicit `retain` tool items and `session-auto-retain` for automatic transcript retention.
+- Automatic retention bypasses the queue and captures its timestamp and provenance when `retainSession(...)` constructs the request. Its canonical item fields are serialized in the order `content`, `timestamp`, `context`, `metadata`, `document_id`, and optional `tags`.
+- Every provenance value is trimmed, internal whitespace is collapsed, and the result is capped at 512 characters before it is queued or submitted. OMP does not copy arbitrary metadata or authentication credentials into this provenance object.
+- At flush, an explicit item's `context` is the item's supplied context when present, otherwise the configured retention context. Scope tags come from the already-resolved Hindsight bank state.
 
 ## Modes / Variants
 - Hindsight tool path: queued batch write only.
@@ -74,12 +84,12 @@ Mnemopi:
 ## Side Effects
 - Filesystem
   - Hindsight: none for retained memories. No local memory file is written.
-  - Mnemopi: writes to local SQLite under `mnemopi.dbPath`, defaulting beneath the agent memories directory (`mnemopi/mnemopi.db`) with one database file per scoped bank when needed.
+  - Mnemopi: writes to local SQLite under the configured `mnemopi.dbPath`, with one database file per scoped bank when needed.
 - Network
   - Hindsight: `POST /v1/default/banks/{bank_id}/memories` via `retainBatch(...)`, plus optional `PUT /v1/default/banks/{bank_id}` via `ensureBankExists(...)` before the first write per bank per session state (the set is created with the primary session state and shared with subagent aliases).
   - Mnemopi: none unless configured embedding or LLM providers make calls during extraction.
 - Session state
-  - Hindsight: appends to the in-memory `HindsightRetainQueue`, includes `metadata.session_id`, and shares parent state for subagents.
+  - Hindsight: appends timestamped items to the in-memory `HindsightRetainQueue`; each item already contains its enqueue-time provenance snapshot and shares the parent state for subagents.
   - Mnemopi: writes through the session's scoped `Mnemopi` instance, includes `session_id`, `cwd`, and optional `context`, and shares scoped resources with subagents.
 - User-visible prompts / interactive UI
   - Hindsight async flush failures emit `session.emitNotice("warning", ...)`; the model is not told.
@@ -89,20 +99,12 @@ Mnemopi:
   - Mnemopi fact/entity extraction may continue in the Mnemopi runtime; backend `enqueue(...)` calls `flushExtractions()` before sleeping sessions.
 
 ## Limits & Caps
-- Input schema requires `items.length >= 1`.
-- Tool availability requires `memory.backend` to be `"hindsight"` or `"mnemopi"`; default `memory.backend` is `"off"`.
-- Hindsight queue flush threshold: `RETAIN_FLUSH_BATCH_SIZE = 16`.
-- Hindsight queue debounce: `RETAIN_FLUSH_INTERVAL_MS = 5_000`.
-- Hindsight queue writes use `retainBatch(..., { async: true })`; the client does not wait for server-side consolidation.
-- Hindsight auto-retain settings:
-  - `hindsight.retainEveryNTurns` default `3`
-  - `hindsight.retainOverlapTurns` default `2`
-  - `hindsight.retainContext` default `"omp"`
-  - `hindsight.retainMode` default `"full-session"`
-- Mnemopi retain settings:
-  - `mnemopi.retainEveryNTurns` default `4`
-  - `mnemopi.autoRetain` controls automatic retention of completed conversation turns
-  - `mnemopi.scoping` selects `global`, `per-project`, or `per-project-tagged`
+- Input requires at least one item; each item requires string `content` and may include string `context`.
+- Tool availability requires `memory.backend` to be `"hindsight"` or `"mnemopi"`.
+- The Hindsight queue flushes when it reaches 16 items or after its five-second debounce timer. Queue writes use `retainBatch(..., { async: true })`; OMP does not wait for server-side consolidation.
+- Every OMP-authored Hindsight provenance value is capped at 512 characters after normalization.
+- Hindsight automatic retention cadence, overlap, context, and transcript-window mode come from the active Hindsight configuration.
+- Mnemopi automatic retention and bank selection come from the active Mnemopi configuration.
 
 ## Errors
 - Throws `Mnemopi backend is not initialised for this session.` when `memory.backend == "mnemopi"` but no state exists.
@@ -119,6 +121,6 @@ Mnemopi:
 - Mnemopi auto-retain stores prepared transcripts with `source: "coding-agent-transcript"`, `importance: 0.65`, `veracity: "unknown"`, and `memoryType: "episode"`.
 - Hindsight mental-model bootstrap lives in the shared backend: `HindsightSessionState.runMentalModelLoad(...)` optionally resolves seeds, creates missing models, then caches a rendered `<mental_models>` block for prompt injection.
 - Built-in Hindsight seeds are `user-preferences`, `project-conventions`, and `project-decisions`. `projectTagged: true` seeds inherit the active scope's retain tags; untagged seeds read the whole bank.
-- Hindsight mental-model defaults: `hindsight.mentalModelsEnabled = true`, `hindsight.mentalModelAutoSeed = true`, `hindsight.mentalModelRefreshIntervalMs = 5 * 60 * 1000`, `hindsight.mentalModelMaxRenderChars = 16_000`. First-turn loading waits up to `MENTAL_MODEL_FIRST_TURN_DEADLINE_MS = 1500`.
+- Hindsight mental-model enablement, automatic seeding, refresh cadence, and render cap come from the active Hindsight configuration. The first-turn load is bounded by `MENTAL_MODEL_FIRST_TURN_DEADLINE_MS`.
 - Hindsight seed lifecycle is create-only. Changing `packages/coding-agent/src/hindsight/seeds.json` does not mutate existing server-side models.
 - `recall.md` and `reflect.md` rely on the same backend selection and scoping behavior.

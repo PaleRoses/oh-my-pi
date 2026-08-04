@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { RecallResult } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import {
 	composeRecallQuery,
 	formatCurrentTime,
@@ -253,13 +254,18 @@ describe("hasSubstantiveContent", () => {
 });
 
 describe("formatMemories", () => {
-	it("renders results with type and date suffixes when present", () => {
+	it("renders only canonical fact_type and the date suffixes when present", () => {
 		const out = formatMemories([
-			{ text: "fact one", type: "world", mentioned_at: "2024-01-01" },
+			{ text: "fact one", fact_type: "world", mentioned_at: "2024-01-01" },
 			{ text: "fact two" },
+			{ text: "fact three", type: "experience" } as unknown as RecallResult,
+			{ text: "fact four", fact_type: "world", type: "experience" } as unknown as RecallResult,
 		]);
 		expect(out).toContain("- fact one [world] (2024-01-01)");
 		expect(out).toContain("- fact two");
+		expect(out).toContain("- fact three");
+		expect(out).toContain("- fact four [world]");
+		expect(out).not.toContain("[experience]");
 	});
 
 	it("returns an empty string for no results", () => {

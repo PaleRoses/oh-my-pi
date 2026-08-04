@@ -67,36 +67,24 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				throw new Error("Hindsight backend is not initialised for this session.");
 			}
 
-			try {
-				const response = await state.client.recall(state.bankId, params.query, {
-					budget: state.config.recallBudget,
-					maxTokens: state.config.recallMaxTokens,
-					types: state.config.recallTypes.length > 0 ? state.config.recallTypes : undefined,
-					tags: state.recallTags,
-					tagsMatch: state.recallTagsMatch,
-				});
-				const results = response.results ?? [];
-				if (results.length === 0) {
-					return {
-						content: [{ type: "text", text: "No relevant memories found." }],
-						details: {},
-						useless: true,
-					};
-				}
-				const formatted = formatMemories(results);
+			const results = await state.recallResults(params.query);
+			if (results.length === 0) {
 				return {
-					content: [
-						{
-							type: "text",
-							text: `Found ${results.length} relevant ${results.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
-						},
-					],
+					content: [{ type: "text", text: "No relevant memories found." }],
 					details: {},
+					useless: true,
 				};
-			} catch (err) {
-				logger.warn("recall failed", { bankId: state.bankId, error: String(err) });
-				throw err instanceof Error ? err : new Error(String(err));
 			}
+			const formatted = formatMemories(results);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Found ${results.length} relevant ${results.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
+					},
+				],
+				details: {},
+			};
 		});
 	}
 }

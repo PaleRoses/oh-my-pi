@@ -7,6 +7,7 @@ import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
+import { formatAgentIdentityBadge, formatIdentityModel, snapshotAgentIdentity } from "../../session/identity";
 import { shortenPath } from "../../tools/render-utils";
 import * as git from "../../utils/git";
 import { sanitizeStatusText } from "../shared";
@@ -200,20 +201,21 @@ export class FooterComponent implements Component {
 		let statsLeft = statsParts.join(" ");
 
 		// Add model name on the right side, plus thinking level if model supports it
-		const modelName = state.model?.id || "no-model";
+		const modelName = formatIdentityModel(state.model) ?? "no-model";
+		const identityBadge = formatAgentIdentityBadge(snapshotAgentIdentity(this.session));
 
 		// Add thinking level hint when the current model advertises supported efforts
-		let rightSide = modelName;
+		let rightSide = `${identityBadge} • ${modelName}`;
 		if (state.model?.thinking) {
 			if (this.session.isAutoThinking) {
 				// Pending (no turn classified yet / classifying) shows a symbol-theme
 				// question-box marker; once resolved it shows `<level>`.
 				const resolved = this.session.autoResolvedThinkingLevel();
-				rightSide = `${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} auto`}`;
+				rightSide = `${identityBadge} • ${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} auto`}`;
 			} else {
 				const thinkingLevel = state.thinkingLevel ?? ThinkingLevel.Off;
 				if (thinkingLevel !== ThinkingLevel.Off) {
-					rightSide = `${modelName} • ${thinkingLevel}`;
+					rightSide = `${identityBadge} • ${modelName} • ${thinkingLevel}`;
 				}
 			}
 		}

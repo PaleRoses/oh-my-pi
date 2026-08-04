@@ -46,11 +46,41 @@ export interface HindsightRequestOptions {
 	signal?: AbortSignal;
 }
 
+/** String-only origin fields attached by OMP to retained Hindsight items. */
+export type MemoryProvenanceSource = "agent-retain" | "session-auto-retain";
+export type MemoryProvenanceKey =
+	| "session_id"
+	| "agent_kind"
+	| "prompt_profile"
+	| "prompt_principal"
+	| "prompt_source"
+	| "model"
+	| "project"
+	| "cwd"
+	| "source";
+export type MemoryProvenanceMetadata = Partial<Record<MemoryProvenanceKey, string>>;
+
+/** Rich memory fact returned by Hindsight recall. */
 export interface RecallResult {
 	id?: string;
 	text: string;
-	type?: string | null;
+	fact_type?: string | null;
+	entities?: string[] | null;
+	context?: string | null;
+	occurred_start?: string | null;
+	occurred_end?: string | null;
 	mentioned_at?: string | null;
+	document_id?: string | null;
+	metadata?: Record<string, string> | null;
+	chunk_id?: string | null;
+	tags?: string[] | null;
+	source_fact_ids?: string[] | null;
+	scores?: {
+		final: number;
+		reranker?: number | null;
+		semantic?: number | null;
+		keyword?: number | null;
+	} | null;
 	[key: string]: unknown;
 }
 

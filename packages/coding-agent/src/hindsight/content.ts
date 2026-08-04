@@ -8,17 +8,28 @@
  *   - recall query composition + truncation under a character budget
  *   - retention transcript framing
  */
+import type { MemoryProvenanceKey, RecallResult } from "./client";
 
 export interface HindsightMessage {
 	role: string;
 	content: string;
 }
 
-export interface RecallResultLike {
-	text: string;
-	type?: string | null;
-	mentioned_at?: string | null;
-}
+const MAX_INLINE_PROVENANCE_CHARS = 96;
+const MAX_RENDERED_TAGS = 8;
+const MAX_RENDERED_TAG_CHARS = 48;
+const MAX_INSPECTED_TAGS = 32;
+const ORIGIN_FIELDS = [
+	["source", "source"],
+	["session_id", "session"],
+	["agent_kind", "agent"],
+	["prompt_profile", "prompt"],
+	["prompt_principal", "principal"],
+	["prompt_source", "prompt-source"],
+	["model", "model"],
+	["project", "project"],
+	["cwd", "cwd"],
+] as const satisfies ReadonlyArray<readonly [MemoryProvenanceKey, string]>;
 
 const MEMORIES_REGEX = /<memories>[\s\S]*?<\/memories>/g;
 const LEGACY_HINDSIGHT_MEMORIES_REGEX = /<hindsight_memories>[\s\S]*?<\/hindsight_memories>/g;
@@ -61,15 +72,66 @@ export function hasSubstantiveContent(content: string): boolean {
 }
 
 /** Format recall results into a bullet list for context injection. */
-export function formatMemories(results: RecallResultLike[]): string {
+export function formatMemories(results: RecallResult[]): string {
 	if (results.length === 0) return "";
 	return results
-		.map(r => {
-			const typeStr = r.type ? ` [${r.type}]` : "";
-			const dateStr = r.mentioned_at ? ` (${r.mentioned_at})` : "";
-			return `- ${r.text}${typeStr}${dateStr}`;
+		.map(result => {
+			const factType = boundedInlineString(result.fact_type);
+			const date = boundedInlineString(result.mentioned_at);
+			const factTypeStr = factType ? ` [${factType}]` : "";
+			const dateStr = date ? ` (${date})` : "";
+			const details: string[] = [];
+
+			const documentId = boundedInlineString(result.document_id);
+			const factId = boundedInlineString(result.id);
+			if (documentId) details.push(`document=${documentId}`);
+			else if (factId) details.push(`fact=${factId}`);
+
+			const tags = formatRecallTags(result.tags);
+			if (tags) details.push(`tags=${tags}`);
+
+			if (isUnknownRecord(result.metadata)) {
+				for (const [key, label] of ORIGIN_FIELDS) {
+					const value = boundedInlineString(result.metadata[key]);
+					if (value) details.push(`${label}=${value}`);
+				}
+			}
+
+			const provenance = details.length > 0 ? ` {${details.join("; ")}}` : "";
+			const text = typeof result.text === "string" ? result.text : "";
+			return `- ${text}${factTypeStr}${dateStr}${provenance}`;
 		})
 		.join("\n\n");
+}
+
+function boundedInlineString(value: unknown, maxChars: number = MAX_INLINE_PROVENANCE_CHARS): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value
+		.trim()
+		.replace(/\s+/g, " ")
+		.replaceAll("<", "‹")
+		.replaceAll(">", "›")
+		.replace(/[{}[\]();]/g, "_");
+	if (!normalized) return undefined;
+	return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars - 1)}…`;
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function formatRecallTags(value: unknown): string | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const unique = new Set<string>();
+	for (const rawTag of value.slice(0, MAX_INSPECTED_TAGS)) {
+		const tag = boundedInlineString(rawTag, MAX_RENDERED_TAG_CHARS);
+		if (tag) unique.add(tag);
+	}
+	const tags = [...unique].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+	if (tags.length === 0) return undefined;
+	const visible = tags.slice(0, MAX_RENDERED_TAGS);
+	if (tags.length > MAX_RENDERED_TAGS || value.length > MAX_INSPECTED_TAGS) visible.push("…");
+	return visible.join(",");
 }
 
 /** Format current UTC time for the recall preamble. */

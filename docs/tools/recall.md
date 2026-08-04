@@ -6,7 +6,7 @@
 - Entry: `packages/coding-agent/src/tools/memory-recall.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/recall.md`
 - Hindsight collaborators:
-  - `packages/coding-agent/src/hindsight/state.ts` — session state, recall query defaults, prompt-side auto-recall.
+  - `packages/coding-agent/src/hindsight/state.ts` — session state, recall query composition, and prompt-side auto-recall.
   - `packages/coding-agent/src/hindsight/content.ts` — result formatting and UTC timestamp formatting.
   - `packages/coding-agent/src/hindsight/client.ts` — HTTP `recall` call and error mapping.
   - `packages/coding-agent/src/hindsight/bank.ts` — bank id and tag-filter scoping.
@@ -30,7 +30,11 @@ When matches exist:
 - `details = {}`
 
 Hindsight bullet format comes from `formatMemories(...)`:
-- each bullet is `- <text> [<type>] (<mentioned_at>)`; the type and timestamp suffixes appear only when those fields are present.
+- the complete shape is `- <text> [<fact_type>] (<mentioned_at>) {<details>}`; every suffix is omitted when its canonical field is absent or invalid, and only `fact_type` supplies the type suffix;
+- details render in this fixed order: `document=<document_id>` (falling back to `fact=<id>`), `tags=<tags>`, then the whitelisted metadata fields `source=<source>`, `session=<session_id>`, `agent=<agent_kind>`, `prompt=<prompt_profile>`, `principal=<prompt_principal>`, `prompt-source=<prompt_source>`, `model=<model>`, `project=<project>`, and `cwd=<cwd>`;
+- arbitrary metadata is never rendered. In particular, credential-shaped or nested metadata cannot enter the recall projection;
+- inline scalar fields are trimmed, internal whitespace is collapsed, `<` and `>` become `‹` and `›`, `{}`, `[]`, `()`, and `;` become `_`, and the result is capped at 96 characters;
+- tags are subject to the same normalization with a 48-character cap. The renderer inspects at most 32 entries, drops invalid and duplicate values, sorts the survivors lexicographically, renders at most eight, and appends `…` when additional entries may remain.
 
 Mnemopi bullet format comes from `formatScopedRecallWithIds(...)`:
 - each bullet is `- <content> (id: <id>|id unavailable) [<source>] (<YYYY-MM-DD>) c:<score>`; optional source, date, and score suffixes appear only when present.
@@ -78,16 +82,12 @@ When no matches exist:
   - Aborts through `untilAborted(...)` if the tool call signal is cancelled.
 
 ## Limits & Caps
-- Tool availability requires `memory.backend` to be `"hindsight"` or `"mnemopi"`; default `memory.backend` is `"off"`.
-- Hindsight client default budget for raw `HindsightApi.recall(...)` is `"mid"`; this tool overrides from config.
-- Hindsight recall settings:
-  - `hindsight.recallBudget = "mid"`
-  - `hindsight.recallMaxTokens = 1024`
-  - `hindsight.recallTypes = ["world", "experience"]`
-- Mnemopi recall settings:
-  - `mnemopi.recallLimit = 8`
-  - `mnemopi.scoping` selects which local bank(s) are searched
-- The explicit tool path does not apply `hindsight.recallContextTurns`, `hindsight.recallMaxQueryChars`, `mnemopi.recallContextTurns`, or `mnemopi.recallMaxQueryChars`; those caps only affect backend auto-recall query composition.
+- Input requires one string `query`.
+- Tool availability requires `memory.backend` to be `"hindsight"` or `"mnemopi"`.
+- Hindsight receives the configured recall budget, maximum token count, fact-type filter, and active scope tags. An empty fact-type list is omitted from the request.
+- The explicit tool path does not apply the auto-recall context-turn or query-character caps; it sends the supplied query directly.
+- Hindsight's deterministic provenance projection is bounded independently of the returned fact text: scalar fields are capped at 96 characters; at most 32 tags are inspected, each tag is capped at 48 characters, and at most eight unique sorted tags are rendered.
+- Mnemopi result count and bank selection come from the active Mnemopi configuration.
 
 ## Errors
 - Throws `Mnemopi backend is not initialised for this session.` when `memory.backend == "mnemopi"` but no state exists.

@@ -5,11 +5,20 @@
 ### Added
 
 - Added immutable `systemPromptProfiles` / `systemPromptProfileRoutes` configuration for routing main and subagent sessions by agent kind and model glob. Profiles may replace the maintained prompt, append trailing instructions, exclude user-global context files, and disable memory or MCP server instructions; the selected ID is persisted in the transcript and provider cache identity, model changes that would select another profile are rejected before mutation, and incompatible live session switches leave the current session intact.
+- Added `/identity` to report the session role, prompt principal/profile/source, model, session ID, memory permission/backend, and active Hindsight bank, project, scope, and tags. The provider-facing system prompt carries the same derived prompt/model/memory identity, and the footer shows the prompt principal, Hindsight bank/project, and provider/model route.
+- Added richer Hindsight memory provenance: explicit retains capture bounded session, agent, prompt-profile, prompt-principal, prompt-source, model, project, working-directory, and source metadata when queued, automatic transcript retains identify their distinct source, and recall bullets expose only a bounded deterministic whitelist of fact/document IDs, tags, and origin fields.
+- Added `/prompt` as a compact, validated system-prompt profile form: inspect profiles and ordered routes, set or unset individual prompt elements, assign or remove unconditional main/sub routes, and refuse invalid files, fields, values, or referenced-profile deletion before persisting.
 - Added guarded source-checkout updates for the development launcher. `omp update` now fetches a repository-configured upstream, validates and commits a detached-HEAD merge, and publishes the configured fork branch without force; `omp update --check` reports upstream availability without replacing the launcher with an official release.
+
+### Changed
+
+- Hindsight recall rendering now consumes the canonical `fact_type` field exclusively; the legacy `type` compatibility field is no longer interpreted.
 
 ### Fixed
 
 - Fixed Hindsight auto-recall freezing the first prompt's memories into every later turn. Root prompts now retrieve against their own bounded context, replace the previous recall projection, and remove stale recalled context when retrieval returns nothing or fails; subagents still reuse the parent's bank without issuing duplicate automatic recalls.
+- Fixed automatic fallback, resume, and manual model transitions leaving the provider-facing system prompt or hidden task policy built for the previous model. Model mutation now owns prompt/tool reconciliation and rolls back when synchronization fails.
+- Fixed live Hindsight bank and scoping changes leaving active subagents pinned to the parent's replaced client, config, tags, and bank cache. Child operations now resolve through the parent's current state while queued retains preserve the route captured at enqueue time.
 
 ## [17.2.5] - 2026-08-03
 

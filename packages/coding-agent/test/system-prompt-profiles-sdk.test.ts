@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -6,6 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { formatAgentIdentityReport, snapshotAgentIdentity } from "@oh-my-pi/pi-coding-agent/session/identity";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -108,8 +109,43 @@ describe("SDK system prompt profiles", () => {
 		expect(session.sessionManager.getHeader()?.systemPromptProfile).toBe("driver");
 		expect(prompt).toContain("DRIVER CONSTITUTION");
 		expect(prompt).not.toContain("WORKER CONSTITUTION");
-		expect(prompt).toContain('<system-prompt-profile id="driver" />');
+		expect(prompt).toContain("Prompt profile: driver");
 		expect(session.agent.promptCacheKey).toContain("system-prompt-profile:driver");
+		expect(prompt).toContain("<agent-identity>");
+		expect(prompt).toContain("Prompt principal: prompt-profile:driver");
+		expect(prompt).toContain("Model: mock/driver-primary");
+		expect(session.effectiveIdentity.prompt).toEqual({
+			profileId: "driver",
+			principal: "prompt-profile:driver",
+			source: "system-prompt-profile",
+		});
+	});
+
+	it("injects the active Hindsight bank, project, and scope into the runtime identity prompt", async () => {
+		const settings = routedSettings();
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.apiUrl", "http://localhost:8888");
+		settings.override("hindsight.bankId", "memory-bank");
+		settings.override("hindsight.scoping", "per-project-tagged");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		settings.override("hindsight.autoRecall", false);
+
+		const session = await create("driver-primary", settings);
+		const project = path.basename(dir.path());
+		const prompt = session.agent.state.systemPrompt.join("\n\n");
+		const hindsight = snapshotAgentIdentity(session).memory.hindsight;
+
+		expect(hindsight).toEqual({
+			status: "active",
+			bank: "memory-bank",
+			project,
+			scope: "per-project-tagged",
+			tags: [`project:${project}`],
+		});
+		expect(prompt).toContain("Model: mock/driver-primary");
+		expect(prompt).toContain(
+			`Memory identity: bank=memory-bank; scope=per-project-tagged; project=${project}; tags=project:${project}`,
+		);
 	});
 
 	it("routes a subagent using the same model family to the worker profile instead of ambient SYSTEM.md", async () => {
@@ -158,6 +194,11 @@ describe("SDK system prompt profiles", () => {
 		expect(session.getToolByName("learn")).toBeUndefined();
 		expect(session.getToolByName("manage_skill")).toBeUndefined();
 		expect(prompt).not.toContain("## Auto-Learn (experimental)");
+		expect(session.effectiveIdentity.memory).toEqual({
+			status: "disabled-by-profile",
+			profileId: "worker",
+		});
+		expect(snapshotAgentIdentity(session).memory.hindsight).toEqual({ status: "disabled-by-profile" });
 	});
 
 	it("routes an internal session explicitly marked as a subagent to the worker profile", async () => {
@@ -167,6 +208,12 @@ describe("SDK system prompt profiles", () => {
 		expect(session.systemPromptProfileId).toBe("worker");
 		expect(prompt).toContain("WORKER CONSTITUTION");
 		expect(prompt).not.toContain("DRIVER CONSTITUTION");
+	});
+
+	it("rejects main-agent identity on a structurally subagent session", async () => {
+		await expect(create("driver-primary", routedSettings(), { agentKind: "main", taskDepth: 1 })).rejects.toThrow(
+			'agentKind "main" contradicts subagent task metadata.',
+		);
 	});
 	it("selects the worker profile for a forked subagent instead of inheriting the driver", async () => {
 		const sessionDir = path.join(dir.path(), "fork-sessions");
@@ -228,7 +275,36 @@ describe("SDK system prompt profiles", () => {
 
 		expect(prompt).toContain("EXPLICIT SYSTEM PROMPT");
 		expect(prompt).not.toContain("DRIVER CONSTITUTION");
-		expect(prompt).toContain('<system-prompt-profile id="driver" />');
+		expect(prompt).toContain("Prompt profile: driver");
+		expect(session.effectiveIdentity.prompt).toEqual({
+			profileId: "driver",
+			principal: "explicit-system-prompt",
+			source: "explicit-system-prompt",
+		});
+	});
+
+	it("records discovered SYSTEM.md and the maintained prompt as distinct effective principals", async () => {
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"todo.enabled": false,
+			"retry.enabled": false,
+		});
+		const discovered = await create("driver-primary", settings, {
+			customSystemPrompt: "AMBIENT SYSTEM PROMPT",
+			customSystemPromptSource: "discovered",
+		});
+		const maintained = await create("driver-primary", settings);
+
+		expect(discovered.effectiveIdentity.prompt).toEqual({
+			profileId: undefined,
+			principal: "discovered-system-prompt",
+			source: "discovered-system-prompt",
+		});
+		expect(maintained.effectiveIdentity.prompt).toEqual({
+			profileId: undefined,
+			principal: "maintained-omp-prompt",
+			source: "maintained-omp-prompt",
+		});
 	});
 
 	it("keeps the maintained OMP prompt when a selected profile has no prompt override", async () => {
@@ -243,17 +319,22 @@ describe("SDK system prompt profiles", () => {
 		const prompt = session.agent.state.systemPrompt.join("\n\n");
 
 		expect(prompt).toContain("ROLE\n==============");
-		expect(prompt).toContain('<system-prompt-profile id="driver" />');
+		expect(prompt).toContain("Prompt profile: driver");
+		expect(session.effectiveIdentity.prompt.source).toBe("maintained-omp-prompt");
 	});
 
 	it("allows compatible model changes and rejects profile-changing transitions before mutation", async () => {
 		const session = await create("driver-primary");
 		const compatible = createMockModel({ id: "driver-secondary", handler: () => ({ content: ["ok"] }) });
 		const incompatible = createMockModel({ id: "worker-primary", handler: () => ({ content: ["ok"] }) });
+		expect(formatAgentIdentityReport(snapshotAgentIdentity(session))).toContain("Model: mock/driver-primary");
 
 		await session.setModel(compatible);
 		expect(session.model?.id).toBe("driver-secondary");
 		expect(session.agent.promptCacheKey).toContain("system-prompt-profile:driver");
+		const changedReport = formatAgentIdentityReport(snapshotAgentIdentity(session));
+		expect(changedReport).toContain("Model: mock/driver-secondary");
+		expect(changedReport).not.toContain("Model: mock/driver-primary");
 		await expect(session.setModel(incompatible)).rejects.toThrow('pinned to system prompt profile "driver"');
 		expect(session.model?.id).toBe("driver-secondary");
 	});
@@ -279,6 +360,58 @@ describe("SDK system prompt profiles", () => {
 		}
 	});
 
+	it("rejects a config-drifted target model before mutating the live session", async () => {
+		const settings = routedSettings();
+		settings.override("systemPromptProfileRoutes", [
+			{ agentKind: "main", model: "mock/driver-primary", profile: "driver" },
+			{ agentKind: "main", model: "mock/driver-stale", profile: "worker" },
+			{ agentKind: "sub", profile: "worker" },
+		]);
+		const sessionDir = path.join(dir.path(), "drift-sessions");
+		const session = await create("driver-primary", settings, {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+		});
+		await session.prompt("live-session");
+		const previousFile = session.sessionFile;
+		const previousMessages = [...session.messages];
+		const staleModel = createMockModel({ id: "driver-stale", handler: () => ({ content: ["stale"] }) });
+
+		const target = SessionManager.create(dir.path(), sessionDir);
+		target.pinSystemPromptProfile("driver");
+		target.appendModelChange("mock/driver-stale", "default");
+		target.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "stale target" }],
+			api: staleModel.api,
+			provider: staleModel.provider,
+			model: staleModel.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		await target.flush();
+		const targetFile = target.getSessionFile();
+		await target.close();
+		if (!targetFile) throw new Error("Expected persisted target session");
+		const resumeState = await SessionManager.peekResumeState(targetFile);
+		expect(resumeState.header?.systemPromptProfile).toBe("driver");
+		expect(resumeState.targetModelStrings).toContain("mock/driver-stale");
+		expect(targetFile).not.toBe(previousFile);
+		vi.spyOn(registry, "getAvailable").mockReturnValue([staleModel]);
+
+		await expect(session.switchSession(targetFile)).rejects.toThrow('pinned to system prompt profile "driver"');
+
+		expect(session.sessionFile).toBe(previousFile);
+		expect(session.model?.id).toBe("driver-primary");
+		expect(session.messages).toEqual(previousMessages);
+	});
 	it("preserves the profile across new transcripts and refuses a live switch to another profile", async () => {
 		const sessionDir = path.join(dir.path(), "sessions");
 		const session = await create("driver-primary", routedSettings(), {

@@ -219,6 +219,22 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
+	it("keeps ask active when an explicit tool set omits it", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			toolNames: ["read"],
+			hasUI: true,
+		});
+
+		try {
+			expect(session.getToolByName("ask")).toBeDefined();
+			expect(session.getActiveToolNames()).toContain("ask");
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	it("normalizes legacy builtin toolNames before selecting the active SDK tools", async () => {
 		const tempDir = makeTempDir();
 

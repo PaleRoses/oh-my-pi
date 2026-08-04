@@ -385,7 +385,13 @@ systemPromptProfileRoutes:
 
 A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `instructions` or `instructionsFile` adds a final profile-owned system block after generated prompt context. `projectContextOnly: true` excludes context files outside the session cwd and its additional workspace roots. A route may use `deny: true` and an optional `reason` instead of `profile`.
 
-OMP pins the selected profile ID when it creates the transcript. Resume, model cycling, prewalk, and retry fallback may continue only when routing still selects that ID. A live switch may enter only a transcript pinned to the same profile and leaves the current session intact if its saved model is incompatible. Changing prompt identity requires a new transcript.
+Use `/prompt` for the concise profile form instead of editing these record and
+array settings in the general panel. It shows profiles and ordered routes,
+sets or unsets individual profile elements, assigns an unconditional `main`
+or `sub` route, validates referenced files before saving, and reports the
+required OMP restart. `/new` retains the current profile.
+
+OMP pins the selected profile ID when it creates the transcript. Resume, model cycling, prewalk, and retry fallback may continue only when routing still selects that ID. A live switch may enter only a transcript pinned to the same profile and leaves the current session intact if its saved model is incompatible. Changing prompt identity requires a new OMP process and transcript; `/new` intentionally inherits the current profile.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|

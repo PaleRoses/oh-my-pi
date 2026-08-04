@@ -169,24 +169,67 @@ export function getOpenAiRemoteCompactionPayload(
 	};
 }
 
+function resolveSessionPath(
+	entries: readonly SessionEntry[],
+	leafId: string | null | undefined,
+	byId: ReadonlyMap<string, SessionEntry>,
+): SessionEntry[] {
+	if (leafId === null) return [];
+	const leaf = (leafId ? byId.get(leafId) : undefined) ?? entries.at(-1);
+	if (!leaf) return [];
+
+	const path: SessionEntry[] = [];
+	const seen = new Set<string>();
+	let current: SessionEntry | undefined = leaf;
+	while (current && !seen.has(current.id)) {
+		seen.add(current.id);
+		path.push(current);
+		current = current.parentId ? byId.get(current.parentId) : undefined;
+	}
+	path.reverse();
+	return path;
+}
+
+function collectSessionModels(path: readonly SessionEntry[]): {
+	models: Record<string, string>;
+	lastModelChangeRole: string | undefined;
+} {
+	const models: Record<string, string> = {};
+	let hasExplicitDefaultModel = false;
+	let lastModelChangeRole: string | undefined;
+	for (const entry of path) {
+		if (entry.type === "model_change") {
+			if (!entry.model) continue;
+			const role = entry.role ?? "default";
+			models[role] = entry.model;
+			lastModelChangeRole = role;
+			if (role === "default") hasExplicitDefaultModel = true;
+		} else if (entry.type === "message" && entry.message.role === "assistant" && !hasExplicitDefaultModel) {
+			models.default = `${entry.message.provider}/${entry.message.model}`;
+		}
+	}
+	return { models, lastModelChangeRole };
+}
+
+export function getRestorableSessionModelsFromEntries(
+	entries: readonly SessionEntry[],
+	leafId?: string | null,
+	byId?: ReadonlyMap<string, SessionEntry>,
+): string[] {
+	const index = byId ?? new Map(entries.map(entry => [entry.id, entry]));
+	const { models, lastModelChangeRole } = collectSessionModels(resolveSessionPath(entries, leafId, index));
+	return getRestorableSessionModels(models, lastModelChangeRole);
+}
+
 export function buildSessionContext(
 	entries: SessionEntry[],
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 	options?: BuildSessionContextOptions,
 ): SessionContext {
-	// Build uuid index if not available
-	if (!byId) {
-		byId = new Map<string, SessionEntry>();
-		for (const entry of entries) {
-			byId.set(entry.id, entry);
-		}
-	}
-
-	// Find leaf
-	let leaf: SessionEntry | undefined;
-	if (leafId === null) {
-		// Explicitly null - return no messages (navigated to before first entry)
+	const index = byId ?? new Map(entries.map(entry => [entry.id, entry]));
+	const path = resolveSessionPath(entries, leafId, index);
+	if (path.length === 0) {
 		return {
 			messages: [],
 			thinkingLevel: "off",
@@ -196,79 +239,23 @@ export function buildSessionContext(
 			mode: "none",
 		};
 	}
-	if (leafId) {
-		leaf = byId.get(leafId);
-	}
-	if (!leaf) {
-		// Fallback to last entry (when leafId is undefined)
-		leaf = entries[entries.length - 1];
-	}
-
-	if (!leaf) {
-		return {
-			messages: [],
-			thinkingLevel: "off",
-			serviceTier: undefined,
-			models: {},
-			injectedTtsrRules: [],
-			mode: "none",
-		};
-	}
-
-	// Walk from leaf to root, collecting path. Corrupt/pre-fix files can contain
-	// parent cycles; stop at the first repeat so session load is bounded.
-	const path: SessionEntry[] = [];
-	const seenPathIds = new Set<string>();
-	let current: SessionEntry | undefined = leaf;
-	while (current && !seenPathIds.has(current.id)) {
-		seenPathIds.add(current.id);
-		path.push(current);
-		current = current.parentId ? byId.get(current.parentId) : undefined;
-	}
-	path.reverse();
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
 	let configuredThinkingLevel: string | undefined;
 	let serviceTier: ServiceTierByFamily | undefined;
-	const models: Record<string, string> = {};
+	const { models } = collectSessionModels(path);
 	let compaction: CompactionEntry | null = null;
 	const injectedTtsrRulesSet = new Set<string>();
 	let mode = "none";
 	let modeData: Record<string, unknown> | undefined;
-	// Track whether an explicit `model_change` with role="default" has been
-	// seen on this path. Once a user (or the agent itself) records an
-	// explicit default, later assistant-message inference must NOT overwrite
-	// it: temporary fallbacks (retry fallback, context promotion) and
-	// server-side model downgrades both produce assistant messages tagged
-	// with the wrong model id, which previously clobbered the user's pick on
-	// resume (issue #849).
-	let hasExplicitDefaultModel = false;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel ?? "off";
 			configuredThinkingLevel = entry.configured ?? entry.thinkingLevel ?? undefined;
-		} else if (entry.type === "model_change") {
-			// New format: { model: "provider/id", role?: string }
-			if (entry.model) {
-				const role = entry.role ?? "default";
-				models[role] = entry.model;
-				if (role === "default") {
-					hasExplicitDefaultModel = true;
-				}
-			}
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
-		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			// Legacy fallback: infer default model from assistant messages only
-			// when no explicit `model_change` (role=default) entry has been
-			// recorded yet. Newer sessions always record an explicit default
-			// model_change at the start of the conversation, so this branch is
-			// only used to keep pre-model_change sessions working.
-			if (!hasExplicitDefaultModel) {
-				models.default = `${entry.message.provider}/${entry.message.model}`;
-			}
 		} else if (entry.type === "compaction") {
 			compaction = entry;
 		} else if (entry.type === "ttsr_injection") {

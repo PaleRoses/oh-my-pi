@@ -34,7 +34,6 @@ import {
 	shouldDisableReasoning,
 	toReasoningEffort,
 } from "../thinking";
-import type { EditMode } from "../utils/edit-mode";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycleResult } from "./agent-session-types";
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
@@ -51,8 +50,6 @@ export interface ModelControlsHost {
 	model(): Model | undefined;
 	sessionId(): string;
 	promptGeneration(): number;
-	resolveActiveEditMode(): EditMode;
-	syncAfterModelChange(previousEditMode: EditMode): Promise<void>;
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
 	clearActiveRetryFallback(): void;
 	clearInheritedProviderPromptCacheKey(): void;
@@ -211,16 +208,15 @@ export class ModelControls {
 			persist?: boolean;
 		},
 	): Promise<{ switched: boolean }> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		if (!this.#host.modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 
+		await this.#host.setModelWithProviderSessionReset(targetModel);
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
 		this.#host.clearActiveRetryFallback();
-		await this.#host.setModelWithProviderSessionReset(targetModel);
 		this.#host.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
 		if (options?.persist) {
 			this.#host.settings.setModelRole(
@@ -240,7 +236,6 @@ export class ModelControls {
 		// Re-apply thinking for the newly selected model. Prefer the model's
 		// configured defaultLevel; otherwise preserve the current level (or auto).
 		this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
-		await this.#host.syncAfterModelChange(previousEditMode);
 		return { switched: true };
 	}
 
@@ -256,16 +251,15 @@ export class ModelControls {
 		thinkingLevel?: ConfiguredThinkingLevel,
 		options?: { ephemeral?: boolean },
 	): Promise<void> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		if (!this.#host.modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 
+		await this.#host.setModelWithProviderSessionReset(targetModel);
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
 		this.#host.clearActiveRetryFallback();
-		await this.#host.setModelWithProviderSessionReset(targetModel);
 		this.#host.sessionManager.appendModelChange(
 			`${targetModel.provider}/${targetModel.id}`,
 			options?.ephemeral ? EPHEMERAL_MODEL_CHANGE_ROLE : "temporary",
@@ -279,7 +273,6 @@ export class ModelControls {
 		} else {
 			this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		}
-		await this.#host.syncAfterModelChange(previousEditMode);
 	}
 
 	/**
@@ -410,7 +403,6 @@ export class ModelControls {
 	}
 
 	async #cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		const scopedModels = await this.#getScopedModelsWithApiKey();
 		if (scopedModels.length <= 1) return undefined;
 
@@ -431,13 +423,11 @@ export class ModelControls {
 
 		// Apply the scoped model's configured thinking level, preserving auto.
 		this.setThinkingLevel(this.#autoThinking ? AUTO_THINKING : next.thinkingLevel);
-		await this.#host.syncAfterModelChange(previousEditMode);
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
 	async #cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		const availableModels = this.#host.modelRegistry.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
@@ -461,7 +451,6 @@ export class ModelControls {
 		this.#host.settings.getStorage()?.recordModelUsage(`${nextModel.provider}/${nextModel.id}`);
 		// Re-apply the current thinking level (or auto) for the newly selected model
 		this.#reapplyThinkingLevel();
-		await this.#host.syncAfterModelChange(previousEditMode);
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 	}

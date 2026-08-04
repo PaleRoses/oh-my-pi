@@ -26,6 +26,7 @@ import {
 	setMnemopiSessionState,
 } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { createEffectiveSessionIdentity } from "@oh-my-pi/pi-coding-agent/session/identity";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { MemoryEditTool } from "@oh-my-pi/pi-coding-agent/tools/memory-edit";
 import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall";
@@ -38,6 +39,11 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);
 
 const TEST_SESSION_ID = "test-session-id";
+const TEST_IDENTITY = createEffectiveSessionIdentity({
+	role: "main",
+	promptSource: "maintained-omp-prompt",
+	memoryEnabled: true,
+});
 let registeredState: HindsightSessionState | undefined;
 let registeredMnemopiState: MnemopiSessionState | undefined;
 let tempDbPath: string | undefined;
@@ -102,13 +108,15 @@ function registerState(client: HindsightApi, settings?: Settings, opts: Register
 		sessionId: TEST_SESSION_ID,
 		client,
 		bankId: "test-bank",
+		projectLabel: "test-project",
 		retainTags: opts.retainTags,
 		recallTags: opts.recallTags,
 		recallTagsMatch: opts.recallTagsMatch,
 		config: makeConfig(),
 		session: {
 			sessionId: TEST_SESSION_ID,
-			sessionManager: { getEntries: () => [] } as never,
+			effectiveIdentity: TEST_IDENTITY,
+			sessionManager: { getEntries: () => [], getCwd: () => "/tmp" } as never,
 			emitNotice: () => {},
 			getHindsightSessionState: () => registeredState,
 			...opts.sessionOverrides,
@@ -314,13 +322,13 @@ describe("retain.execute", () => {
 		expect(items).toEqual([
 			expect.objectContaining({
 				content: "fact one",
-				metadata: { session_id: TEST_SESSION_ID },
+				metadata: expect.objectContaining({ session_id: TEST_SESSION_ID }),
 				tags: ["project:pi"],
 			}),
 			expect.objectContaining({
 				content: "fact two",
 				context: "user override",
-				metadata: { session_id: TEST_SESSION_ID },
+				metadata: expect.objectContaining({ session_id: TEST_SESSION_ID }),
 				tags: ["project:pi"],
 			}),
 		]);
@@ -1124,7 +1132,7 @@ describe("recall.execute", () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
 			results: [
-				{ text: "fact one", type: "world", id: "1" },
+				{ text: "fact one", fact_type: "world", id: "1" },
 				{ text: "fact two", id: "2" },
 			],
 		} as never);
@@ -1134,7 +1142,7 @@ describe("recall.execute", () => {
 		const result = await tool.execute("call-4", { query: "anything" });
 		const block = (result.content[0] as { text: string }).text;
 		expect(block).toMatch(/^Found 2 relevant memories \(as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/);
-		expect(block).toContain("- fact one [world]");
+		expect(block).toContain("- fact one [world] {fact=1}");
 		expect(block).toContain("- fact two");
 	});
 
