@@ -57,11 +57,11 @@ export type PromptProfileFieldDefinition =
 			readonly input: "toggle";
 	  };
 
-export const PROMPT_PROFILE_FIELD_DEFINITIONS: readonly PromptProfileFieldDefinition[] = [
+export type PromptProfileSelectorFieldDefinition = Exclude<PromptProfileFieldDefinition, { readonly input: "file" }>;
+
+export const PROMPT_PROFILE_FIELD_DEFINITIONS: readonly PromptProfileSelectorFieldDefinition[] = [
 	{ field: "prompt", label: "Base prompt", input: "markdown" },
-	{ field: "promptFile", label: "Base prompt file", input: "file" },
 	{ field: "instructions", label: "Appended instructions", input: "markdown" },
-	{ field: "instructionsFile", label: "Appended instructions file", input: "file" },
 	{ field: "projectContextOnly", label: "Project context only", input: "toggle" },
 	{ field: "memory", label: "Memory", input: "toggle" },
 	{ field: "mcpServerInstructions", label: "MCP server instructions", input: "toggle" },

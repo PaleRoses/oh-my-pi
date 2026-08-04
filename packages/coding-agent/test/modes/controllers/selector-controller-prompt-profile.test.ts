@@ -90,8 +90,6 @@ describe("SelectorController prompt profiles", () => {
 		const selector = children[0] as PromptProfileSelectorComponent;
 		selector.handleInput("\n");
 		selector.handleInput("\x1b[B");
-		selector.handleInput("\x1b[B");
-		selector.handleInput("\x1b[B");
 		selector.handleInput("\n");
 		selector.handleInput("\n");
 		await opened.promise;

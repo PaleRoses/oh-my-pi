@@ -84,6 +84,7 @@ function createHarness(overrides: Partial<PromptSettingsStore> = {}, editorResul
 				principal: "maintained-omp-prompt",
 				source: "maintained-omp-prompt",
 			},
+			maintainedPromptFile: "/omp/src/prompts/system/system-prompt.md",
 		},
 		{ onApply, onClose, onEditMarkdown, onOpenMarkdownFile, requestRender },
 	);
@@ -109,14 +110,14 @@ describe("PromptProfileSelectorComponent", () => {
 		harness.component.handleInput("\n");
 		const profileScreen = render(harness.component);
 		expect(profileScreen).toContain("Base prompt");
-		expect(profileScreen).toContain("Base prompt file");
 		expect(profileScreen).toContain("Appended instructions");
-		expect(profileScreen).toContain("Appended instructions file");
+		expect(profileScreen).not.toContain("Base prompt file");
+		expect(profileScreen).not.toContain("Appended instructions file");
 		expect(profileScreen).toContain("Project context only");
 		expect(profileScreen).toContain("Memory");
 		expect(profileScreen).toContain("MCP server instructions");
 
-		pressDown(harness.component, 5);
+		pressDown(harness.component, 3);
 		harness.component.handleInput("\n");
 		harness.component.handleInput("\x1b[B");
 		harness.component.handleInput("\n");
@@ -127,29 +128,51 @@ describe("PromptProfileSelectorComponent", () => {
 		expect(render(harness.component)).toContain("Restart OMP to load the new prompt identity");
 	});
 
-	it("edits inline Markdown externally and restores it through the mutual-exclusion persistence owner", async () => {
+	it("edits explicitly inline Markdown externally and restores it through the persistence owner", async () => {
 		const harness = createHarness(
 			{
-				systemPromptProfiles: { driver: { promptFile: "/stale/driver.md" }, worker: {} },
+				systemPromptProfiles: { driver: { prompt: "OLD INLINE DRIVER" }, worker: {} },
 			},
 			{ editedMarkdown: "INLINE DRIVER" },
 		);
 
 		harness.component.handleInput("\n");
 		harness.component.handleInput("\n");
+		expect(render(harness.component)).toContain("Open inline Markdown editor");
+		expect(render(harness.component)).not.toContain("Create inline Markdown");
 		harness.component.handleInput("\n");
 		await settleOperation();
 
-		expect(harness.onEditMarkdown).toHaveBeenCalledWith("");
+		expect(harness.onEditMarkdown).toHaveBeenCalledWith("OLD INLINE DRIVER");
 		expect(harness.store.systemPromptProfiles.driver).toEqual({ prompt: "INLINE DRIVER" });
 
 		harness.component.handleInput("\n");
+		harness.component.handleInput("\x1b[B");
 		harness.component.handleInput("\x1b[B");
 		harness.component.handleInput("\n");
 		await settleOperation();
 
 		expect(harness.store.systemPromptProfiles.driver).toEqual({});
 		expect(harness.flush).toHaveBeenCalledTimes(2);
+	});
+
+	it("opens the maintained base prompt file instead of offering inline Markdown creation", async () => {
+		const harness = createHarness({}, { openedMarkdownFile: true });
+
+		harness.component.handleInput("\n");
+		harness.component.handleInput("\n");
+		const fieldScreen = render(harness.component);
+		expect(fieldScreen).toContain("Open maintained Markdown");
+		expect(fieldScreen).toContain("Use Markdown file");
+		expect(fieldScreen).not.toContain("Create inline Markdown");
+		expect(fieldScreen).not.toContain("Restore default");
+
+		harness.component.handleInput("\n");
+		await settleOperation();
+
+		expect(harness.onOpenMarkdownFile).toHaveBeenCalledWith("/omp/src/prompts/system/system-prompt.md");
+		expect(harness.onApply).not.toHaveBeenCalled();
+		expect(harness.flush).not.toHaveBeenCalled();
 	});
 
 	it("opens a configured Markdown file and keeps path editing secondary", async () => {
@@ -165,19 +188,16 @@ describe("PromptProfileSelectorComponent", () => {
 			);
 
 			harness.component.handleInput("\n");
-			pressDown(harness.component, 3);
+			pressDown(harness.component, 1);
 			harness.component.handleInput("\n");
 			expect(render(harness.component)).toContain("Open Markdown");
 			harness.component.handleInput("\n");
-			await harness.flushed;
 			await settleOperation();
 
 			expect(harness.onOpenMarkdownFile).toHaveBeenCalledWith(instructionsFile);
 			expect(harness.store.systemPromptProfiles.driver).toEqual({ instructionsFile });
-			expect(harness.flush).toHaveBeenCalledTimes(1);
+			expect(harness.flush).not.toHaveBeenCalled();
 
-			pressDown(harness.component, 3);
-			harness.component.handleInput("\n");
 			harness.component.handleInput("\x1b[B");
 			harness.component.handleInput("\n");
 
@@ -253,7 +273,7 @@ describe("PromptProfileSelectorComponent", () => {
 		const harness = createHarness();
 
 		harness.component.handleInput("\n");
-		pressDown(harness.component, 7);
+		pressDown(harness.component, 5);
 		harness.component.handleInput("\n");
 		harness.component.handleInput("\n");
 		await settleOperation();

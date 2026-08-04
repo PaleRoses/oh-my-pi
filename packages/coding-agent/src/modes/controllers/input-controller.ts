@@ -34,7 +34,7 @@ import {
 	readTextFromClipboard,
 } from "../../utils/clipboard";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
-import { getEditorCommand, openFileInEditor, openInEditor } from "../../utils/external-editor";
+import { getEditorCommand, getFileEditorCommand, openFileInEditor, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
 
@@ -1979,8 +1979,8 @@ export class InputController {
 
 	async #withExternalEditor<T>(
 		run: (editorCmd: string, stdio: [number | "inherit", number | "inherit", number | "inherit"]) => Promise<T>,
+		editorCmd: string | undefined = getEditorCommand(),
 	): Promise<T | undefined> {
-		const editorCmd = getEditorCommand();
 		if (!editorCmd) {
 			this.ctx.showWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.");
 			return undefined;
@@ -2015,7 +2015,10 @@ export class InputController {
 	}
 
 	async openMarkdownFile(filePath: string): Promise<boolean | undefined> {
-		return this.#withExternalEditor((editorCmd, stdio) => openFileInEditor(editorCmd, filePath, { stdio }));
+		return this.#withExternalEditor(
+			(editorCmd, stdio) => openFileInEditor(editorCmd, filePath, { stdio }),
+			getFileEditorCommand(),
+		);
 	}
 
 	async openExternalEditor(): Promise<void> {

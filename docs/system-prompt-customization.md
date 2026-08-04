@@ -66,13 +66,17 @@ Profiles support these prompt fields:
 - `mcpServerInstructions: false` omits MCP server instructions while leaving the configured MCP tools available.
 
 `/prompt` is the compact operator surface for these settings. Bare `/prompt` or
-`/prompts` opens the keyboard-driven profile menu in the interactive TUI.
-Selecting a configured `promptFile` or `instructionsFile` opens that resolved
-Markdown path directly in `$VISUAL` or `$EDITOR`; inline `prompt` and
-`instructions` content opens in the same external Markdown editor, while
-changing a file path remains a separate action. The edited source is validated
-before the profile configuration is persisted to the active global
-`config.yml`.
+`/prompts` opens the keyboard-driven profile menu in the interactive TUI. The
+menu presents one base-prompt document and one appended-instructions document;
+the inline and file-backed configuration representations are not separate UI
+rows. A configured `promptFile` or `instructionsFile` opens at its resolved
+path. When the base prompt uses maintained OMP defaults and package source is
+available, the menu opens the authoritative
+`src/prompts/system/system-prompt.md` template directly. OMP uses `$VISUAL` or
+`$EDITOR` when configured and otherwise opens a real file through the macOS
+desktop application. Explicitly inline configuration still round-trips through
+the external Markdown editor. Changing the configured file path remains a
+separate action.
 
 Explicit commands and ACP retain the textual surface. `/prompt status` shows
 the active immutable identity plus every configured profile and route;

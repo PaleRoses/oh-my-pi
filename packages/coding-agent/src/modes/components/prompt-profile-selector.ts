@@ -20,6 +20,7 @@ import {
 	type PromptProfileField,
 	type PromptProfileFieldDefinition,
 	type PromptProfileOperation,
+	type PromptProfileSelectorFieldDefinition,
 	type PromptProfileUpdateReceipt,
 } from "../../slash-commands/helpers/prompt-profile";
 import { shortenPath } from "../../tools/render-utils";
@@ -35,6 +36,7 @@ export interface PromptProfileSelectorIdentity {
 
 export interface PromptProfileSelectorModel extends PromptProfileConfiguration {
 	readonly identity: PromptProfileSelectorIdentity;
+	readonly maintainedPromptFile?: string;
 }
 
 export interface PromptProfileSelectorCallbacks {
@@ -46,15 +48,22 @@ export interface PromptProfileSelectorCallbacks {
 }
 
 type PromptProfileFileDefinition = Extract<PromptProfileFieldDefinition, { readonly input: "file" }>;
+type PromptProfileMarkdownDefinition = Extract<PromptProfileSelectorFieldDefinition, { readonly input: "markdown" }>;
+
+const PROMPT_PROFILE_FILE_DEFINITIONS = {
+	prompt: { field: "promptFile", label: "Base prompt file", input: "file" },
+	instructions: { field: "instructionsFile", label: "Appended instructions file", input: "file" },
+} as const satisfies Record<"prompt" | "instructions", PromptProfileFileDefinition>;
 
 type PromptProfileSelectorScreen =
 	| { readonly type: "home" }
 	| { readonly type: "profile"; readonly profileId: string }
-	| { readonly type: "field"; readonly profileId: string; readonly definition: PromptProfileFieldDefinition }
+	| { readonly type: "field"; readonly profileId: string; readonly definition: PromptProfileSelectorFieldDefinition }
 	| {
 			readonly type: "editPath";
 			readonly profileId: string;
 			readonly definition: PromptProfileFileDefinition;
+			readonly owner: PromptProfileMarkdownDefinition;
 			readonly value: string;
 	  }
 	| { readonly type: "create"; readonly value: string }
@@ -138,11 +147,19 @@ function describeProfileField(profile: SystemPromptProfileSetting, field: Prompt
 	const value = profileFieldValue(profile, field);
 	switch (field) {
 		case "prompt":
-			return typeof value === "string" ? `inline (${value.length} chars)` : "maintained prompt (default)";
+			return profile.promptFile !== undefined
+				? shortenPath(profile.promptFile)
+				: typeof value === "string"
+					? `inline (${value.length} chars)`
+					: "maintained prompt (default)";
 		case "promptFile":
 			return typeof value === "string" ? shortenPath(value) : "none";
 		case "instructions":
-			return typeof value === "string" ? `inline (${value.length} chars)` : "none";
+			return profile.instructionsFile !== undefined
+				? shortenPath(profile.instructionsFile)
+				: typeof value === "string"
+					? `inline (${value.length} chars)`
+					: "none";
 		case "instructionsFile":
 			return typeof value === "string" ? shortenPath(value) : "none";
 		case "projectContextOnly":
@@ -297,8 +314,9 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 			case "profile":
 				return `Profile: ${this.#state.screen.profileId}`;
 			case "field":
-			case "editPath":
 				return `${this.#state.screen.profileId}: ${this.#state.screen.definition.label}`;
+			case "editPath":
+				return `${this.#state.screen.profileId}: ${this.#state.screen.owner.label}`;
 			case "create":
 				return "Create system prompt profile";
 			case "route":
@@ -414,79 +432,88 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		);
 	}
 
-	#fieldSelector(profileId: string, definition: PromptProfileFieldDefinition): SelectList {
+	#fieldSelector(profileId: string, definition: PromptProfileSelectorFieldDefinition): SelectList {
 		const profile = this.#state.model.profiles[profileId] ?? {};
 		const back = () => this.#navigate({ type: "profile", profileId });
 		const fieldScreen = { type: "field", profileId, definition } as const;
-		const restore: SelectorAction = {
+		const restore = (field: PromptProfileField): SelectorAction => ({
 			id: "restore",
 			label: "Restore default",
 			description: "Remove the configured value",
 			run: () => {
-				void this.#apply(
-					{ type: "restoreField", profileId, field: definition.field },
-					{ type: "profile", profileId },
-				);
+				void this.#apply({ type: "restoreField", profileId, field }, { type: "profile", profileId });
 			},
-		};
+		});
 		switch (definition.input) {
 			case "markdown": {
-				const content = profile[definition.field] ?? "";
-				return this.#actionSelector(
-					[
-						{
-							id: "open",
-							label: content.length === 0 ? "Create inline Markdown" : "Open Markdown editor",
-							description: content.length === 0 ? "Stored in global config" : `inline (${content.length} chars)`,
-							run: () => {
-								void this.#editAndApply(fieldScreen, async () => {
-									const edited = await this.#callbacks.onEditMarkdown(content);
-									if (edited === null || edited === undefined) return undefined;
-									return { type: "setField", profileId, field: definition.field, value: edited };
-								});
-							},
-						},
-						restore,
-						{ id: "back", label: "Back", run: back },
-					],
-					back,
-				);
-			}
-			case "file": {
-				const source = profile[definition.field];
+				const fileDefinition = PROMPT_PROFILE_FILE_DEFINITIONS[definition.field];
+				const source = profile[fileDefinition.field];
+				const content = profile[definition.field];
+				const maintainedPromptFile = this.#state.model.maintainedPromptFile;
+				const configuredField =
+					source !== undefined ? fileDefinition.field : content !== undefined ? definition.field : undefined;
 				const openAction: SelectorAction[] =
-					source === undefined
-						? []
-						: [
+					source !== undefined
+						? [
 								{
 									id: "open",
 									label: "Open Markdown",
 									description: shortenPath(source),
 									run: () => {
 										void this.#editAndApply(fieldScreen, async () => {
-											const opened = await this.#callbacks.onOpenMarkdownFile(source);
-											if (opened !== true) return undefined;
-											return { type: "setField", profileId, field: definition.field, value: source };
+											await this.#callbacks.onOpenMarkdownFile(source);
+											return undefined;
 										});
 									},
 								},
-							];
+							]
+						: content !== undefined
+							? [
+									{
+										id: "open",
+										label: "Open inline Markdown editor",
+										description: `Stored in global config (${content.length} chars)`,
+										run: () => {
+											void this.#editAndApply(fieldScreen, async () => {
+												const edited = await this.#callbacks.onEditMarkdown(content);
+												if (edited === null || edited === undefined) return undefined;
+												return { type: "setField", profileId, field: definition.field, value: edited };
+											});
+										},
+									},
+								]
+							: definition.field === "prompt" && maintainedPromptFile !== undefined
+								? [
+										{
+											id: "open",
+											label: "Open maintained Markdown",
+											description: shortenPath(maintainedPromptFile),
+											run: () => {
+												void this.#editAndApply(fieldScreen, async () => {
+													await this.#callbacks.onOpenMarkdownFile(maintainedPromptFile);
+													return undefined;
+												});
+											},
+										},
+									]
+								: [];
 				return this.#actionSelector(
 					[
 						...openAction,
 						{
 							id: "path",
-							label: source === undefined ? "Set file path" : "Change file path",
-							description: source === undefined ? "Choose an existing Markdown file" : shortenPath(source),
+							label: source === undefined ? "Use Markdown file" : "Change file path",
+							description: source === undefined ? "Configure an existing Markdown file" : shortenPath(source),
 							run: () =>
 								this.#navigate({
 									type: "editPath",
 									profileId,
-									definition,
+									definition: fileDefinition,
+									owner: definition,
 									value: source ?? "",
 								}),
 						},
-						restore,
+						...(configuredField === undefined ? [] : [restore(configuredField)]),
 						{ id: "back", label: "Back", run: back },
 					],
 					back,
@@ -515,7 +542,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 								);
 							},
 						},
-						restore,
+						restore(definition.field),
 						{ id: "back", label: "Back", run: back },
 					],
 					back,
@@ -534,8 +561,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 				{ ...screen, value },
 			);
 		};
-		input.onEscape = () =>
-			this.#navigate({ type: "field", profileId: screen.profileId, definition: screen.definition });
+		input.onEscape = () => this.#navigate({ type: "field", profileId: screen.profileId, definition: screen.owner });
 		this.#interactive = input;
 		return [
 			new Text(

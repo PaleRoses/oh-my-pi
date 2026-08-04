@@ -61,6 +61,7 @@ import {
 	toResetUsageAccounts,
 } from "../../slash-commands/helpers/reset-usage";
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
+import { resolveMaintainedSystemPromptFilePath } from "../../system-prompt";
 import { resolveSystemPromptProfileFilePath } from "../../system-prompt-profiles";
 import {
 	AUTO_THINKING,
@@ -180,6 +181,7 @@ export class SelectorController {
 						principal: identity.prompt.principal,
 						source: identity.prompt.source,
 					},
+					maintainedPromptFile: resolveMaintainedSystemPromptFilePath(),
 				},
 				{
 					onApply: operation =>

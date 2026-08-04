@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { getEditorCommand, openFileInEditor } from "../src/utils/external-editor";
+import { getEditorCommand, getFileEditorCommand, openFileInEditor } from "../src/utils/external-editor";
 
 interface MutableProcess {
 	platform: NodeJS.Platform;
@@ -62,18 +63,27 @@ describe("getEditorCommand", () => {
 		setPlatform("linux");
 		expect(getEditorCommand()).toBeUndefined();
 	});
+
+	it("uses the macOS desktop file opener when no terminal editor is configured", () => {
+		delete Bun.env.VISUAL;
+		delete Bun.env.EDITOR;
+		setPlatform("darwin");
+		expect(getFileEditorCommand()).toBe("/usr/bin/open");
+	});
 });
 
 describe("openFileInEditor", () => {
 	it("hands the actual file path to the configured editor", async () => {
 		const root = TempDir.createSync("@omp-external-editor-");
 		const target = path.join(root.path(), "prompt.md");
-		const editor = path.join(root.path(), "editor.ts");
+		const editorDir = path.join(root.path(), "Editor App");
+		const editor = path.join(editorDir, "editor.ts");
 		try {
+			await fs.mkdir(editorDir);
 			await Bun.write(target, "before\n");
 			await Bun.write(editor, 'await Bun.write(Bun.argv.at(-1)!, "after\\n");\n');
 
-			expect(await openFileInEditor(`${process.execPath} ${editor}`, target)).toBe(true);
+			expect(await openFileInEditor(`"${process.execPath}" "${editor}"`, target)).toBe(true);
 			expect(await Bun.file(target).text()).toBe("after\n");
 		} finally {
 			await root.remove();
