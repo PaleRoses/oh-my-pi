@@ -54,6 +54,7 @@ import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
 import { type LogoutAccount, toLogoutAccounts } from "../../slash-commands/helpers/logout";
+import { applyPromptProfileOperation } from "../../slash-commands/helpers/prompt-profile";
 import {
 	describeRedeemOutcome,
 	type ResetUsageAccount,
@@ -92,6 +93,7 @@ import { ModelHubComponent, type ModelRoleSelectionScope } from "../components/m
 import { ModelPickerComponent } from "../components/model-picker";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
 import { PluginSelectorComponent } from "../components/plugin-selector";
+import { PromptProfileSelectorComponent } from "../components/prompt-profile-selector";
 import { ReadToolGroupComponent } from "../components/read-tool-group";
 import { ResetUsageSelectorComponent } from "../components/reset-usage-selector";
 import { renderSegmentTrack } from "../components/segment-track";
@@ -161,6 +163,37 @@ export class SelectorController {
 		this.ctx.editorContainer.addChild(component);
 		this.ctx.ui.setFocus(focus);
 		this.ctx.ui.requestRender();
+	}
+
+	showPromptProfileSelector(): void {
+		this.showSelector(done => {
+			const identity = this.ctx.session.effectiveIdentity;
+			const selector = new PromptProfileSelectorComponent(
+				{
+					profiles: this.ctx.settings.get("systemPromptProfiles"),
+					routes: this.ctx.settings.get("systemPromptProfileRoutes"),
+					identity: {
+						role: identity.role,
+						profileId: identity.prompt.profileId,
+						principal: identity.prompt.principal,
+						source: identity.prompt.source,
+					},
+				},
+				{
+					onApply: operation =>
+						applyPromptProfileOperation(
+							{
+								cwd: this.ctx.sessionManager.getCwd(),
+								settings: this.ctx.settings,
+							},
+							operation,
+						),
+					onClose: done,
+					requestRender: () => this.ctx.ui.requestRender(),
+				},
+			);
+			return { component: selector, focus: selector };
+		});
 	}
 
 	showSettingsSelector(): void {

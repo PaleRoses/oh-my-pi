@@ -4701,6 +4701,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showSettingsSelector();
 	}
 
+	showPromptProfileSelector(): void {
+		this.#selectorController.showPromptProfileSelector();
+	}
+
 	showAdvisorConfigure(): void {
 		this.#selectorController.showAdvisorConfigure();
 	}

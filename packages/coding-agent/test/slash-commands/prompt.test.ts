@@ -4,6 +4,7 @@ import type {
 	SystemPromptProfileSetting,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
+import { applyPromptProfileOperation } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/prompt-profile";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -143,13 +144,39 @@ describe("/prompt slash command", () => {
 		);
 	});
 
-	it("routes all new sessions of one agent kind without disturbing the other kind", async () => {
+	it("validates UI-created profiles and file-backed fields through the canonical resolver before persistence", async () => {
+		const harness = createRuntime();
+
+		await applyPromptProfileOperation(harness.runtime, { type: "createProfile", profileId: "researcher" });
+
+		expect(harness.store.systemPromptProfiles.researcher).toEqual({});
+		expect(harness.flush).toHaveBeenCalledTimes(1);
+
+		harness.set.mockClear();
+		await expect(
+			applyPromptProfileOperation(harness.runtime, { type: "createProfile", profileId: "invalid profile" }),
+		).rejects.toThrow("must match");
+		expect(harness.set).not.toHaveBeenCalled();
+
+		await executeAcpBuiltinSlashCommand(
+			"/prompt set driver promptFile /definitely/missing/system-prompt.md",
+			harness.runtime,
+		);
+		expect(harness.set).not.toHaveBeenCalled();
+		expect(harness.output).toHaveBeenLastCalledWith(
+			expect.stringContaining('Could not read system prompt profile "driver"'),
+		);
+	});
+
+	it("puts the unconditional route first while preserving model-specific and deny route order", async () => {
 		const harness = createRuntime({
 			systemPromptProfiles: { driver: {}, researcher: {}, worker: {} },
 			systemPromptProfileRoutes: [
 				{ agentKind: "main", model: "anthropic/*", profile: "researcher" },
+				{ agentKind: "main", model: "google/*", deny: true, reason: "blocked" },
 				{ agentKind: "main", profile: "driver" },
 				{ agentKind: "sub", profile: "worker" },
+				{ agentKind: "sub", model: "openai/*", deny: true },
 			],
 		});
 
@@ -158,7 +185,9 @@ describe("/prompt slash command", () => {
 		expect(harness.store.systemPromptProfileRoutes).toEqual([
 			{ agentKind: "main", profile: "researcher" },
 			{ agentKind: "main", model: "anthropic/*", profile: "researcher" },
+			{ agentKind: "main", model: "google/*", deny: true, reason: "blocked" },
 			{ agentKind: "sub", profile: "worker" },
+			{ agentKind: "sub", model: "openai/*", deny: true },
 		]);
 		expect(harness.output).toHaveBeenCalledWith(
 			"Set the global unconditional main prompt route to researcher.\nGlobal config updated. Restart OMP to load the new prompt identity; /new keeps the current profile. Project and --config overrides still take precedence.",
@@ -187,6 +216,7 @@ describe("/prompt slash command", () => {
 		const harness = createRuntime({
 			systemPromptProfileRoutes: [
 				{ agentKind: "main", model: "openai-codex/*", profile: "driver" },
+				{ agentKind: "main", deny: true, reason: "main disabled" },
 				{ agentKind: "main", profile: "driver" },
 				{ agentKind: "sub", profile: "worker" },
 			],
@@ -196,6 +226,7 @@ describe("/prompt slash command", () => {
 
 		expect(harness.store.systemPromptProfileRoutes).toEqual([
 			{ agentKind: "main", model: "openai-codex/*", profile: "driver" },
+			{ agentKind: "main", deny: true, reason: "main disabled" },
 			{ agentKind: "sub", profile: "worker" },
 		]);
 	});

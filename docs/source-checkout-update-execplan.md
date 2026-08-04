@@ -18,6 +18,7 @@ The behavior is visible by configuring this checkout for `upstream/main` and `or
 - [x] (2026-08-03 02:55Z) Exercised source-launcher dispatch, check-only, no-op, conflict rollback, validation-failure rollback, validation-drift rollback, remote-divergence refusal, and successful update behavior.
 - [x] (2026-08-03 02:55Z) Passed coding-agent checks, 62 fork validation tests, the binary build, and both active `omp update --check` and `omp update` commands.
 - [x] (2026-08-03 02:51Z) Published implementation commit `c5595e30bde76129fac5ffff02e045817015e1e7` to `origin/agent-profiles` through the ordinary update command and verified the remote ref matches.
+- [x] (2026-08-04 06:38Z) Rebuilt the host native addon after the 17.2.8 merge, proved settings persistence through the live `/prompt` menu, and added native build, regenerated-lock staging, Bazel-link quarantine, and file-lock validation to future source updates.
 
 ## Surprises & Discoveries
 
@@ -26,6 +27,12 @@ The behavior is visible by configuring this checkout for `upstream/main` and `or
 
 - Observation: the active executable is already an explicit source launcher rather than an installed release binary.
   Evidence: `~/.bun/bin/omp` resolves to `packages/coding-agent/scripts/omp`, which launches `src/cli.ts` after restoring the caller's working directory.
+
+- Observation: upstream can change the generated N-API surface while the ignored host `.node` addon remains from the previous source revision.
+  Evidence: after the 17.2.8 merge, the live `/prompt` editor reached settings persistence and failed at `NativeFileLock.tryAcquire`; rebuilding `packages/natives/native/pi_natives.darwin-arm64.node` made the existing file-lock contract and the same live save path pass.
+
+- Observation: Bazel names a root convenience symlink after the checkout directory, so the old `/bazel-pi` ignore rule did not cover this source fork's `bazel-omp-hindsight-per-prompt` output.
+  Evidence: a native build created that untracked link; replacing the checkout-specific rule with `/bazel-*` keeps every root Bazel convenience link outside validation state without hiding source files below the root.
 
 ## Decision Log
 
@@ -41,13 +48,17 @@ The behavior is visible by configuring this checkout for `upstream/main` and `or
   Rationale: This makes every destructive boundary explicit. The previous published commit remains recoverable, conflicts cannot leave the active checkout half-updated, and the fork cannot be rewritten silently.
   Date/Author: 2026-08-03 / Blue Rose
 
+- Decision: source-update validation rebuilds the host native addon, stages a regenerated `MODULE.bazel.lock`, ignores root Bazel convenience links, and runs the native file-lock contract before accepting a merged runtime.
+  Rationale: the addon and Bazel links are derived artifacts, while the Bazel dependency projection is tracked. Git integration cannot update the addon, and TypeScript checks and builds alone do not prove that the runtime binding or native lockfile matches the merged wrapper.
+  Date/Author: 2026-08-04 / Blue Rose
+
 - Decision: Official release updating remains unchanged when OMP is not launched by the source launcher.
   Rationale: npm, Bun, Homebrew, mise, and standalone binary users still need the established signed/versioned release behavior.
   Date/Author: 2026-08-03 / Blue Rose
 
 ## Outcomes & Retrospective
 
-Implementation, behavioral validation, and publication are complete. The source launcher now owns its update path explicitly; a regression test proves that this path dispatches before official release discovery, while official package installations retain the existing release updater. Transaction tests prove that check-only and no-op paths preserve `HEAD`, successful updates create and publish a two-parent merge while detached, and merge conflicts, validation failures, or validation worktree drift restore the original clean checkout. The ordinary `omp update` command validated and published implementation commit `c5595e30bde76129fac5ffff02e045817015e1e7`; the remote receipt matched exactly.
+Implementation, behavioral validation, and publication are complete. The source launcher now owns its update path explicitly; a regression test proves that this path dispatches before official release discovery, while official package installations retain the existing release updater. Transaction tests prove that check-only and no-op paths preserve `HEAD`, successful updates create and publish a two-parent merge while detached, regenerated native lockfiles join that merge, and merge conflicts, validation failures, or other validation worktree drift restore the original clean checkout. The updater rebuilds the ignored host native addon and exercises its file-lock contract so the running source launcher cannot retain a stale N-API surface after integration. The ordinary `omp update` command validated and published implementation commit `c5595e30bde76129fac5ffff02e045817015e1e7`; the remote receipt matched exactly.
 
 ## Context and Orientation
 
@@ -63,7 +74,7 @@ A source update is a repository integration, not a package reinstall. It fetches
 
 Extend `packages/coding-agent/scripts/omp` to export the real repository root as `OMP_SOURCE_CHECKOUT` before it changes directory. The environment variable exists only for source-launched OMP processes and therefore becomes the dispatch boundary.
 
-Add `packages/coding-agent/src/cli/source-checkout-update.ts`. It validates that the environment path is the actual Git worktree root, loads opt-in metadata from repository-local Git config, fetches the configured publication and upstream branches into remote-tracking refs, and reports upstream availability for check-only mode. For an update it requires a clean worktree and publication history that is an ancestor of local `HEAD`. It merges upstream with `--no-ff --no-commit`, runs the fork's dependency, type/style, profile-test, and build gates, commits only after those gates pass, then pushes `HEAD` to the configured publication branch without force. Merge conflicts or failed validation trigger `git merge --abort`; the pre-update commit remains checked out.
+Add `packages/coding-agent/src/cli/source-checkout-update.ts`. It validates that the environment path is the actual Git worktree root, loads opt-in metadata from repository-local Git config, fetches the configured publication and upstream branches into remote-tracking refs, and reports upstream availability for check-only mode. For an update it requires a clean worktree and publication history that is an ancestor of local `HEAD`. It merges upstream with `--no-ff --no-commit`, installs dependencies, rebuilds the host native addon, stages a regenerated `MODULE.bazel.lock`, runs the native file-lock contract plus the fork's type/style, profile-test, and binary-build gates, commits only after those gates pass, then pushes `HEAD` to the configured publication branch without force. Root Bazel convenience links are ignored derived outputs. Merge conflicts or failed validation trigger `git merge --abort`; the pre-update commit remains checked out.
 
 Update `runUpdateCommand` in `packages/coding-agent/src/cli/update-cli.ts` to dispatch to the source updater whenever `OMP_SOURCE_CHECKOUT` is present. The official registry and installer path remains byte-for-byte behaviorally unchanged otherwise.
 

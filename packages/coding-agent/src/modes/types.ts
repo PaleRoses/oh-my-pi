@@ -382,6 +382,7 @@ export interface InteractiveModeContext {
 
 	// Selector handling
 	showSettingsSelector(): void;
+	showPromptProfileSelector(): void;
 	showAdvisorConfigure(): void;
 	showHistorySearch(): void;
 	showExtensionsDashboard(): void;

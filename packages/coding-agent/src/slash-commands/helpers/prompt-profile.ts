@@ -6,9 +6,9 @@ import type {
 import { createSystemPromptProfileResolver } from "../../system-prompt-profiles";
 import { parseCommandArgs } from "../../utils/command-args";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SubcommandDef } from "../types";
-import { commandConsumed, errorMessage, usage } from "./parse";
+import { commandConsumed, errorMessage } from "./parse";
 
-const RESTART_NOTICE =
+export const PROMPT_PROFILE_RESTART_NOTICE =
 	"Global config updated. Restart OMP to load the new prompt identity; /new keeps the current profile. Project and --config overrides still take precedence.";
 const PROMPT_USAGE = [
 	"Prompt profile commands:",
@@ -38,7 +38,55 @@ export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "help", description: "Show prompt profile command usage" },
 ];
 
-type PromptProfileField = keyof SystemPromptProfileSetting;
+export type PromptProfileField = keyof SystemPromptProfileSetting;
+
+export interface PromptProfileFieldDefinition {
+	readonly field: PromptProfileField;
+	readonly label: string;
+	readonly input: "text" | "toggle";
+}
+
+export const PROMPT_PROFILE_FIELD_DEFINITIONS: readonly PromptProfileFieldDefinition[] = [
+	{ field: "prompt", label: "Base prompt", input: "text" },
+	{ field: "promptFile", label: "Base prompt file", input: "text" },
+	{ field: "instructions", label: "Appended instructions", input: "text" },
+	{ field: "instructionsFile", label: "Appended instructions file", input: "text" },
+	{ field: "projectContextOnly", label: "Project context only", input: "toggle" },
+	{ field: "memory", label: "Memory", input: "toggle" },
+	{ field: "mcpServerInstructions", label: "MCP server instructions", input: "toggle" },
+];
+
+export type PromptProfileOperation =
+	| { readonly type: "createProfile"; readonly profileId: string }
+	| {
+			readonly type: "setField";
+			readonly profileId: string;
+			readonly field: PromptProfileField;
+			readonly value: string;
+	  }
+	| { readonly type: "restoreField"; readonly profileId: string; readonly field: PromptProfileField }
+	| {
+			readonly type: "assignRoute";
+			readonly agentKind: SystemPromptProfileAgentKind;
+			readonly profileId: string;
+	  }
+	| { readonly type: "clearRoute"; readonly agentKind: SystemPromptProfileAgentKind }
+	| { readonly type: "removeProfile"; readonly profileId: string };
+
+export interface PromptProfileConfiguration {
+	readonly profiles: Record<string, SystemPromptProfileSetting>;
+	readonly routes: readonly SystemPromptProfileRouteSetting[];
+}
+
+export interface PromptProfileUpdateReceipt {
+	readonly configuration: PromptProfileConfiguration;
+	readonly message: string;
+	readonly restartNotice?: string;
+}
+
+export type PromptProfileConfigurationRuntime = Pick<SlashCommandRuntime, "cwd" | "settings" | "notifyConfigChanged">;
+
+type PromptProfileCommandRuntime = PromptProfileConfigurationRuntime & Pick<SlashCommandRuntime, "session" | "output">;
 
 function normalizeField(raw: string): PromptProfileField {
 	const normalized = raw.replaceAll(/[-_]/g, "").toLowerCase();
@@ -141,7 +189,7 @@ function formatRoute(route: SystemPromptProfileRouteSetting, index: number): str
 	return `${index + 1}. ${selector} -> ${target}`;
 }
 
-function formatPromptStatus(runtime: SlashCommandRuntime): string {
+function formatPromptStatus(runtime: PromptProfileCommandRuntime): string {
 	const identity = runtime.session.effectiveIdentity;
 	const profiles = runtime.settings.get("systemPromptProfiles");
 	const routes = runtime.settings.get("systemPromptProfileRoutes");
@@ -178,10 +226,10 @@ type PromptConfigurationUpdate =
 	| { readonly profiles?: never; readonly routes: SystemPromptProfileRouteSetting[] };
 
 async function persistConfiguration(
-	runtime: SlashCommandRuntime,
+	runtime: PromptProfileConfigurationRuntime,
 	update: PromptConfigurationUpdate,
 	message: string,
-): Promise<SlashCommandResult> {
+): Promise<PromptProfileUpdateReceipt> {
 	const profiles = update.profiles ?? runtime.settings.get("systemPromptProfiles");
 	const routes = update.routes ?? runtime.settings.get("systemPromptProfileRoutes");
 	await createSystemPromptProfileResolver({ profiles, routes, cwd: runtime.cwd });
@@ -192,86 +240,196 @@ async function persistConfiguration(
 	}
 	await runtime.settings.flush();
 	await runtime.notifyConfigChanged?.();
-	await runtime.output(`${message}\n${RESTART_NOTICE}`);
+	return {
+		configuration: { profiles, routes },
+		message,
+		restartNotice: PROMPT_PROFILE_RESTART_NOTICE,
+	};
+}
+
+function currentConfiguration(runtime: PromptProfileConfigurationRuntime): PromptProfileConfiguration {
+	return {
+		profiles: runtime.settings.get("systemPromptProfiles"),
+		routes: runtime.settings.get("systemPromptProfileRoutes"),
+	};
+}
+
+function hasProfile(profiles: Record<string, SystemPromptProfileSetting>, profileId: string): boolean {
+	return Object.hasOwn(profiles, profileId);
+}
+
+function isUnconditionalProfileRoute(
+	route: SystemPromptProfileRouteSetting,
+	agentKind: SystemPromptProfileAgentKind,
+): boolean {
+	return route.deny !== true && route.agentKind === agentKind && route.model === undefined;
+}
+
+function assignUnconditionalRoute(
+	routes: readonly SystemPromptProfileRouteSetting[],
+	agentKind: SystemPromptProfileAgentKind,
+	profileId: string,
+): SystemPromptProfileRouteSetting[] {
+	const nextRoute: SystemPromptProfileRouteSetting = { agentKind, profile: profileId };
+	const retainedRoutes = routes.filter(route => !isUnconditionalProfileRoute(route, agentKind));
+	return [nextRoute, ...retainedRoutes];
+}
+
+export async function applyPromptProfileOperation(
+	runtime: PromptProfileConfigurationRuntime,
+	operation: PromptProfileOperation,
+): Promise<PromptProfileUpdateReceipt> {
+	const profiles = runtime.settings.get("systemPromptProfiles");
+	const routes = runtime.settings.get("systemPromptProfileRoutes");
+	switch (operation.type) {
+		case "createProfile": {
+			if (hasProfile(profiles, operation.profileId)) {
+				throw new Error(`System prompt profile "${operation.profileId}" already exists.`);
+			}
+			return persistConfiguration(
+				runtime,
+				{ profiles: { ...profiles, [operation.profileId]: {} } },
+				`Created system prompt profile ${operation.profileId}.`,
+			);
+		}
+		case "setField": {
+			const profile = hasProfile(profiles, operation.profileId) ? profiles[operation.profileId] : {};
+			const nextProfiles = {
+				...profiles,
+				[operation.profileId]: setProfileField(profile ?? {}, operation.field, operation.value),
+			};
+			return persistConfiguration(
+				runtime,
+				{ profiles: nextProfiles },
+				`Saved ${operation.profileId}.${operation.field}.`,
+			);
+		}
+		case "restoreField": {
+			const profile = profiles[operation.profileId];
+			if (!hasProfile(profiles, operation.profileId) || profile === undefined) {
+				throw new Error(`Unknown system prompt profile "${operation.profileId}".`);
+			}
+			return persistConfiguration(
+				runtime,
+				{
+					profiles: {
+						...profiles,
+						[operation.profileId]: omitProfileField(profile, operation.field),
+					},
+				},
+				`Restored ${operation.profileId}.${operation.field} to its default.`,
+			);
+		}
+		case "assignRoute": {
+			if (!hasProfile(profiles, operation.profileId)) {
+				throw new Error(`Unknown system prompt profile "${operation.profileId}".`);
+			}
+			return persistConfiguration(
+				runtime,
+				{ routes: assignUnconditionalRoute(routes, operation.agentKind, operation.profileId) },
+				`Set the global unconditional ${operation.agentKind} prompt route to ${operation.profileId}.`,
+			);
+		}
+		case "clearRoute": {
+			const nextRoutes = routes.filter(route => !isUnconditionalProfileRoute(route, operation.agentKind));
+			if (nextRoutes.length === routes.length) {
+				return {
+					configuration: currentConfiguration(runtime),
+					message: `No unconditional ${operation.agentKind} prompt route is configured.`,
+				};
+			}
+			return persistConfiguration(
+				runtime,
+				{ routes: nextRoutes },
+				`Removed the global unconditional ${operation.agentKind} prompt route.`,
+			);
+		}
+		case "removeProfile": {
+			if (!hasProfile(profiles, operation.profileId)) {
+				throw new Error(`Unknown system prompt profile "${operation.profileId}".`);
+			}
+			const referenced = routes.some(route => route.deny !== true && route.profile === operation.profileId);
+			if (referenced)
+				throw new Error(`System prompt profile "${operation.profileId}" is still referenced by a route.`);
+			const nextProfiles = Object.fromEntries(
+				Object.entries(profiles).filter(([candidateId]) => candidateId !== operation.profileId),
+			);
+			return persistConfiguration(
+				runtime,
+				{ profiles: nextProfiles },
+				`Removed system prompt profile ${operation.profileId}.`,
+			);
+		}
+	}
+}
+
+async function outputUpdate(
+	runtime: PromptProfileCommandRuntime,
+	operation: PromptProfileOperation,
+): Promise<SlashCommandResult> {
+	const receipt = await applyPromptProfileOperation(runtime, operation);
+	await runtime.output(
+		receipt.restartNotice === undefined ? receipt.message : `${receipt.message}\n${receipt.restartNotice}`,
+	);
 	return commandConsumed();
 }
 
-async function handleSet(args: readonly string[], runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+async function outputMessage(runtime: PromptProfileCommandRuntime, message: string): Promise<SlashCommandResult> {
+	await runtime.output(message);
+	return commandConsumed();
+}
+
+async function handleSet(args: readonly string[], runtime: PromptProfileCommandRuntime): Promise<SlashCommandResult> {
 	const [profileId, rawField, ...valueParts] = args;
-	if (!profileId || !rawField || valueParts.length === 0) return usage(PROMPT_USAGE, runtime);
-	const field = normalizeField(rawField);
-	const profiles = runtime.settings.get("systemPromptProfiles");
-	const profile = profiles[profileId] ?? {};
-	const nextProfiles = {
-		...profiles,
-		[profileId]: setProfileField(profile, field, valueParts.join(" ")),
-	};
-	return persistConfiguration(runtime, { profiles: nextProfiles }, `Saved ${profileId}.${field}.`);
+	if (!profileId || !rawField || valueParts.length === 0) return outputMessage(runtime, PROMPT_USAGE);
+	return outputUpdate(runtime, {
+		type: "setField",
+		profileId,
+		field: normalizeField(rawField),
+		value: valueParts.join(" "),
+	});
 }
 
-async function handleUnset(args: readonly string[], runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+async function handleUnset(args: readonly string[], runtime: PromptProfileCommandRuntime): Promise<SlashCommandResult> {
 	const [profileId, rawField, ...extra] = args;
-	if (!profileId || !rawField || extra.length > 0) return usage(PROMPT_USAGE, runtime);
-	const field = normalizeField(rawField);
-	const profiles = runtime.settings.get("systemPromptProfiles");
-	const profile = profiles[profileId];
-	if (!profile) throw new Error(`Unknown system prompt profile "${profileId}".`);
-	const nextProfiles = { ...profiles, [profileId]: omitProfileField(profile, field) };
-	return persistConfiguration(runtime, { profiles: nextProfiles }, `Restored ${profileId}.${field} to its default.`);
+	if (!profileId || !rawField || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
+	return outputUpdate(runtime, { type: "restoreField", profileId, field: normalizeField(rawField) });
 }
 
-async function handleUse(args: readonly string[], runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+async function handleUse(args: readonly string[], runtime: PromptProfileCommandRuntime): Promise<SlashCommandResult> {
 	const [profileId, rawKind, ...extra] = args;
-	if (!profileId || extra.length > 0) return usage(PROMPT_USAGE, runtime);
-	const profiles = runtime.settings.get("systemPromptProfiles");
-	if (!profiles[profileId]) throw new Error(`Unknown system prompt profile "${profileId}".`);
-	const kind = parseAgentKind(rawKind, runtime.session.effectiveIdentity.role);
-	const retainedRoutes = runtime.settings
-		.get("systemPromptProfileRoutes")
-		.filter(route => route.agentKind !== kind || route.model !== undefined);
-	const nextRoutes: SystemPromptProfileRouteSetting[] = [{ agentKind: kind, profile: profileId }, ...retainedRoutes];
-	return persistConfiguration(
-		runtime,
-		{ routes: nextRoutes },
-		`Set the global unconditional ${kind} prompt route to ${profileId}.`,
-	);
+	if (!profileId || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
+	return outputUpdate(runtime, {
+		type: "assignRoute",
+		profileId,
+		agentKind: parseAgentKind(rawKind, runtime.session.effectiveIdentity.role),
+	});
 }
 
-async function handleUnroute(args: readonly string[], runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+async function handleUnroute(
+	args: readonly string[],
+	runtime: PromptProfileCommandRuntime,
+): Promise<SlashCommandResult> {
 	const [rawKind, ...extra] = args;
-	if (extra.length > 0) return usage(PROMPT_USAGE, runtime);
-	const kind = parseAgentKind(rawKind, runtime.session.effectiveIdentity.role);
-	const routes = runtime.settings.get("systemPromptProfileRoutes");
-	const nextRoutes = routes.filter(route => route.agentKind !== kind || route.model !== undefined);
-	if (nextRoutes.length === routes.length) {
-		await runtime.output(`No unconditional ${kind} prompt route is configured.`);
-		return commandConsumed();
-	}
-	return persistConfiguration(
-		runtime,
-		{ routes: nextRoutes },
-		`Removed the global unconditional ${kind} prompt route.`,
-	);
+	if (extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
+	return outputUpdate(runtime, {
+		type: "clearRoute",
+		agentKind: parseAgentKind(rawKind, runtime.session.effectiveIdentity.role),
+	});
 }
 
-async function handleRemove(args: readonly string[], runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+async function handleRemove(
+	args: readonly string[],
+	runtime: PromptProfileCommandRuntime,
+): Promise<SlashCommandResult> {
 	const [profileId, ...extra] = args;
-	if (!profileId || extra.length > 0) return usage(PROMPT_USAGE, runtime);
-	const profiles = runtime.settings.get("systemPromptProfiles");
-	if (!profiles[profileId]) throw new Error(`Unknown system prompt profile "${profileId}".`);
-	const referenced = runtime.settings
-		.get("systemPromptProfileRoutes")
-		.some(route => route.deny !== true && route.profile === profileId);
-	if (referenced) throw new Error(`System prompt profile "${profileId}" is still referenced by a route.`);
-	const nextProfiles = Object.fromEntries(
-		Object.entries(profiles).filter(([candidateId]) => candidateId !== profileId),
-	);
-	return persistConfiguration(runtime, { profiles: nextProfiles }, `Removed system prompt profile ${profileId}.`);
+	if (!profileId || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
+	return outputUpdate(runtime, { type: "removeProfile", profileId });
 }
 
 async function handlePromptProfileCommandInner(
 	command: ParsedSlashCommand,
-	runtime: SlashCommandRuntime,
+	runtime: PromptProfileCommandRuntime,
 ): Promise<SlashCommandResult> {
 	const [rawVerb, ...restTokens] = parseCommandArgs(command.args);
 	const verb = rawVerb?.toLowerCase() ?? "status";
@@ -282,7 +440,7 @@ async function handlePromptProfileCommandInner(
 			return commandConsumed();
 		case "show": {
 			const [profileId, ...extra] = restTokens;
-			if (!profileId || extra.length > 0) return usage(PROMPT_USAGE, runtime);
+			if (!profileId || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
 			const profile = runtime.settings.get("systemPromptProfiles")[profileId];
 			if (!profile) throw new Error(`Unknown system prompt profile "${profileId}".`);
 			await runtime.output(formatProfileDetails(profileId, profile));
@@ -302,17 +460,17 @@ async function handlePromptProfileCommandInner(
 			await runtime.output(PROMPT_USAGE);
 			return commandConsumed();
 		default:
-			return usage(PROMPT_USAGE, runtime);
+			return outputMessage(runtime, PROMPT_USAGE);
 	}
 }
 
 export async function handlePromptProfileCommand(
 	command: ParsedSlashCommand,
-	runtime: SlashCommandRuntime,
+	runtime: PromptProfileCommandRuntime,
 ): Promise<SlashCommandResult> {
 	try {
 		return await handlePromptProfileCommandInner(command, runtime);
 	} catch (error) {
-		return usage(`Prompt profile error: ${errorMessage(error)}`, runtime);
+		return outputMessage(runtime, `Prompt profile error: ${errorMessage(error)}`);
 	}
 }

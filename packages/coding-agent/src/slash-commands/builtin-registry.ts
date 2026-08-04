@@ -605,6 +605,20 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		getTuiAutocompleteDescription: runtime =>
 			`Prompt: ${runtime.ctx.session.effectiveIdentity.prompt.profileId ?? "default"}`,
 		handle: handlePromptProfileCommand,
+		handleTui: async (command, runtime) => {
+			const ctx = runtime.ctx;
+			ctx.editor.setText("");
+			if (command.args.trim().length === 0) {
+				ctx.showPromptProfileSelector();
+				return;
+			}
+			await handlePromptProfileCommand(command, {
+				session: ctx.session,
+				settings: ctx.settings,
+				cwd: ctx.sessionManager.getCwd(),
+				output: text => ctx.showStatus(text),
+			});
+		},
 	},
 	{
 		name: "switch",

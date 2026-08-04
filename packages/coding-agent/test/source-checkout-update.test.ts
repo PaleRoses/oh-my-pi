@@ -65,7 +65,8 @@ function createFixture(): Fixture {
 	runGit(seed, ["init", "-b", "main"]);
 	configureIdentity(seed);
 	fs.writeFileSync(path.join(seed, "state.txt"), "base\n");
-	runGit(seed, ["add", "state.txt"]);
+	fs.writeFileSync(path.join(seed, "MODULE.bazel.lock"), "base lock\n");
+	runGit(seed, ["add", "state.txt", "MODULE.bazel.lock"]);
 	runGit(seed, ["commit", "-m", "base"]);
 	runGit(seed, ["remote", "add", "origin", origin]);
 	runGit(seed, ["remote", "add", "upstream", upstream]);
@@ -175,6 +176,21 @@ describe("source checkout update", () => {
 		]);
 		expect(runGit(fixture.checkout, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("HEAD");
 		expect(publishedHead(fixture)).toBe(mergedHead);
+		expect(runGit(fixture.checkout, ["status", "--porcelain"])).toBe("");
+	});
+
+	it("commits a native lockfile regenerated during merge validation", async () => {
+		const fixture = createFixture();
+		advanceUpstream(fixture);
+
+		const result = await update(fixture, {
+			validate: async checkout => {
+				fs.writeFileSync(path.join(checkout, "MODULE.bazel.lock"), "regenerated lock\n");
+			},
+		});
+
+		expect(result.kind).toBe("updated");
+		expect(runGit(fixture.checkout, ["show", "HEAD:MODULE.bazel.lock"])).toBe("regenerated lock");
 		expect(runGit(fixture.checkout, ["status", "--porcelain"])).toBe("");
 	});
 

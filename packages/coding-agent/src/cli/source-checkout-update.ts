@@ -13,7 +13,10 @@ const CONFIG_KEYS = {
 } as const;
 
 const FORK_VALIDATION_TESTS = [
+	"test/modes/components/prompt-profile-selector.test.ts",
+	"test/modes/controllers/selector-controller-prompt-profile.test.ts",
 	"test/slash-commands/prompt.test.ts",
+	"test/slash-commands/prompt-tui.test.ts",
 	"test/system-prompt-profiles.test.ts",
 	"test/system-prompt-profiles-sdk.test.ts",
 	"test/system-prompt-model.test.ts",
@@ -21,6 +24,8 @@ const FORK_VALIDATION_TESTS = [
 	"test/cli/update-cli.test.ts",
 	"test/source-checkout-update.test.ts",
 ];
+
+const GENERATED_NATIVE_LOCKFILE = "MODULE.bazel.lock";
 
 export interface SourceCheckoutUpdateOptions {
 	readonly check: boolean;
@@ -152,9 +157,18 @@ async function runCommand(cwd: string, argv: readonly string[]): Promise<void> {
 async function validateSourceCheckout(checkout: string): Promise<void> {
 	const codingAgent = path.join(checkout, "packages", "coding-agent");
 	await runCommand(checkout, ["bun", "install", "--frozen-lockfile"]);
+	await runCommand(checkout, ["bun", "run", "build:native"]);
 	await runCommand(codingAgent, ["bun", "run", "check"]);
+	await runCommand(path.join(checkout, "packages", "natives"), ["bun", "test", "test/file-lock.test.ts"]);
 	await runCommand(codingAgent, ["bun", "test", ...FORK_VALIDATION_TESTS]);
 	await runCommand(codingAgent, ["bun", "run", "build"]);
+}
+
+async function stageGeneratedNativeLockfile(checkout: string): Promise<void> {
+	const changed = await git.diff.changedFiles(checkout, { files: [GENERATED_NATIVE_LOCKFILE] });
+	if (changed.includes(GENERATED_NATIVE_LOCKFILE)) {
+		await git.stage.files(checkout, [GENERATED_NATIVE_LOCKFILE]);
+	}
 }
 
 async function assertValidationStable(checkout: string): Promise<void> {
@@ -275,6 +289,7 @@ export async function runSourceCheckoutUpdate(
 	try {
 		await git.merge(checkout, upstreamHead, { noCommit: true, noFastForward: true });
 		await validate(checkout);
+		await stageGeneratedNativeLockfile(checkout);
 		await assertValidationStable(checkout);
 		await git.commit(
 			checkout,
