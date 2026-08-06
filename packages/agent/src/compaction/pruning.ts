@@ -58,9 +58,24 @@ export const DEFAULT_PRUNE_CONFIG: PruneConfig = {
 	pruneUseless: true,
 };
 
+/**
+ * A pruned tool result together with its replaced content, so embedders can
+ * spill the original text to durable storage (e.g. an artifact store) and
+ * append a recovery pointer to the placeholder before persisting the rewrite.
+ */
+export interface PrunedResultRecord {
+	message: ToolResultMessage;
+	/** Content array the placeholder replaced, exactly as it was. */
+	originalContent: ToolResultMessage["content"];
+	/** Estimated tokens of the original message. */
+	tokens: number;
+}
+
 export interface PruneResult {
 	prunedCount: number;
 	tokensSaved: number;
+	/** Every result blanked by this pass, in message order. */
+	pruned: PrunedResultRecord[];
 }
 
 /** Exact placeholder written over a superseded tool result. */
@@ -256,7 +271,7 @@ export function pruneSupersededToolResults(entries: SessionEntry[], config: Supe
 		candidates.push(...collectUselessResults(entries, toolCallsById, config.protectedTools, exclude));
 		candidates.sort((a, b) => a.index - b.index);
 	}
-	if (candidates.length === 0) return { prunedCount: 0, tokensSaved: 0 };
+	if (candidates.length === 0) return { prunedCount: 0, tokensSaved: 0, pruned: [] };
 
 	const now = config.now ?? Date.now();
 	let lastMessageTimestamp: number | undefined;
@@ -289,17 +304,19 @@ export function pruneSupersededToolResults(entries: SessionEntry[], config: Supe
 			candidate => candidate.index >= boundaryIndex && suffixTokens[candidate.index] <= suffixTokenLimit,
 		);
 	}
-	if (toPrune.length === 0) return { prunedCount: 0, tokensSaved: 0 };
+	if (toPrune.length === 0) return { prunedCount: 0, tokensSaved: 0, pruned: [] };
 
 	const prunedAt = Date.now();
 	let tokensSaved = 0;
+	const pruned: PrunedResultRecord[] = [];
 	for (const candidate of toPrune) {
+		pruned.push({ message: candidate.message, originalContent: candidate.message.content, tokens: candidate.tokens });
 		candidate.message.content = [{ type: "text", text: candidate.notice }];
 		candidate.message.prunedAt = prunedAt;
 		invalidateMessageCache(candidate.message as AgentMessage);
 		tokensSaved += estimatePrunedSavings(candidate.tokens, candidate.notice);
 	}
-	return { prunedCount: toPrune.length, tokensSaved };
+	return { prunedCount: toPrune.length, tokensSaved, pruned };
 }
 
 export function pruneToolOutputs(entries: SessionEntry[], config: PruneConfig = DEFAULT_PRUNE_CONFIG): PruneResult {
@@ -387,10 +404,11 @@ export function pruneToolOutputs(entries: SessionEntry[], config: PruneConfig = 
 	}
 
 	if (tokensSaved < config.minimumSavings || candidates.length === 0) {
-		return { prunedCount: 0, tokensSaved: 0 };
+		return { prunedCount: 0, tokensSaved: 0, pruned: [] };
 	}
 
 	const prunedAt = Date.now();
+	const pruned: PrunedResultRecord[] = [];
 	for (const candidate of candidates) {
 		const message = candidate.entry.message as ToolResultMessage;
 		const notice = candidate.superseded
@@ -398,13 +416,14 @@ export function pruneToolOutputs(entries: SessionEntry[], config: PruneConfig = 
 			: candidate.useless
 				? USELESS_NOTICE
 				: createPrunedNotice(candidate.tokens);
+		pruned.push({ message, originalContent: message.content, tokens: candidate.tokens });
 		message.content = [{ type: "text", text: notice }];
 		message.prunedAt = prunedAt;
 		invalidateMessageCache(message as AgentMessage);
 		prunedCount++;
 	}
 
-	return { prunedCount, tokensSaved };
+	return { prunedCount, tokensSaved, pruned };
 }
 
 /**

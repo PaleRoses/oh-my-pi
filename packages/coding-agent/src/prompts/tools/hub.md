@@ -18,6 +18,15 @@ Background jobs auto-deliver when they finish. You NEVER need to poll; if `jobs`
 - NEVER use shell tools, grep, or read other sessions' files to figure out what a peer is doing. Message them directly.
 - NEVER use hub messaging for something a tool can answer (e.g., grepping codebase, running a build).
 
+# Schedules
+
+Broker-owned schedules/heartbeats that survive TUI exit: the broker process keeps them armed and pushes fires to the owning session when it is live. Use `op:"schedule"`.
+
+- **`schedule` set** (default): `name` (required, upsert key), `message` (required — delivered to the session when the schedule fires), and exactly one of `at` (ISO-8601 datetime, one-shot) or `every` (interval like `"20m"` / `"2h"`, repeating). Optional `while` names a daemon: while that daemon is not live the schedule is cancelled instead of firing (also cancelled when the daemon settles).
+- **`schedule` `list: true`** — list current schedules (name, cadence, fired count, next due).
+- **`schedule` `clear: true`** with `name` — remove one schedule.
+- Fires deliver through the IRC path with a synthetic sender `schedule:<name>`: streaming sessions get a non-interrupting aside at the next step boundary, idle sessions get a wake turn. With no live session socket the broker retains only the LATEST undelivered fire per schedule name and replays it on reconnect. One-shot (`at`) schedules delete themselves after firing; `every` schedules re-arm.
+
 # Processes
 
 Project-scoped long-running processes shared by every omp instance in the same directory. A long-running service, watcher, debugger, REPL, or process needing later input MUST use `op:"start"`, not `bash`.

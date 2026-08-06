@@ -64,6 +64,9 @@ Profiles support these prompt fields:
 - `projectContextOnly: true` removes context files outside the cwd and additional workspace roots. Repository `AGENTS.md` remains; user-global context such as `~/.claude/CLAUDE.md` does not.
 - `memory: false` disables automatic recall/retention and memory tools for the profile.
 - `mcpServerInstructions: false` omits MCP server instructions while leaving the configured MCP tools available.
+- `contextImages` lists image file paths (absolute, `~/`, or cwd-relative; existence validated when the profile compiles) injected once per conversation as a hidden custom message at the front of the first turn. System-role content is text-only across providers, so this is the standing-image equivalent of a prompt block: resume reuses the persisted copy, while `/new`, `/reset`, and compaction re-inject on the following turn.
+- `userTitle` substitutes a name or phrase for "the user" wherever the maintained prompt (including personality blocks) refers to the person driving the session, e.g. `userTitle: Rosalia` renders "Carry Rosalia's intent". Unset keeps the generic "the user" wording; profiles without the field (e.g. subagent workers) are unaffected.
+- `tools` names the model-facing active tool set (lowercased, deduplicated at compile). The cut intersects the assembled set — built-ins, custom, and extension tools alike — while preserving session contracts: `ask` stays reachable while enabled, a required `yield` survives, `checkpoint`/`rewind` remain paired, and memory tools ride the profile's `memory` axis rather than the list. The full registry stays constructed, so `/tools` can re-activate anything outside the profile's default set. Empty or omitted keeps every tool.
 
 `/prompt` is the compact operator surface for these settings. Bare `/prompt` or
 `/prompts` opens the keyboard-driven profile menu in the interactive TUI. The

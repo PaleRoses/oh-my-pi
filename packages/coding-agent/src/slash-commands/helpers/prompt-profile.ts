@@ -20,7 +20,7 @@ const PROMPT_USAGE = [
 	"  /prompt unset <profile> <field>",
 	"  /prompt remove <profile>",
 	"",
-	"Fields: prompt, promptFile, instructions, instructionsFile, projectContextOnly, memory, mcpServerInstructions",
+	"Fields: prompt, promptFile, instructions, instructionsFile, projectContextOnly, memory, mcpServerInstructions, contextImages, userTitle, tools",
 ].join("\n");
 
 export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
@@ -42,7 +42,7 @@ export type PromptProfileField = keyof SystemPromptProfileSetting;
 
 export type PromptProfileFieldDefinition =
 	| {
-			readonly field: "prompt" | "instructions";
+			readonly field: "prompt" | "instructions" | "userTitle";
 			readonly label: string;
 			readonly input: "markdown";
 	  }
@@ -65,6 +65,7 @@ export const PROMPT_PROFILE_FIELD_DEFINITIONS: readonly PromptProfileSelectorFie
 	{ field: "projectContextOnly", label: "Project context only", input: "toggle" },
 	{ field: "memory", label: "Memory", input: "toggle" },
 	{ field: "mcpServerInstructions", label: "MCP server instructions", input: "toggle" },
+	{ field: "userTitle", label: "User title", input: "markdown" },
 ];
 
 export type PromptProfileOperation =
@@ -120,6 +121,14 @@ function normalizeField(raw: string): PromptProfileField {
 		case "mcpinstructions":
 		case "mcpserverinstructions":
 			return "mcpServerInstructions";
+		case "contextimages":
+		case "images":
+			return "contextImages";
+		case "usertitle":
+		case "user":
+			return "userTitle";
+		case "tools":
+			return "tools";
 		default:
 			throw new Error(`Unknown profile field "${raw}".\n${PROMPT_USAGE}`);
 	}
@@ -175,6 +184,24 @@ function setProfileField(
 			return { ...profile, memory: parseToggle(value, field) };
 		case "mcpServerInstructions":
 			return { ...profile, mcpServerInstructions: parseToggle(value, field) };
+		case "contextImages":
+			return {
+				...profile,
+				contextImages: value
+					.split(",")
+					.map(entry => entry.trim())
+					.filter(entry => entry.length > 0),
+			};
+		case "userTitle":
+			return { ...profile, userTitle: value };
+		case "tools":
+			return {
+				...profile,
+				tools: value
+					.split(",")
+					.map(entry => entry.trim())
+					.filter(entry => entry.length > 0),
+			};
 	}
 }
 
@@ -191,7 +218,7 @@ function describeProfile(profileId: string, profile: SystemPromptProfileSetting)
 	const appended = profile.instructionsFile
 		? `file ${profile.instructionsFile}`
 		: describeInline(profile.instructions);
-	return `${profileId}: base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}`;
+	return `${profileId}: base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
 }
 
 function formatRoute(route: SystemPromptProfileRouteSetting, index: number): string {
@@ -229,6 +256,9 @@ function formatProfileDetails(profileId: string, profile: SystemPromptProfileSet
 		`projectContextOnly: ${profile.projectContextOnly === true ? "on" : "off"}`,
 		`memory: ${profile.memory === false ? "off" : "on (default)"}`,
 		`mcpServerInstructions: ${profile.mcpServerInstructions === false ? "off" : "on (default)"}`,
+		`contextImages: ${profile.contextImages?.length ? profile.contextImages.join(", ") : "none"}`,
+		`userTitle: ${profile.userTitle ?? "the user (default)"}`,
+		`tools: ${profile.tools?.length ? profile.tools.join(", ") : "all (default)"}`,
 	].join("\n");
 }
 

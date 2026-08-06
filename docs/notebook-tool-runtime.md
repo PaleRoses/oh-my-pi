@@ -9,7 +9,7 @@ The critical distinction: **notebook support is file conversion/editing, not not
 - [`src/edit/notebook.ts`](../packages/coding-agent/src/edit/notebook.ts)
 - [`src/edit/read-file.ts`](../packages/coding-agent/src/edit/read-file.ts)
 - [`src/tools/read.ts`](../packages/coding-agent/src/tools/read.ts)
-- [`src/tools/eval.ts`](../packages/coding-agent/src/tools/eval.ts)
+- [`src/tools/kernel.ts`](../packages/coding-agent/src/tools/kernel.ts)
 - [`src/eval/py/executor.ts`](../packages/coding-agent/src/eval/py/executor.ts)
 - [`src/eval/py/kernel.ts`](../packages/coding-agent/src/eval/py/kernel.ts)
 - [`src/session/streaming-output.ts`](../packages/coding-agent/src/session/streaming-output.ts)
@@ -37,9 +37,9 @@ No kernel lifecycle exists in this path:
 - no rich display capture
 - no output artifact pipeline from execution
 
-## Kernel-backed execution path (`src/tools/eval.ts` + `src/eval/py/*`)
+## Kernel-backed execution path (`src/tools/kernel.ts` + `src/eval/py/*`)
 
-When the agent needs to run cell-style Python code with persistent state and rich displays, that goes through one **`eval` tool** call per cell with `language: "py"`, not through notebook file handling.
+When the agent needs to run cell-style Python code with persistent state and rich displays, that goes through one **`kernel` tool** call per cell with `language: "py"`, not through notebook file handling.
 
 That path is where Python subprocess lifecycle, reset/cancel behavior, chunk streaming, rich displays, and output artifact truncation live.
 
@@ -83,7 +83,7 @@ These surface through notebook-aware callers such as `read` and the edit pipelin
 
 ## 3) Kernel session semantics (where they actually exist)
 
-Kernel semantics are implemented in `executePython` / `PythonKernel` and apply to the Python backend of the `eval` tool.
+Kernel semantics are implemented in `executePython` / `PythonKernel` and apply to the Python backend of the `kernel` tool.
 
 ## Modes
 
@@ -101,7 +101,7 @@ Kernel semantics are implemented in `executePython` / `PythonKernel` and apply t
 
 ## Reset behavior
 
-Each eval call has an optional `reset` flag. `reset: true` resets the selected Python session before that call executes; it does not reset other enabled language runtimes.
+Each kernel call has an optional `reset` flag. `reset: true` resets the selected Python session before that call executes; it does not reset other enabled language runtimes.
 
 ## Kernel death / restart / retry
 
@@ -160,7 +160,7 @@ Cancellation/timeout:
 - optionally spills full output to an artifact file
 - keeps a UTF-8-safe in-memory tail buffer when output exceeds the configured threshold
 
-`eval` converts this metadata into result truncation notices and TUI warnings.
+`kernel` converts this metadata into result truncation notices and TUI warnings.
 
 Notebook file conversion does **not** use `OutputSink`; it has no stream/artifact truncation pipeline because it does not execute code.
 
@@ -187,7 +187,7 @@ This renderer behavior is unrelated to notebook JSON editing except that both re
 If a workflow needs both notebook mutation and execution:
 
 1. read the `.ipynb` file in its default editable view and mutate that view with the edit pipeline
-2. copy one desired cell source into an `eval` call with `language: "py"`
+2. copy one desired cell source into a `kernel` call with `language: "py"`
 3. repeat for later cells; session-mode Python state persists across calls
 4. apply later source changes through the edit pipeline; a whole-file `write` must contain notebook JSON
 

@@ -84,13 +84,16 @@ export interface MentalModelSeed {
  * seeds are skipped in `global` mode (where there is no project axis) and
  * `projectTagged` seeds inherit the scope's `retainTags`. In shared tagged
  * banks, project seeds use project-suffixed ids and accept matching legacy
- * bare ids as already present.
+ * bare ids as already present; a project seed that resolves with NO tags is
+ * skipped entirely — creating it bare and untagged would mint a
+ * cross-project model that renders in every scope of the shared bank.
  */
 export function resolveSeedsForScope(scope: BankScope, scoping: HindsightScoping): MentalModelSeed[] {
 	const out: MentalModelSeed[] = [];
 	for (const seed of BUILTIN_SEEDS) {
 		if (!seed.scopes.includes(scoping)) continue;
 		const tags = collectSeedTags(seed, scope);
+		if (scoping === "per-project-tagged" && seed.projectTagged && tags.length === 0) continue;
 		const id = resolveSeedId(seed, tags, scoping);
 		out.push({
 			id,

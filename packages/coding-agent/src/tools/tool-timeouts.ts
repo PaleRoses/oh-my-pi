@@ -9,7 +9,7 @@ export interface ToolTimeoutConfig {
 
 export const TOOL_TIMEOUTS = {
 	bash: { default: 300, min: 1, max: 3600 },
-	eval: { default: 30, min: 1, max: 3600 },
+	kernel: { default: 30, min: 1, max: 3600 },
 	browser: { default: 30, min: 1, max: 300 },
 	computer: { default: 120, min: 1, max: 300 },
 	ssh: { default: 60, min: 1, max: 3600 },

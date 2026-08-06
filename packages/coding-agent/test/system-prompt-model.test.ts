@@ -10,7 +10,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
-import { usesCodexTaskPrompt } from "@oh-my-pi/pi-coding-agent/task/prompt-policy";
+import { usesCodexTaskPrompt, usesFableConstitution } from "@oh-my-pi/pi-coding-agent/task/prompt-policy";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
@@ -173,10 +173,19 @@ describe("AgentSession model-change prompt refresh", () => {
 		const second = all.find(
 			model =>
 				(model.provider !== first.provider || model.id !== first.id) &&
-				usesCodexTaskPrompt(model.id) === usesCodexTaskPrompt(first.id),
+				usesCodexTaskPrompt(model.id) === usesCodexTaskPrompt(first.id) &&
+				usesFableConstitution(model.id) === usesFableConstitution(first.id),
 		);
-		if (!first || !second) throw new Error("Expected two distinct models with the same task prompt policy");
+		if (!first || !second) throw new Error("Expected two distinct models with the same prompt policy");
 		return [first, second];
+	}
+
+	function pickModelsAcrossFableConstitution(): [Model, Model] {
+		const all = modelRegistry.getAll();
+		const plain = all.find(model => !usesCodexTaskPrompt(model.id) && !usesFableConstitution(model.id));
+		const fable = all.find(model => usesFableConstitution(model.id));
+		if (!plain || !fable) throw new Error("Expected a plain default-policy model and a Fable model");
+		return [plain, fable];
 	}
 
 	function pickModelsAcrossTaskPolicies(): [Model, Model] {
@@ -274,6 +283,26 @@ describe("AgentSession model-change prompt refresh", () => {
 		await session.setModel(modelB);
 		expect(rebuildCount).toBe(1);
 		expect(session.agent.state.systemPrompt).toEqual(["policy changed"]);
+	});
+
+	it("rebuilds a hidden-model prompt when the fable constitution changes", async () => {
+		const [modelA, modelB] = pickModelsAcrossFableConstitution();
+		authStorage.setRuntimeApiKey(modelA.provider, "key-a");
+		authStorage.setRuntimeApiKey(modelB.provider, "key-b");
+
+		let rebuildCount = 0;
+		session = newSession(
+			modelA,
+			Settings.isolated({ "compaction.enabled": false, includeModelInPrompt: false }),
+			async () => {
+				rebuildCount++;
+				return { systemPrompt: ["constitution changed"] };
+			},
+		);
+
+		await session.setModel(modelB);
+		expect(rebuildCount).toBe(1);
+		expect(session.agent.state.systemPrompt).toEqual(["constitution changed"]);
 	});
 
 	it("rolls back model, prompt, tools, and cache when model-dependent tool sync fails", async () => {

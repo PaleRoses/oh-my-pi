@@ -67,6 +67,19 @@ describe("resolveSeedsForScope", () => {
 		// already a per-project silo.
 		expect(projectConv?.tags).toEqual([]);
 	});
+	// Regression: a per-project-tagged session whose scope resolved with no
+	// retainTags used to mint bare, UNTAGGED project models in the shared bank.
+	// Untagged models render in every scope, so each project's prompt then
+	// carried a duplicate cross-project "Project Conventions"/"Project
+	// Decisions" next to its own tagged pair.
+	it("per-project-tagged scoping with no retainTags skips projectTagged seeds instead of minting untagged bank-wide models", () => {
+		const scope: BankScope = { bankId: "omp" };
+		const seeds = resolveSeedsForScope(scope, "per-project-tagged");
+		expect(seeds.some(s => s.id.startsWith("project-conventions"))).toBe(false);
+		expect(seeds.some(s => s.id.startsWith("project-decisions"))).toBe(false);
+		// Genuinely untagged seeds are unaffected.
+		expect(seeds.some(s => s.id === "user-preferences")).toBe(true);
+	});
 });
 
 /* -------------------------------------------------------------------------- */

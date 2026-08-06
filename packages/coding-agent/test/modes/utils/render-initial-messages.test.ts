@@ -265,11 +265,11 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 		await Settings.init({ inMemory: true, overrides: { "terminal.showImages": true } });
 		setTerminalImageProtocol(ImageProtocol.Sixel);
 		const transcript = transcriptWith([
-			assistantToolCall("eval-image", "eval", { language: "py", code: "display(image)" }),
+			assistantToolCall("eval-image", "kernel", { language: "py", code: "display(image)" }),
 			{
 				role: "toolResult",
 				toolCallId: "eval-image",
-				toolName: "eval",
+				toolName: "kernel",
 				content: [{ type: "text", text: "(displayed 1 image; no text output)" }, pngImage],
 				details: {
 					language: "python",
@@ -356,11 +356,11 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 			isError: false,
 			timestamp: 2,
 		});
-		session.appendMessage(assistantToolCall("eval-reopened", "eval", { language: "py", code: "display(image)" }));
+		session.appendMessage(assistantToolCall("eval-reopened", "kernel", { language: "py", code: "display(image)" }));
 		session.appendMessage({
 			role: "toolResult",
 			toolCallId: "eval-reopened",
-			toolName: "eval",
+			toolName: "kernel",
 			content: [{ type: "text", text: "(displayed 1 image; no text output)" }, pngImage],
 			details: {
 				language: "python",
@@ -474,7 +474,7 @@ describe("UiHelpers.renderSessionContext — error-stop tool calls", () => {
 					{
 						type: "toolCall",
 						id: "error-tool",
-						name: "eval",
+						name: "kernel",
 						arguments: { language: "py", code: "raise RuntimeError('boom')" },
 					},
 				],
@@ -489,7 +489,7 @@ describe("UiHelpers.renderSessionContext — error-stop tool calls", () => {
 			{
 				role: "toolResult",
 				toolCallId: "error-tool",
-				toolName: "eval",
+				toolName: "kernel",
 				content: [{ type: "text", text: "late tool result must not replace the assistant stop error" }],
 				isError: false,
 				timestamp: 2,

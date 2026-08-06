@@ -433,7 +433,9 @@ describe("read and write route xd:// device URLs", () => {
 			expect(docs.length).toBeLessThan(XDEV_DOCS_TOTAL_BUDGET + XDEV_DOCS_PER_DEVICE_CAP);
 			expect(docs).toContain(`## ${mounted[0]!.name}`);
 			expect(docs).toContain("## Additional devices (docs on demand)");
-			expect(docs).toContain("- xd://giant_mcp_tool —");
+			// Overflow lines carry an optional `(label)` alias between path and
+			// summary, so match the stable prefix only.
+			expect(docs).toContain("- xd://giant_mcp_tool");
 			expect(docs).not.toContain("## giant_mcp_tool");
 		} finally {
 			await removeWithRetries(tempDir);
@@ -470,12 +472,12 @@ describe("read and write route xd:// device URLs", () => {
 			const builtinsDocs = xdevDocsAll(xdev, "builtins");
 			expect(builtinsDocs).toContain("## ");
 			expect(builtinsDocs).not.toContain("## mcp_external_tool");
-			expect(builtinsDocs).toContain("- xd://mcp_external_tool —");
+			expect(builtinsDocs).toContain("- xd://mcp_external_tool");
 			expect(builtinsDocs).not.toContain("TAIL");
 			const catalogDocs = xdevDocsAll(xdev, "catalog");
 			expect(catalogDocs).not.toContain(`## ${mounted[0]!.name}`);
 			expect(catalogDocs).toContain("- xd://");
-			expect(catalogDocs).toContain("- xd://mcp_external_tool —");
+			expect(catalogDocs).toContain("- xd://mcp_external_tool");
 			expect(xdevDocs(xdev, "mcp_external_tool")).toContain("TAIL");
 
 			const contextMode = Object.create(mounted[0]!) as (typeof mounted)[number];
@@ -490,7 +492,7 @@ describe("read and write route xd:// device URLs", () => {
 			const allowlistedDocs = xdevDocsAll(xdev, "builtins", ["mcp__context_mode_*"]);
 			expect(allowlistedDocs).toContain("## mcp__context_mode_ctx_execute");
 			expect(allowlistedDocs).not.toContain("## mcp__other_server_execute");
-			expect(allowlistedDocs).toContain("- xd://mcp__other_server_execute —");
+			expect(allowlistedDocs).toContain("- xd://mcp__other_server_execute");
 
 			const catalogWithAllowlistDocs = xdevDocsAll(xdev, "catalog", ["mcp__context_mode_*"]);
 			expect(catalogWithAllowlistDocs).not.toContain("## mcp__context_mode_ctx_execute");
@@ -499,9 +501,9 @@ describe("read and write route xd:// device URLs", () => {
 			// registry unvalidated) degrades to the catalog listing instead of
 			// throwing while the system prompt is built.
 			const scalarAllowlistDocs = xdevDocsAll(xdev, "builtins", "mcp__context_mode_*" as never);
-			expect(scalarAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute —");
+			expect(scalarAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute");
 			const nonStringAllowlistDocs = xdevDocsAll(xdev, "builtins", [123] as never);
-			expect(nonStringAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute —");
+			expect(nonStringAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute");
 		} finally {
 			await removeWithRetries(tempDir);
 		}

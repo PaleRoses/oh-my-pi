@@ -186,7 +186,10 @@ export function formatAgentIdentityBadge(snapshot: AgentIdentitySnapshot): strin
 	return `${snapshot.prompt.principal}@${bank}${project}`;
 }
 
-export function formatAgentIdentitySystemPrompt(snapshot: AgentIdentitySnapshot): string {
+export function formatAgentIdentitySystemPrompt(
+	snapshot: AgentIdentitySnapshot,
+	options?: { includeModel?: boolean },
+): string {
 	const hindsight = snapshot.memory.hindsight;
 	const memoryIdentity =
 		snapshot.memory.status === "disabled-by-profile"
@@ -204,7 +207,11 @@ export function formatAgentIdentitySystemPrompt(snapshot: AgentIdentitySnapshot)
 		`Prompt principal: ${snapshot.prompt.principal}`,
 		`Prompt profile: ${snapshot.prompt.profileId ?? "default"}`,
 		`Prompt source: ${snapshot.prompt.source}`,
-		`Model: ${snapshot.model.status === "active" ? snapshot.model.value : "unavailable"}`,
+		// `includeModelInPrompt: false` withholds the model here too — the
+		// workstation block and this block must agree on visibility.
+		...(options?.includeModel === false
+			? []
+			: [`Model: ${snapshot.model.status === "active" ? snapshot.model.value : "unavailable"}`]),
 		`Memory permission: ${formatMemoryPermission(snapshot)}`,
 		`Memory backend: ${snapshot.memory.backend}`,
 		`Memory identity: ${memoryIdentity}`,

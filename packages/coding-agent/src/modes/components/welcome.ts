@@ -269,7 +269,9 @@ export class WelcomeComponent implements Component {
 			...logoColored.map(l => this.#centerText(l, leftCol)),
 			"",
 			this.#centerText(theme.fg("muted", this.modelName), leftCol),
-			this.#centerText(theme.fg("borderMuted", this.providerName), leftCol),
+			// An empty provider (model label override active) drops the line
+			// instead of rendering a blank row.
+			...(this.providerName ? [this.#centerText(theme.fg("borderMuted", this.providerName), leftCol)] : []),
 		];
 
 		// Right column separator

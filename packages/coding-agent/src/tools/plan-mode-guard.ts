@@ -16,7 +16,7 @@ const LOCAL_SCHEME_PREFIX = "local:";
 const HL_TRAILING_TAG_RE = new RegExp(`${HL_FILE_HASH_SEP}[0-9A-Fa-f]{${HL_FILE_HASH_LENGTH}}$`);
 
 /** Resolve the `local://` options the session uses, preferring its own
- *  {@link LocalProtocolOptions} (the mapping `read`/`write`/`eval` resolve
+ *  {@link LocalProtocolOptions} (the mapping `read`/`write`/`kernel` resolve
  *  through) over the bare `getArtifactsDir`/`getSessionId` pair. Subagents and
  *  multi-session hosts (cmux/ACP, embedded SDK) pin `local://` to a parent/foreign
  *  root via `localProtocolOptions`; the sandbox root the plan-mode guard derives

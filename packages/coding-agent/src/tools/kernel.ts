@@ -8,7 +8,8 @@ import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-ti
 import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
-import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+import evalDescription from "../prompts/tools/kernel.md" with { type: "text" };
+import evalManualTemplate from "../prompts/tools/eval-manual.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { webpExclusionForModel } from "../utils/image-loading";
@@ -24,7 +25,7 @@ import { clampTimeout } from "./tool-timeouts";
 
 export { EVAL_DEFAULT_PREVIEW_LINES, evalToolRenderer } from "./eval-render";
 
-/** Language tokens the eval tool accepts, in stable display order. */
+/** Language tokens the kernel tool accepts, in stable display order. */
 export type EvalLanguageToken = "py" | "js" | "rb" | "jl";
 const EVAL_LANGUAGE_ORDER: readonly EvalLanguageToken[] = ["py", "js", "rb", "jl"];
 const EVAL_LANGUAGE_RUNTIME: Record<EvalLanguageToken, string> = {
@@ -171,21 +172,27 @@ export interface EvalToolDescriptionOptions {
 	spawns?: boolean | string | null;
 }
 
-export function getEvalToolDescription(options: EvalToolDescriptionOptions = {}): string {
-	const py = options.py ?? true;
-	const js = options.js ?? true;
-	const rb = options.rb ?? false;
-	const jl = options.jl ?? false;
+function renderEvalDoc(template: string, options: EvalToolDescriptionOptions): string {
 	const spawnPolicy = resolveSpawnPolicy(options.spawns ?? true);
-	return prompt.render(evalDescription, {
-		py,
-		js,
-		rb,
-		jl,
+	return prompt.render(template, {
+		py: options.py ?? true,
+		js: options.js ?? true,
+		rb: options.rb ?? false,
+		jl: options.jl ?? false,
 		spawns: spawnPolicy.enabled,
 		spawnDefaultAgent: spawnPolicy.defaultAgent,
 		spawnAllowedAgentsText: spawnPolicy.allowedPromptText,
 	});
+}
+
+/** Short always-on contract; the full manual stays reachable via `read xd://kernel`. */
+export function getEvalToolDescription(options: EvalToolDescriptionOptions = {}): string {
+	return renderEvalDoc(evalDescription, options);
+}
+
+/** Full reference manual (prelude signatures, call conventions, DAG rules). */
+export function getEvalToolManual(options: EvalToolDescriptionOptions = {}): string {
+	return renderEvalDoc(evalManualTemplate, options);
 }
 
 export interface EvalToolOptions {
@@ -217,6 +224,29 @@ function detailsNotice(cells: ResolvedEvalCell[]): string | undefined {
 	return notices.length > 0 ? notices.join(" ") : undefined;
 }
 
+/**
+ * Resolve the session's live Python eval backend through the eval tool's own
+ * path (allowance + availability probe). Shared with the kernel-capture helper
+ * so a `capture` request starts exactly the backend the eval tool would.
+ */
+export async function resolveSessionPythonBackend(session: ToolSession): Promise<ExecutorBackend> {
+	const backends = resolveEvalBackends(session);
+	if (!backends.python) throw new ToolError("Python backend is disabled (PI_PY=0 or eval.py = false).");
+	if (!(await pythonBackend.isAvailable(session))) {
+		const alternatives = [
+			backends.js ? '"js"' : null,
+			backends.ruby ? '"rb"' : null,
+			backends.julia ? '"jl"' : null,
+		].filter(Boolean);
+		throw new ToolError(
+			alternatives.length > 0
+				? `Python backend is unavailable in this session. Pass language: ${alternatives.join(" or ")} or install the python kernel.`
+				: 'Python backend is unavailable in this session. Install the python kernel to use language: "py".',
+		);
+	}
+	return pythonBackend;
+}
+
 async function resolveBackend(session: ToolSession, language: EvalLanguage): Promise<ResolvedBackend> {
 	const backends = resolveEvalBackends(session);
 	const allowPy = backends.python;
@@ -225,18 +255,7 @@ async function resolveBackend(session: ToolSession, language: EvalLanguage): Pro
 	const allowJl = backends.julia;
 
 	if (language === "python") {
-		if (!allowPy) throw new ToolError("Python backend is disabled (PI_PY=0 or eval.py = false).");
-		if (!(await pythonBackend.isAvailable(session))) {
-			const alternatives = [allowJs ? '"js"' : null, allowRb ? '"rb"' : null, allowJl ? '"jl"' : null].filter(
-				Boolean,
-			);
-			throw new ToolError(
-				alternatives.length > 0
-					? `Python backend is unavailable in this session. Pass language: ${alternatives.join(" or ")} or install the python kernel.`
-					: 'Python backend is unavailable in this session. Install the python kernel to use language: "py".',
-			);
-		}
-		return { backend: pythonBackend };
+		return { backend: await resolveSessionPythonBackend(session) };
 	}
 	if (language === "ruby") {
 		if (!allowRb) throw new ToolError("Ruby backend is disabled (PI_RB=0 or eval.rb = false).");
@@ -278,7 +297,7 @@ function formatEvalInputLanguage(value: string): string {
 }
 
 export class EvalTool implements AgentTool<typeof evalSchema> {
-	readonly name = "eval";
+	readonly name = "kernel";
 	readonly approval = "exec" as const;
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const params = args as Partial<EvalToolParams>;
@@ -291,18 +310,28 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		return summarizeEvalLanguages(this.#enabledLanguages());
 	}
 	readonly loadMode = "essential";
-	readonly label = "Eval";
-	get description(): string {
-		if (!this.session) return getEvalToolDescription();
+	readonly label = "Kernel";
+	#docOptions(): EvalToolDescriptionOptions {
+		if (!this.session) return {};
 		const backends = resolveEvalBackends(this.session);
-		const sessionSpawns = this.session.getSessionSpawns?.() ?? "*";
-		return getEvalToolDescription({
+		return {
 			py: backends.python,
 			js: backends.js,
 			rb: backends.ruby,
 			jl: backends.julia,
-			spawns: sessionSpawns,
-		});
+			spawns: this.session.getSessionSpawns?.() ?? "*",
+		};
+	}
+	get description(): string {
+		// Without a session-verified xd:// transport the on-demand manual is
+		// unreachable, so such sessions keep the full manual inline (the
+		// pre-split behavior). Only transport-bearing sessions get the slim
+		// contract.
+		if (!this.session?.xdev) return getEvalToolManual(this.#docOptions());
+		return getEvalToolDescription(this.#docOptions());
+	}
+	get manual(): string {
+		return getEvalToolManual(this.#docOptions());
 	}
 	/** All reuse-chain examples; the `examples` getter filters by enabled languages. */
 	private static readonly ALL_EXAMPLES: readonly ToolExample<typeof evalSchema.infer>[] = [
@@ -401,7 +430,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		}
 
 		if (!this.session) {
-			throw new ToolError("Eval tool requires a session when not using proxy executor");
+			throw new ToolError("Kernel tool requires a session when not using proxy executor");
 		}
 		const session = this.session;
 		const excludeWebP = webpExclusionForModel(session.getActiveModel?.());
@@ -506,7 +535,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 
 				const sessionFile = session.getSessionFile?.() ?? undefined;
 				const kernelOwnerId = session.getEvalKernelOwnerId?.() ?? undefined;
-				const { path: artifactPath, id: artifactId } = (await session.allocateOutputArtifact?.("eval")) ?? {};
+				const { path: artifactPath, id: artifactId } = (await session.allocateOutputArtifact?.("kernel")) ?? {};
 				session.assertEvalExecutionAllowed?.();
 				outputSink = new OutputSink({
 					artifactPath,
@@ -537,7 +566,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					const idleTimeoutMs =
 						cell.timeoutMs === 0
 							? undefined
-							: clampTimeout("eval", cell.timeoutMs / 1000, session.settings.get("tools.maxTimeout")) * 1000;
+							: clampTimeout("kernel", cell.timeoutMs / 1000, session.settings.get("tools.maxTimeout")) * 1000;
 					const idle = idleTimeoutMs === undefined ? undefined : new IdleTimeout(idleTimeoutMs);
 					const combinedSignal =
 						signal && idle

@@ -23,8 +23,13 @@ import {
 	type DaemonSnapshot,
 	type DaemonSpec,
 	type DaemonWireRequest,
+	type ScheduleFireNotification,
+	type ScheduleSnapshot,
+	type ScheduleSpec,
 	parseDaemonSnapshot,
 	parseDaemonSpec,
+	parseScheduleSnapshot,
+	parseScheduleSpec,
 	parseDaemonWireMessage,
 	parseDaemonWireRequest,
 } from "./protocol";
@@ -48,6 +53,13 @@ const PID_FILE = "broker.pid";
 const META_FILE = "meta.json";
 const LOG_FILE = "output.log";
 const PREVIOUS_LOG_FILE = "output.previous.log";
+const SCHEDULES_FILE = "schedules.json";
+/**
+ * Cap on a single schedule timer. `setTimeout` delays beyond 2^31-1 ms overflow
+ * and fire immediately (with a Node warning), so long-future schedules re-arm
+ * through the cap instead.
+ */
+const MAX_SCHEDULE_TIMER_DELAY_MS = 0x7fffffff;
 const DAEMON_SPAWN_OPTIONS = resolveDaemonSpawnOptions({
 	platform: process.platform,
 	hostHasInheritableConsole: hostHasInheritableConsole(),
@@ -93,6 +105,17 @@ interface ManagedDaemon {
 interface BrokerLease {
 	path: string;
 	instanceId: string;
+}
+
+/** One broker-owned schedule with its next due time and fire counter. */
+interface BrokerSchedule {
+	spec: ScheduleSpec;
+	nextDueAt: number;
+	firedCount: number;
+}
+
+function scheduleSnapshot(schedule: BrokerSchedule): ScheduleSnapshot {
+	return { ...schedule.spec, nextDueAt: schedule.nextDueAt, firedCount: schedule.firedCount };
 }
 
 interface DaemonLogRead {
@@ -367,6 +390,16 @@ class DaemonBroker {
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<net.Socket>();
+	/** Broker-owned schedules keyed by name; persisted to `runtimeDir/schedules.json`. */
+	readonly #schedules = new Map<string, BrokerSchedule>();
+	/**
+	 * Fires that had no live subscriber socket at fire time, keyed by schedule
+	 * name. Only the LATEST undelivered fire per name is retained; a fire that
+	 * reaches a subscriber supersedes (and drops) any still-pending older one.
+	 */
+	readonly #pendingScheduleFires = new Map<string, ScheduleFireNotification>();
+	#scheduleTimer: NodeJS.Timeout | undefined;
+	#schedulePersistQueue: Promise<void> = Promise.resolve();
 	#server: net.Server | undefined;
 	#idleTimer: NodeJS.Timeout | undefined;
 	#shuttingDown = false;
@@ -381,6 +414,7 @@ class DaemonBroker {
 
 	async run(): Promise<void> {
 		await this.#recoverRecords();
+		await this.#recoverSchedules();
 		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
 		const server = net.createServer(socket => this.#accept(socket));
 		this.#server = server;
@@ -399,6 +433,9 @@ class DaemonBroker {
 		this.#shuttingDown = true;
 		clearTimeout(this.#idleTimer);
 		this.#idleTimer = undefined;
+		// A pending schedule timer would keep the event loop alive after shutdown.
+		clearTimeout(this.#scheduleTimer);
+		this.#scheduleTimer = undefined;
 		for (const record of this.#records.values()) {
 			const detached = record.spec.detached && !record.stopRequested && record.snapshot.pid !== undefined;
 			if (!detached && !terminalState(record.snapshot.state)) await this.#stopRecord(record, 2_000);
@@ -407,6 +444,7 @@ class DaemonBroker {
 			await record.persistQueue;
 		}
 		this.#ownerSockets.clear();
+		await this.#schedulePersistQueue;
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
 		this.#clients.clear();
@@ -527,6 +565,13 @@ class DaemonBroker {
 					for (const completion of this.#pendingCompletions.get(owner)?.values() ?? []) {
 						socket.write(`${JSON.stringify(completion)}\n`);
 					}
+					// Replay undelivered schedule fires for this session on a fresh
+					// subscription (reconnect); each is consumed by its replay.
+					for (const [scheduleName, fire] of this.#pendingScheduleFires) {
+						if (fire.schedule.sessionId !== owner) continue;
+						this.#pendingScheduleFires.delete(scheduleName);
+						socket.write(`${JSON.stringify(fire)}\n`);
+					}
 				}
 				for (const owner of detachedOwners) {
 					const subscriptionId = this.#completionSubscriptions.get(owner);
@@ -579,9 +624,201 @@ class DaemonBroker {
 				await this.#refreshDetached(record);
 				return { op: "describe", daemon: record.snapshot, spec: record.spec };
 			}
+			case "schedule-set":
+				return this.#scheduleSet(operation.spec);
+			case "schedule-list":
+				return { op: "schedule-list", schedules: this.#scheduleSnapshots() };
+			case "schedule-clear":
+				return this.#scheduleClear(operation.name);
 			case "shutdown":
 				return { op: "shutdown" };
 		}
+	}
+
+	#scheduleSet(spec: ScheduleSpec): DaemonRpcResult {
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(spec.name)) {
+			throw new Error("Schedule name must be 1-48 letters, numbers, dots, underscores, or hyphens");
+		}
+		const schedule: BrokerSchedule = {
+			spec,
+			nextDueAt: spec.at ?? Date.now() + (spec.everyMs ?? 0),
+			firedCount: 0,
+		};
+		// An upsert replaces the whole schedule, including any fire that was
+		// still undelivered for the previous spec under this name.
+		this.#schedules.set(spec.name, schedule);
+		this.#pendingScheduleFires.delete(spec.name);
+		this.#persistSchedules();
+		this.#armScheduleTimer();
+		return { op: "schedule-set", schedule: scheduleSnapshot(schedule) };
+	}
+
+	#scheduleClear(name: string): DaemonRpcResult {
+		if (!this.#schedules.delete(name)) {
+			const names = [...this.#schedules.keys()];
+			throw new Error(`Unknown schedule ${name}${names.length ? `. Available: ${names.join(", ")}` : ""}`);
+		}
+		this.#pendingScheduleFires.delete(name);
+		this.#persistSchedules();
+		this.#armScheduleTimer();
+		return { op: "schedule-clear", name };
+	}
+
+	#scheduleSnapshots(): ScheduleSnapshot[] {
+		return [...this.#schedules.values()]
+			.map(scheduleSnapshot)
+			.sort((left, right) => left.nextDueAt - right.nextDueAt);
+	}
+
+	/**
+	 * Single re-armed timer for the next due schedule. A pending timer would keep
+	 * the broker process alive, which is exactly what a future schedule needs:
+	 * #scheduleIdleShutdown also treats any future-due schedule as live.
+	 */
+	#armScheduleTimer(): void {
+		if (this.#scheduleTimer) {
+			clearTimeout(this.#scheduleTimer);
+			this.#scheduleTimer = undefined;
+		}
+		let nextDueAt: number | undefined;
+		for (const schedule of this.#schedules.values()) {
+			if (nextDueAt === undefined || schedule.nextDueAt < nextDueAt) nextDueAt = schedule.nextDueAt;
+		}
+		if (nextDueAt === undefined || this.#shuttingDown) return;
+		const delay = Math.min(Math.max(0, nextDueAt - Date.now()), MAX_SCHEDULE_TIMER_DELAY_MS);
+		this.#scheduleTimer = setTimeout(() => {
+			this.#scheduleTimer = undefined;
+			this.#processDueSchedules(Date.now());
+			this.#armScheduleTimer();
+		}, delay);
+	}
+
+	#processDueSchedules(now: number): void {
+		const cancelled: string[] = [];
+		for (const [name, schedule] of [...this.#schedules]) {
+			if (schedule.nextDueAt > now) continue;
+			if (schedule.spec.whileDaemon !== undefined && !this.#scheduleGuardAlive(schedule.spec.whileDaemon)) {
+				cancelled.push(name);
+				continue;
+			}
+			this.#fireSchedule(schedule, now);
+		}
+		for (const name of cancelled) this.#schedules.delete(name);
+		if (cancelled.length > 0) this.#persistSchedules();
+	}
+
+	#fireSchedule(schedule: BrokerSchedule, now: number): void {
+		schedule.firedCount++;
+		if (schedule.spec.everyMs !== undefined) {
+			// Re-arm from the due time. When the loop ran very late (recovery after
+			// downtime), skip whole missed beats so a long outage never produces a
+			// fire storm; the phase is preserved. Past-due recovery fires once.
+			do {
+				schedule.nextDueAt += schedule.spec.everyMs;
+			} while (schedule.nextDueAt <= now);
+			this.#notifyScheduleFire({ event: "schedule-fire", schedule: scheduleSnapshot(schedule), firedAt: now });
+			this.#persistSchedules();
+			return;
+		}
+		const snapshot = scheduleSnapshot(schedule);
+		this.#schedules.delete(schedule.spec.name);
+		this.#notifyScheduleFire({ event: "schedule-fire", schedule: snapshot, firedAt: now });
+		this.#persistSchedules();
+	}
+
+	#notifyScheduleFire(fire: ScheduleFireNotification): void {
+		const registration = this.#ownerSockets.get(fire.schedule.sessionId);
+		if (!registration || registration.socket.destroyed) {
+			this.#pendingScheduleFires.set(fire.schedule.name, fire);
+			return;
+		}
+		// A fire that reaches a live subscriber supersedes any still-pending
+		// older fire for the same name.
+		this.#pendingScheduleFires.delete(fire.schedule.name);
+		registration.socket.write(`${JSON.stringify(fire)}\n`);
+	}
+
+	#scheduleGuardAlive(daemonName: string): boolean {
+		const record = this.#records.get(daemonName);
+		if (!record) return false;
+		return (
+			record.snapshot.state === "starting" ||
+			record.snapshot.state === "running" ||
+			record.snapshot.state === "ready"
+		);
+	}
+
+	/** Cancel every schedule guarded by `daemonName` once that daemon is no longer live. */
+	#cancelSchedulesForDaemon(daemonName: string): void {
+		let changed = false;
+		for (const [name, schedule] of this.#schedules) {
+			if (schedule.spec.whileDaemon !== daemonName) continue;
+			this.#schedules.delete(name);
+			this.#pendingScheduleFires.delete(name);
+			changed = true;
+		}
+		if (changed) {
+			this.#persistSchedules();
+			this.#armScheduleTimer();
+		}
+	}
+
+	#persistSchedules(): void {
+		const schedulesPath = path.join(this.#runtimeDir, SCHEDULES_FILE);
+		const tempPath = `${schedulesPath}.${process.pid}.tmp`;
+		const snapshots = this.#scheduleSnapshots();
+		this.#schedulePersistQueue = this.#schedulePersistQueue
+			.then(async () => {
+				await Bun.write(tempPath, JSON.stringify(snapshots));
+				await fs.rename(tempPath, schedulesPath);
+			})
+			.catch(error => {
+				logger.warn("Failed to persist schedules", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+	}
+
+	async #recoverSchedules(): Promise<void> {
+		const schedulesPath = path.join(this.#runtimeDir, SCHEDULES_FILE);
+		let decoded: unknown;
+		try {
+			decoded = await Bun.file(schedulesPath).json();
+		} catch (error) {
+			if (isEnoent(error)) return;
+			logger.warn("Failed to read schedules", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return;
+		}
+		if (!Array.isArray(decoded)) return;
+		for (const entry of decoded) {
+			try {
+				const snapshot = parseScheduleSnapshot(entry);
+				const { nextDueAt, firedCount, ...spec } = snapshot;
+				this.#schedules.set(snapshot.name, { spec, nextDueAt, firedCount });
+			} catch (error) {
+				logger.warn("Failed to recover schedule", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		// A schedule whose while-daemon was already settled when the previous
+		// broker exited never fires again: cancel it alongside the settle path
+		// and persist the cancellation so it is not re-recovered on the next
+		// restart.
+		let cancelled = false;
+		for (const [name, schedule] of [...this.#schedules]) {
+			if (schedule.spec.whileDaemon !== undefined && !this.#scheduleGuardAlive(schedule.spec.whileDaemon)) {
+				this.#schedules.delete(name);
+				cancelled = true;
+			}
+		}
+		if (cancelled) this.#persistSchedules();
+		// Past-due schedules fire immediately once (re-arming everyMs schedules
+		// forward past the missed beats); future ones are armed normally.
+		this.#processDueSchedules(Date.now());
+		this.#armScheduleTimer();
 	}
 
 	async #start(spec: DaemonSpec, owner?: string): Promise<DaemonRpcResult> {
@@ -964,9 +1201,11 @@ class DaemonBroker {
 				record.restartTimer = undefined;
 				void this.#launch(record);
 			}, delay);
+			this.#cancelSchedulesForDaemon(record.snapshot.name);
 			return;
 		}
 		record.snapshot.state = failed && !record.stopRequested ? "failed" : "exited";
+		this.#cancelSchedulesForDaemon(record.snapshot.name);
 		const completion =
 			record.snapshot.owner !== undefined &&
 			!record.stopRequested &&
@@ -1115,6 +1354,8 @@ class DaemonBroker {
 			this.#persist(record);
 			await record.log?.close();
 			record.log = undefined;
+			// This stop path settles the record directly without #settle.
+			this.#cancelSchedulesForDaemon(record.snapshot.name);
 			return;
 		}
 		record.snapshot.state = "stopping";
@@ -1261,7 +1502,9 @@ class DaemonBroker {
 						if ("pendingCompletions" in decoded && Array.isArray(decoded.pendingCompletions)) {
 							return decoded.pendingCompletions.map(value => {
 								const message = parseDaemonWireMessage(value);
-								if (!("event" in message)) throw new Error("Pending daemon completion is not an event");
+								if (!("event" in message) || message.event !== "daemon-completed") {
+									throw new Error("Pending daemon completion is not an event");
+								}
 								return message;
 							});
 						}
@@ -1329,7 +1572,10 @@ class DaemonBroker {
 				const livePersistent = [...this.#records.values()].some(
 					record => record.spec.persist && !terminalState(record.snapshot.state),
 				);
-				if (this.#clients.size > 0 || livePersistent) return;
+				// A future-due schedule pins the broker alive across TUI exit: the
+				// fire must still be delivered when the session reconnects.
+				const schedulePending = [...this.#schedules.values()].some(schedule => schedule.nextDueAt > Date.now());
+				if (this.#clients.size > 0 || livePersistent || schedulePending) return;
 				if (await hasLiveDaemonProjectPresence(this.#runtimeDir)) {
 					this.#scheduleIdleShutdown();
 					return;

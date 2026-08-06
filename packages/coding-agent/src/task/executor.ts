@@ -2626,7 +2626,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	if (toolNames?.includes("exec")) {
 		const backends = resolveEvalBackends({ settings } as ToolSession);
 		const expanded = toolNames.filter(name => name !== "exec");
-		if (backends.python || backends.js || backends.ruby || backends.julia) expanded.push("eval");
+		if (backends.python || backends.js || backends.ruby || backends.julia) expanded.push("kernel");
 		expanded.push("bash");
 		toolNames = Array.from(new Set(expanded));
 	}
@@ -2642,7 +2642,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				: agent.spawns.join(",");
 
 	const lspEnabled = enableLsp ?? true;
-	const skipPythonPreflight = Array.isArray(toolNames) && !toolNames.includes("eval");
+	const skipPythonPreflight = Array.isArray(toolNames) && !toolNames.includes("kernel");
 
 	const monitor = createSubagentRunMonitor({
 		index,

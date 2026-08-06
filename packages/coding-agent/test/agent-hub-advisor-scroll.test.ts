@@ -92,7 +92,7 @@ function buildImageJsonl(): string {
 			message: {
 				role: "assistant",
 				content: [
-					{ type: "toolCall", id: "image-call", name: "eval", arguments: { language: "py", code: "display" } },
+					{ type: "toolCall", id: "image-call", name: "kernel", arguments: { language: "py", code: "display" } },
 				],
 				api: "anthropic-messages",
 				provider: "anthropic",
@@ -110,7 +110,7 @@ function buildImageJsonl(): string {
 			message: {
 				role: "toolResult",
 				toolCallId: "image-call",
-				toolName: "eval",
+				toolName: "kernel",
 				content: [
 					{ type: "text", text: "displayed image" },
 					{

@@ -16,7 +16,7 @@ import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
-import type { DaemonCompletionNotification } from "../launch/protocol";
+import type { DaemonCompletionNotification, ScheduleFireNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
@@ -45,7 +45,7 @@ import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from ".
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { ComputerTool } from "./computer";
 import { DebugTool } from "./debug";
-import { EvalTool } from "./eval";
+import { EvalTool } from "./kernel";
 import { resolveEvalBackends } from "./eval-backends";
 import { GithubTool } from "./gh";
 import { GlobTool } from "./glob";
@@ -83,7 +83,7 @@ export * from "./computer";
 export * from "./computer/supervisor";
 export * from "./debug";
 export * from "./essential-tools";
-export * from "./eval";
+export * from "./kernel";
 export * from "./eval-backends";
 export * from "./gh";
 export * from "./glob";
@@ -385,6 +385,8 @@ export interface ToolSession {
 	queueDeferredMessage?(message: CustomMessage): void;
 	/** Queue a broker supervised-process completion for the owning session. */
 	queueLaunchCompletion?(notification: DaemonCompletionNotification): Promise<void>;
+	/** Deliver a broker-owned schedule fire into this session through the IRC path. */
+	queueScheduleFire?(notification: ScheduleFireNotification): Promise<"injected" | "woken">;
 	/** Register cleanup that runs when this session is disposed; returns a handle that removes the cleanup. */
 	registerDisposeCallback?(callback: () => void): (() => void) | void;
 	/** Register cleanup that runs when this ToolSession adopts a different session ID. */
@@ -420,7 +422,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
-	eval: s => new EvalTool(s),
+	kernel: s => new EvalTool(s),
 	github: GithubTool.createIf,
 	glob: s => new GlobTool(s, { rootPathAlias: true }),
 	grep: s => new GrepTool(s),
@@ -476,13 +478,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const allowRuby = backends.ruby;
 	const allowJulia = backends.julia;
 	const skipEvalPreflight = session.skipPythonPreflight === true;
-	// Eval tool is enabled if ANY backend is reachable. JS needs no preflight, so
+	// Kernel tool is enabled if ANY backend is reachable. JS needs no preflight, so
 	// we only probe Python/Ruby/Julia when JS is disabled — otherwise allowEval is
 	// already true and per-backend availability is checked at first invocation.
 	let pythonAvailable = true;
 	let rubyAvailable = true;
 	let juliaAvailable = true;
-	const evalRequested = requestedTools === undefined || requestedTools.includes("eval");
+	const evalRequested = requestedTools === undefined || requestedTools.includes("kernel");
 	if (!skipEvalPreflight && !allowJs && evalRequested) {
 		if (allowPython) {
 			const availability = await logger.time(
@@ -595,7 +597,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
-		if (name === "eval") return allowEval;
+		if (name === "kernel") return allowEval;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");

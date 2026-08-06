@@ -1,11 +1,11 @@
 /**
- * TUI rendering for the eval tool.
+ * TUI rendering for the kernel tool.
  *
- * Split out from `eval.ts` so the renderer can be imported by `renderers.ts`
+ * Split out from `kernel.ts` so the renderer can be imported by `renderers.ts`
  * without dragging the eval *runtime* (JS/Python/Ruby/Julia backends ->
  * agent bridge -> task executor -> sdk -> extension loader -> root barrel)
  * into the renderer module graph. That transitive chain re-enters
- * `renderers.ts` while `eval.ts` is still initializing, which previously
+ * `renderers.ts` while `kernel.ts` is still initializing, which previously
  * crashed module load with a TDZ `Cannot access 'evalToolRenderer' before
  * initialization`.
  */

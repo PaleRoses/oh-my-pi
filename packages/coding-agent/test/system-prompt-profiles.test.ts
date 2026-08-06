@@ -67,6 +67,52 @@ describe("system prompt profiles", () => {
 		}
 	});
 
+	it("resolves contextImages to absolute paths and rejects missing files", async () => {
+		const dir = TempDir.createSync("@system-prompt-profile-images-");
+		try {
+			await Bun.write(dir.join("portrait.webp"), "not-a-real-image-but-exists");
+			const resolver = await createSystemPromptProfileResolver({
+				cwd: dir.path(),
+				profiles: { driver: { contextImages: ["portrait.webp"] } },
+				routes: [{ agentKind: "main", profile: "driver" }],
+			});
+			const decision = resolver.resolveInitial({ agentKind: "main", model: "anthropic/claude-fable-5" });
+			expect(decision.type).toBe("profile");
+			if (decision.type !== "profile") throw new Error("Expected driver profile");
+			expect(decision.profile.contextImages).toEqual([dir.join("portrait.webp")]);
+
+			await expect(
+				createSystemPromptProfileResolver({
+					cwd: dir.path(),
+					profiles: { driver: { contextImages: ["absent.webp"] } },
+					routes: [{ agentKind: "main", profile: "driver" }],
+				}),
+			).rejects.toThrow("systemPromptProfiles.driver.contextImages[0] does not exist");
+		} finally {
+			dir.removeSync();
+		}
+	});
+
+	it("compiles tools lowercased and deduplicated, rejecting blank entries", async () => {
+		const resolver = await createSystemPromptProfileResolver({
+			cwd: process.cwd(),
+			profiles: { rlm: { tools: ["Kernel", "write", "kernel", "read"] } },
+			routes: [{ agentKind: "main", profile: "rlm" }],
+		});
+		const decision = resolver.resolveInitial({ agentKind: "main", model: "anthropic/claude-fable-5" });
+		expect(decision.type).toBe("profile");
+		if (decision.type !== "profile") throw new Error("Expected rlm profile");
+		expect(decision.profile.tools).toEqual(["kernel", "write", "read"]);
+
+		await expect(
+			createSystemPromptProfileResolver({
+				cwd: process.cwd(),
+				profiles: { rlm: { tools: ["kernel", "  "] } },
+				routes: [{ agentKind: "main", profile: "rlm" }],
+			}),
+		).rejects.toThrow("systemPromptProfiles.rlm.tools[1]");
+	});
+
 	it("fails construction for unknown profiles and denied routes", async () => {
 		await expect(
 			createSystemPromptProfileResolver({

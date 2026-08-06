@@ -131,7 +131,7 @@ const createSession = async (
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["eval"],
+			toolNames: ["kernel"],
 		})
 	).session;
 const createMockKernel = () => {
@@ -215,7 +215,7 @@ describe("AgentSession python cleanup", () => {
 				slashCommands: [],
 				enableMCP: false,
 				enableLsp: false,
-				toolNames: ["eval"],
+				toolNames: ["kernel"],
 				workspaceTree: emptyWorkspaceTree(cwd),
 			}),
 		).rejects.toThrow("Extension init failed");
@@ -282,7 +282,7 @@ describe("AgentSession python cleanup", () => {
 				slashCommands: [],
 				enableMCP: false,
 				enableLsp: false,
-				toolNames: ["eval"],
+				toolNames: ["kernel"],
 				workspaceTree: emptyWorkspaceTree(cwd),
 				agentRegistry: throwingRegistry,
 			}),
@@ -422,7 +422,7 @@ describe("AgentSession python cleanup", () => {
 		vi.spyOn(pythonKernel, "checkPythonKernelAvailability").mockResolvedValue({ ok: true });
 
 		const session = await createSession(tempDir, cwd);
-		const EvalTool = session.getToolByName("eval");
+		const EvalTool = session.getToolByName("kernel");
 		expect(EvalTool).toBeDefined();
 		let toolExecutionSettled = false;
 		const toolExecution = EvalTool!
@@ -651,7 +651,7 @@ describe("AgentSession python cleanup", () => {
 		});
 
 		const session = await createSession(tempDir, cwd);
-		const EvalTool = session.getToolByName("eval");
+		const EvalTool = session.getToolByName("kernel");
 		expect(EvalTool).toBeDefined();
 		const disposeSession = session.dispose();
 		await expect(
@@ -686,7 +686,7 @@ describe("AgentSession python cleanup", () => {
 		});
 
 		const session = await createSession(tempDir, cwd, { sessionManager });
-		const EvalTool = session.getToolByName("eval");
+		const EvalTool = session.getToolByName("kernel");
 		expect(EvalTool).toBeDefined();
 		const execution = EvalTool!.execute(
 			"call-id",

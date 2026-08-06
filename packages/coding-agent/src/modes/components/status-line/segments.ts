@@ -99,8 +99,12 @@ const modelSegment: StatusLineSegment = {
 		const state = ctx.session.state;
 		const opts = ctx.options.model ?? {};
 
-		let modelName = state.model?.name || state.model?.id || "no-model";
-		if (modelName.startsWith("Claude ")) {
+		// A configured label (`display.modelLabel`, plumbed through segment
+		// options) replaces the catalog model name verbatim; otherwise the
+		// "Claude " prefix is stripped to keep the segment short.
+		const label = opts.label?.trim();
+		let modelName = label || state.model?.name || state.model?.id || "no-model";
+		if (!label && modelName.startsWith("Claude ")) {
 			modelName = modelName.slice(7);
 		}
 

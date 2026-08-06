@@ -160,7 +160,7 @@ import type { HookEditorComponent } from "./components/hook-editor";
 import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorSlider } from "./components/hook-selector";
 import { type PlanReviewAnnotationState, PlanReviewOverlay } from "./components/plan-review-overlay";
-import { StatusLineComponent } from "./components/status-line";
+import { StatusLineComponent, type StatusLineSegmentOptions } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import { WelcomeComponent, type LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
@@ -388,7 +388,7 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
  * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Only detached background spawns are listed: a sync task call blocks the
  * parent turn and its inline tool block already renders progress live, and
- * eval `agent()` spawns are rendered by their own eval cell tree.
+ * kernel `agent()` spawns are rendered by their own kernel cell tree.
  * Returns an empty array when nothing is running so the container can clear.
  */
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
@@ -916,10 +916,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			getProjectDir(),
 		);
 
-		// Get current model info for welcome screen
-		const modelName = this.session.model?.name ?? "Unknown";
-		const providerName = this.session.model?.provider ?? "Unknown";
-
+		// Get current model info for welcome screen; `display.modelLabel`
+		// replaces the catalog name here just like in the status line.
+		const modelName = settings.get("display.modelLabel")?.trim() || (this.session.model?.name ?? "Unknown");
+		const providerName = settings.get("display.modelLabel")?.trim()
+			? ""
+			: (this.session.model?.provider ?? "Unknown");
 		// Get recent sessions
 		const recentSessions = await logger.time("InteractiveMode.init:recentSessions", () =>
 			getRecentSessions(this.sessionManager.getSessionDir()).then(sessions =>
@@ -1701,6 +1703,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#syncStatusLineSettings(): void {
+		// `display.modelLabel` rides in through the model segment's options so
+		// the segment renderer stays a pure function of its context.
+		const segmentOptions = { ...settings.get("statusLine.segmentOptions") } as StatusLineSegmentOptions;
+		const modelLabel = settings.get("display.modelLabel")?.trim();
+		if (modelLabel) segmentOptions.model = { ...segmentOptions.model, label: modelLabel };
 		this.statusLine.updateSettings({
 			preset: settings.get("statusLine.preset"),
 			leftSegments: settings.get("statusLine.leftSegments"),
@@ -1709,7 +1716,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			showHookStatus: settings.get("statusLine.showHookStatus"),
 			sessionAccent: settings.get("statusLine.sessionAccent"),
 			transparent: settings.get("statusLine.transparent"),
-			segmentOptions: settings.get("statusLine.segmentOptions"),
+			segmentOptions,
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 		});
 	}

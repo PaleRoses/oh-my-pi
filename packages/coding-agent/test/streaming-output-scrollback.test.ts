@@ -478,7 +478,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		}
 	}, 30_000);
 
-	test("eval: collapsed cell output stays within the viewport budget", () => {
+	test("kernel: collapsed cell output stays within the viewport budget", () => {
 		const rows = 18;
 		stubStdoutRows(rows);
 		const result = {
@@ -654,14 +654,14 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		}
 	}, 30_000);
 
-	test("expanded live eval output records painted rows without spraying after settle", async () => {
+	test("expanded live kernel output records painted rows without spraying after settle", async () => {
 		const rows = 8;
 		stubStdoutRows(rows);
 		const term = new VirtualTerminal(60, rows);
 		const tui = new TUI(term);
 		const transcript = new TranscriptContainer();
 		const component = new ToolExecutionComponent(
-			"eval",
+			"kernel",
 			{ code: "probeLines.forEach(console.log)", language: "js" },
 			{},
 			undefined,

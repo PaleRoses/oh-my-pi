@@ -15,6 +15,7 @@ import {
 	type DaemonOperation,
 	type DaemonRpcResult,
 	type DaemonWireMessage,
+	type ScheduleFireNotification,
 	parseDaemonRpcResult,
 	parseDaemonWireMessage,
 } from "./protocol";
@@ -55,6 +56,16 @@ export interface DaemonBrokerClient {
 		owner: string,
 		sink: (notification: DaemonCompletionNotification) => Promise<void> | void,
 	): (options?: DaemonCompletionUnregisterOptions) => void;
+	/**
+	 * Subscribe to schedule fires for `owner` (the schedule's sessionId),
+	 * mirroring `onCompletion` including replay-on-reconnect: fires that had no
+	 * live subscriber are retained by the broker (latest per schedule name) and
+	 * replayed on the next owner subscription.
+	 */
+	onScheduleFire(
+		owner: string,
+		sink: (notification: ScheduleFireNotification) => Promise<void> | void,
+	): () => void;
 	/** Canonical project directory or synthetic directory identifying a global scope. */
 	readonly projectDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
@@ -151,6 +162,10 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #idleGraceMs: number | undefined;
 	readonly #pending = new Map<string, PendingRequest>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
+	readonly #scheduleFireSinks = new Map<
+		string,
+		(notification: ScheduleFireNotification) => Promise<void> | void
+	>();
 	readonly #completionUnsubscribes = new Set<string>();
 	readonly #preservedCompletionOwners = new Set<string>();
 	readonly #completionReplays = new Set<string>();
@@ -203,7 +218,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			`${JSON.stringify({
 				id,
 				token: this.#token,
-				owners: [...this.#completionSinks.keys()],
+				owners: [...this.#completionSinks.keys(), ...this.#scheduleFireSinks.keys()],
 				detachedOwners: [...this.#preservedCompletionOwners],
 				completionEvents: true,
 				completionUnsubscribes,
@@ -229,6 +244,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#completionReconnectTimer = undefined;
 		this.#socket?.destroy();
 		this.#completionSinks.clear();
+		this.#scheduleFireSinks.clear();
 		this.#preservedCompletionOwners.clear();
 		this.#completionReplays.clear();
 		this.#socket = undefined;
@@ -252,7 +268,24 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				this.#preservedCompletionOwners.delete(owner);
 				this.#completionUnsubscribes.add(owner);
 			}
-			if (this.#completionSinks.size === 0 && this.#completionReconnectTimer) {
+			if (this.#completionSinks.size === 0 && this.#scheduleFireSinks.size === 0 && this.#completionReconnectTimer) {
+				clearTimeout(this.#completionReconnectTimer);
+				this.#completionReconnectTimer = undefined;
+			}
+			this.#publishCompletionOwners();
+		};
+	}
+
+	onScheduleFire(
+		owner: string,
+		sink: (notification: ScheduleFireNotification) => Promise<void> | void,
+	): () => void {
+		this.#scheduleFireSinks.set(owner, sink);
+		this.#publishCompletionOwners();
+		return () => {
+			if (this.#scheduleFireSinks.get(owner) !== sink) return;
+			this.#scheduleFireSinks.delete(owner);
+			if (this.#completionSinks.size === 0 && this.#scheduleFireSinks.size === 0 && this.#completionReconnectTimer) {
 				clearTimeout(this.#completionReconnectTimer);
 				this.#completionReconnectTimer = undefined;
 			}
@@ -268,7 +301,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	#scheduleCompletionReconnect(): void {
 		if (
 			this.#closed ||
-			this.#completionSinks.size === 0 ||
+			(this.#completionSinks.size === 0 && this.#scheduleFireSinks.size === 0) ||
 			this.#completionReconnectTimer !== undefined ||
 			(this.#socket !== undefined && !this.#socket.destroyed)
 		) {
@@ -371,7 +404,8 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				continue;
 			}
 			if ("event" in message) {
-				void this.#deliverCompletion(message);
+				if (message.event === "schedule-fire") void this.#deliverScheduleFire(message);
+				else void this.#deliverCompletion(message);
 				continue;
 			}
 			const response = message;
@@ -421,6 +455,20 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		}
 	}
 
+	async #deliverScheduleFire(message: ScheduleFireNotification): Promise<void> {
+		const sink = this.#scheduleFireSinks.get(message.schedule.sessionId);
+		if (!sink) return;
+		try {
+			await sink(message);
+		} catch (error) {
+			logger.warn("Schedule fire sink failed", {
+				schedule: message.schedule.name,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			this.#socket?.destroy();
+		}
+	}
+
 	#ackCompletion(completionId: string): void {
 		const socket = this.#socket;
 		if (!socket || socket.destroyed) return;
@@ -428,7 +476,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			`${JSON.stringify({
 				id: crypto.randomUUID(),
 				token: this.#token,
-				owners: [...this.#completionSinks.keys()],
+				owners: [...this.#completionSinks.keys(), ...this.#scheduleFireSinks.keys()],
 				detachedOwners: [...this.#preservedCompletionOwners],
 				completionEvents: true,
 				completionAcks: [completionId],

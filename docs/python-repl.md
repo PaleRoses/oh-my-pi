@@ -1,11 +1,11 @@
-# Eval Tool Python Backend
+# Kernel Tool Python Backend
 
 This document describes the Python execution stack in `packages/coding-agent`.
 It covers tool behavior, runner lifecycle, environment handling, execution semantics, output rendering, supported magics, and operational failure modes.
 
 ## Scope and Key Files
 
-- Tool surface: `src/tools/eval.ts`
+- Tool surface: `src/tools/kernel.ts`
 - Session/per-call kernel orchestration: `src/eval/py/executor.ts`
 - Subprocess kernel client: `src/eval/py/kernel.ts`
 - Python wrapper / NDJSON server: `src/eval/py/runner.py`
@@ -15,9 +15,9 @@ It covers tool behavior, runner lifecycle, environment handling, execution seman
 - Interactive-mode renderer for user-triggered Python runs: `src/modes/components/eval-execution.ts`
 - Runtime/env filtering and Python resolution: `src/eval/py/runtime.ts`
 
-## What eval's Python backend is
+## What kernel's Python backend is
 
-The `eval` tool executes one Python cell per call inside a retained `python` subprocess that speaks NDJSON over stdin/stdout. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+. Rich `display()` output (PIL, pandas, plotly, matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
+The `kernel` tool executes one Python cell per call inside a retained `python` subprocess that speaks NDJSON over stdin/stdout. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+. Rich `display()` output (PIL, pandas, plotly, matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
 
 Current tool input:
 
@@ -116,7 +116,7 @@ Unknown magic names raise `NameError: UsageError: ...` inside the cell.
   - Shuts the subprocess down after the call.
   - No cross-call state persistence.
 
-### State across eval calls
+### State across kernel calls
 
 Each tool call contains one cell. Python calls run sequentially because the tool is exclusive, and later calls reuse the selected retained kernel in `session` mode.
 
@@ -144,7 +144,7 @@ The runner additionally receives `PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-
 
 The backend settings `eval.py` / `eval.js` default to `true`; `eval.rb` / `eval.jl` default to `false`. Optional boolean environment flags `PI_PY`, `PI_JS`, `PI_RB`, and `PI_JL` override their corresponding setting independently.
 
-The tool's session-scoped schema lists only enabled runtimes. If Python preflight fails while another runtime is enabled, `eval` remains available for that runtime and a `py` call reports a Python-backend availability error with enabled alternatives.
+The tool's session-scoped schema lists only enabled runtimes. If Python preflight fails while another runtime is enabled, `kernel` remains available for that runtime and a `py` call reports a Python-backend availability error with enabled alternatives.
 
 Python prelude helpers include `agent(prompt, *, agent="task", model=None, label=None, schema=None, schema_mode=None, isolated=None, apply=None, merge=None, handle=False)`. It synchronously calls the host bridge and returns final text, or parsed data when `schema` is supplied. `schema_mode` selects permissive or strict structured-output handling; the isolation/apply/merge flags control task worktree behavior. With `handle=True`, it returns a DAG node dict (`{"text", "output", "handle", "id", "agent"}`) whose handle is the recoverable `agent://<id>` URI; parsed output is also stored under `"data"` when available.
 
@@ -204,7 +204,7 @@ Output is streamed through `OutputSink` and may be persisted to artifact storage
 
 ### Renderer behavior
 
-- Tool renderer (`eval-render.ts`, re-exported from `eval.ts`):
+- Tool renderer (`eval-render.ts`, re-exported from `kernel.ts`):
   - shows code-cell blocks with per-cell status
   - collapsed preview defaults to 10 lines
   - supports expanded mode for all output retained in the tool result

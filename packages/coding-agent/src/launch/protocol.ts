@@ -67,6 +67,35 @@ export interface DaemonSnapshot {
 	detached: boolean;
 }
 
+/** One broker-owned schedule: fires once at `at` or repeatedly every `everyMs`. */
+export interface ScheduleSpec {
+	name: string;
+	/** Message delivered to the owning session when the schedule fires. */
+	message: string;
+	/** Session id receiving the fires; the broker pushes to the socket subscribed for it. */
+	sessionId: string;
+	/** Epoch milliseconds for a one-shot fire; exactly one of `at`/`everyMs` is required. */
+	at?: number;
+	/** Interval milliseconds for repeating fires; exactly one of `at`/`everyMs` is required. */
+	everyMs?: number;
+	/** Daemon name guarding fires: at fire time a schedule whose daemon is not live is cancelled instead of firing. */
+	whileDaemon?: string;
+}
+
+/** Persistent schedule state: the spec plus broker-tracked timing. */
+export interface ScheduleSnapshot extends ScheduleSpec {
+	/** Epoch milliseconds of the next (or last-armed) fire. */
+	nextDueAt: number;
+	firedCount: number;
+}
+
+/** Unsolicited push when a schedule fires, sent to the socket subscribed for the schedule's session. */
+export interface ScheduleFireNotification {
+	event: "schedule-fire";
+	schedule: ScheduleSnapshot;
+	firedAt: number;
+}
+
 /** Signals accepted by daemon input operations. */
 export type DaemonSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKILL";
 
@@ -92,6 +121,9 @@ export type DaemonOperation =
 	| { op: "stop"; name: string; timeoutMs: number }
 	| { op: "restart"; name: string }
 	| { op: "describe"; name: string }
+	| { op: "schedule-set"; spec: ScheduleSpec }
+	| { op: "schedule-list" }
+	| { op: "schedule-clear"; name: string }
 	| { op: "shutdown" };
 
 /** Typed broker result decoded before it reaches tool code. */
@@ -116,6 +148,9 @@ export type DaemonRpcResult =
 	| { op: "stop"; daemon: DaemonSnapshot }
 	| { op: "restart"; daemon: DaemonSnapshot }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
+	| { op: "schedule-set"; schedule: ScheduleSnapshot }
+	| { op: "schedule-list"; schedules: ScheduleSnapshot[] }
+	| { op: "schedule-clear"; name: string }
 	| { op: "shutdown" };
 
 /** Authenticated request envelope used by socket clients. */
@@ -143,7 +178,7 @@ export interface DaemonCompletionNotification {
 	daemon: DaemonSnapshot;
 }
 
-export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification;
+export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification | ScheduleFireNotification;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -255,6 +290,35 @@ export function parseDaemonSpec(value: unknown): DaemonSpec {
 	};
 }
 
+/** Decode and validate one schedule specification; exactly one of `at`/`everyMs` is required. */
+export function parseScheduleSpec(value: unknown): ScheduleSpec {
+	const source = record(value, "schedule spec");
+	const at = optionalNumber(source.at, "schedule.at");
+	const everyMs = optionalNumber(source.everyMs, "schedule.everyMs");
+	if ((at === undefined) === (everyMs === undefined)) {
+		throw new Error("schedule requires exactly one of at or everyMs");
+	}
+	return {
+		name: stringValue(source.name, "schedule.name"),
+		message: stringValue(source.message, "schedule.message"),
+		sessionId: stringValue(source.sessionId, "schedule.sessionId"),
+		at,
+		everyMs,
+		whileDaemon: optionalString(source.whileDaemon, "schedule.whileDaemon"),
+	};
+}
+
+/** Decode and validate one persisted schedule snapshot. */
+export function parseScheduleSnapshot(value: unknown): ScheduleSnapshot {
+	const source = record(value, "schedule snapshot");
+	const spec = parseScheduleSpec(value);
+	return {
+		...spec,
+		nextDueAt: numberValue(source.nextDueAt, "schedule.nextDueAt"),
+		firedCount: numberValue(source.firedCount, "schedule.firedCount"),
+	};
+}
+
 /** Decode and validate one daemon snapshot. */
 export function parseDaemonSnapshot(value: unknown): DaemonSnapshot {
 	const source = record(value, "daemon snapshot");
@@ -330,6 +394,13 @@ export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 			daemon: parseDaemonSnapshot(source.daemon),
 		};
 	}
+	if (source.event === "schedule-fire") {
+		return {
+			event: "schedule-fire",
+			schedule: parseScheduleSnapshot(source.schedule),
+			firedAt: numberValue(source.firedAt, "schedule.firedAt"),
+		};
+	}
 	return parseDaemonWireResponse(value);
 }
 
@@ -389,6 +460,12 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 		case "restart":
 		case "describe":
 			return { op, name: stringValue(source.name, "operation.name") };
+		case "schedule-set":
+			return { op, spec: parseScheduleSpec(source.spec) };
+		case "schedule-list":
+			return { op };
+		case "schedule-clear":
+			return { op, name: stringValue(source.name, "operation.name") };
 		default:
 			throw new Error(`Unknown daemon operation: ${op}`);
 	}
@@ -442,6 +519,14 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 				daemon: parseDaemonSnapshot(source.daemon),
 				spec: parseDaemonSpec(source.spec),
 			};
+		case "schedule-set":
+			return { op: "schedule-set", schedule: parseScheduleSnapshot(source.schedule) };
+		case "schedule-list": {
+			if (!Array.isArray(source.schedules)) throw new Error("result.schedules must be an array");
+			return { op: "schedule-list", schedules: source.schedules.map(parseScheduleSnapshot) };
+		}
+		case "schedule-clear":
+			return { op: "schedule-clear", name: stringValue(source.name, "result.name") };
 		case "shutdown":
 			return { op: "shutdown" };
 	}

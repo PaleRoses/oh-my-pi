@@ -384,7 +384,7 @@ describe("ACP event mapper", () => {
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-eval-start",
-				toolName: "eval",
+				toolName: "kernel",
 				args: { language: "js", title: "sum", code: "return 1 + 1;" },
 				intent: "sum",
 			} as AgentSessionEvent,
@@ -417,7 +417,7 @@ describe("ACP event mapper", () => {
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-eval-mixed-cells",
-				toolName: "eval",
+				toolName: "kernel",
 				args: {
 					cells: [null, {}, { code: "" }, { code: "x" }, { language: "py", code: "y" }],
 				},
@@ -442,7 +442,7 @@ describe("ACP event mapper", () => {
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-eval-long-source",
-				toolName: "eval",
+				toolName: "kernel",
 				args: { language: "js", code: source },
 			} as AgentSessionEvent,
 			"session-1",

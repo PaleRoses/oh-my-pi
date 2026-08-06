@@ -26,7 +26,7 @@ Current behavior is implemented in
   byte offset where a structurally valid tool parse ended. The main agent loop
   does not currently supply that boundary, avoiding false aborts on legitimate
   tool data that discusses the protocol.
-- Recovery support exists for bounded free-form `eval` input and the current
+- Recovery support exists for bounded free-form `kernel` input and the current
   hashline `edit` DSL (input beginning with `@`): it truncates at the
   contaminated line and appends `*** Abort`. Apply-patch envelopes and
   JSON-schema edit inputs are not recovery-eligible and use abort/retry when a
@@ -99,7 +99,7 @@ Plus 15 hits in assistant visible text / thinking blobs.
 | Tool                           |   Hits |
 | ------------------------------ | -----: |
 | `edit`                         |     38 |
-| `eval`                         |     11 |
+| `kernel`                       |     11 |
 | `report_tool_issue`            |      3 |
 | `grep`/`read`/`search`/`yield` | 1 each |
 

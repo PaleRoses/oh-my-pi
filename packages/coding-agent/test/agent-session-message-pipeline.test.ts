@@ -172,7 +172,7 @@ describe("AgentSession message pipeline", () => {
 		session.agent.appendMessage({
 			role: "toolResult",
 			toolCallId: "eval-1",
-			toolName: "eval",
+			toolName: "kernel",
 			content: [{ type: "text", text: "plot output" }, toolImage],
 			timestamp: Date.now(),
 			isError: false,

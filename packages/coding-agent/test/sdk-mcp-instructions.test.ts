@@ -12,22 +12,23 @@ import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import {
 	BOUNDED_GUIDANCE_MODE,
+	BOUNDED_GUIDANCE_TOOL_COUNT,
 	CONTEXT_MODE_NO_INSTRUCTIONS_MODE,
 	SERVER_INSTRUCTIONS,
 	TOOL_RESULT,
 } from "./fixtures/instructions-mcp";
 
 // Contract: a deferred interactive (`hasUI`) session runs MCP discovery off the
-// first-paint path. Once the background connection completes, the resulting
-// `refreshMCPTools` rebuild must add one global bounded route section for every
-// mounted MCP tool, whether or not its server returned optional `instructions`.
-// Any supplied server instructions join their separately framed section for the
-// rest of the session. Regression guards cover both previously dropped deferred
-// instructions and the installed Context Mode server's absent instructions.
+// first-paint path. Mounted MCP tools are presented solely through the xd://
+// device catalog (overflow one-liners carrying the mount path and the
+// server/tool label under the default `builtins` docs mode); a server that
+// supplies optional `instructions` triggers a prompt rebuild that folds them
+// into their separately framed section, while an instruction-less server stays
+// notice-only and leaves the system prompt byte-stable.
 const FIXTURE_PATH = path.join(import.meta.dir, "fixtures", "instructions-mcp.ts");
 const MCP_TOOL_NAME = "mcp__instr_do_thing";
-const MCP_ROUTE_SECTION = "## MCP Tool Routes";
-const CONTEXT_MODE_ROUTE = '- "ctx_execute" → `xd://mcp__context_mode_ctx_execute`';
+const MCP_CATALOG_LINE = "- xd://mcp__instr_do_thing (instr/do`thing) — ";
+const CONTEXT_MODE_CATALOG_LINE = "- xd://mcp__context_mode_ctx_execute";
 const CONTEXT_MODE_MCP_TOOL_NAME = "mcp__context_mode_ctx_execute";
 
 describe("createAgentSession MCP server instructions (deferred UI)", () => {
@@ -124,11 +125,11 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			}
 
 			expect(prompt).toContain(SERVER_INSTRUCTIONS);
-			// The instructions are framed under the MCP section, and guidance keeps
-			// the escaped original tool name while routing through the exact
-			// normalized name actually mounted in the live xd:// registry.
+			// The instructions are framed under the MCP section, and the mounted
+			// tool is listed in the xd:// device catalog with its server/tool
+			// label alongside the exact normalized mount path.
 			expect(prompt).toContain("MCP Server Instructions");
-			expect(prompt).toContain('- "do\\u0060thing" → `xd://mcp__instr_do_thing`');
+			expect(prompt).toContain(MCP_CATALOG_LINE);
 		} finally {
 			await session.dispose();
 		}
@@ -160,10 +161,9 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			hasUI: false,
 		});
 		try {
-			const route = '- "do\\u0060thing" → `xd://mcp__instr_do_thing`';
 			const prompt = session.systemPrompt.join("\n");
 
-			expect(prompt).toContain(route);
+			expect(prompt).toContain(MCP_CATALOG_LINE);
 			expect(prompt).not.toContain(SERVER_INSTRUCTIONS);
 			expect(prompt).not.toContain("MCP Server Instructions");
 		} finally {
@@ -171,7 +171,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		}
 	});
 
-	it("renders a mounted Context Mode route when initialize omits instructions", async () => {
+	it("lists a mounted Context Mode tool in the xd:// catalog when initialize omits instructions", async () => {
 		fs.writeFileSync(
 			path.join(tempDir, ".mcp.json"),
 			JSON.stringify({
@@ -203,22 +203,24 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		});
 		try {
 			// Context Mode advertises mounted MCP tools but currently supplies no
-			// `connection.instructions`. Deferred discovery must still rebuild the
-			// prompt with the globally rendered route guidance. The SDK exposes no
-			// completion signal for this real child-process handshake, and fake
-			// timers cannot drive it, so poll only until the route becomes visible.
+			// `connection.instructions`. The first post-discovery apply seeds the
+			// applied-tool signature baseline, so the prompt rebuilds once and the
+			// xd:// device catalog — the sole owner of MCP tool presentation —
+			// lists the mounted tool; no separate route section is rendered. The
+			// real child-process handshake exposes no completion signal, so poll
+			// until the catalog line becomes visible.
 			let prompt = session.systemPrompt.join("\n");
-			expect(prompt).not.toContain(CONTEXT_MODE_ROUTE);
+			expect(prompt).not.toContain(CONTEXT_MODE_CATALOG_LINE);
 			const deadline = Date.now() + 12_000;
-			while (!prompt.includes(CONTEXT_MODE_ROUTE) && Date.now() < deadline) {
+			while (!prompt.includes(CONTEXT_MODE_CATALOG_LINE) && Date.now() < deadline) {
 				await Bun.sleep(50);
 				prompt = session.systemPrompt.join("\n");
 			}
 
-			expect(prompt).toContain(CONTEXT_MODE_ROUTE);
+			expect(prompt).toContain(CONTEXT_MODE_CATALOG_LINE);
 			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain(CONTEXT_MODE_MCP_TOOL_NAME);
 			expect(session.getActiveToolNames()).not.toContain(CONTEXT_MODE_MCP_TOOL_NAME);
-			expect(prompt.split(MCP_ROUTE_SECTION)).toHaveLength(2);
+			expect(prompt).not.toContain("## MCP Tool Routes");
 			expect(prompt).not.toContain(SERVER_INSTRUCTIONS);
 			expect(prompt).not.toContain("## MCP Server Instructions");
 			expect(prompt).not.toContain("### context-mode");
@@ -269,13 +271,16 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			}
 
 			expect(prompt).toContain(SERVER_INSTRUCTIONS);
-			const renderedMappings = prompt.split("\n").filter(line => line.startsWith('- "row_'));
-			expect(renderedMappings).toHaveLength(64);
-			expect(renderedMappings[0]).toBe('- "row_aa" → `xd://mcp__instr_row_aa`');
-			expect(renderedMappings[63]).toBe('- "row_cl" → `xd://mcp__instr_row_cl`');
-			expect(prompt).not.toContain('- "row_cm" → `xd://mcp__instr_row_cm`');
-			// Truncation notice present (row_cm absent above proves the cap applied).
-			expect(prompt).toContain("omitted");
+			// Every mounted fixture tool is listed in the xd:// device catalog —
+			// the catalog is the sole owner of MCP tool presentation, with no
+			// separate bounded route section.
+			const catalogLines = prompt.split("\n").filter(line => line.startsWith("- xd://mcp__instr_row_"));
+			expect(catalogLines).toHaveLength(BOUNDED_GUIDANCE_TOOL_COUNT);
+			expect(catalogLines[0]).toStartWith("- xd://mcp__instr_row_aa (instr/row_aa) — ");
+			expect(catalogLines[BOUNDED_GUIDANCE_TOOL_COUNT - 1]).toStartWith(
+				"- xd://mcp__instr_row_cm (instr/row_cm) — ",
+			);
+			expect(prompt).not.toContain("## MCP Tool Routes");
 		} finally {
 			await session.dispose();
 		}

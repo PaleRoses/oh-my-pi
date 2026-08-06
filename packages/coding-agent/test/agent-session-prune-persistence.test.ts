@@ -144,8 +144,22 @@ describe("AgentSession per-turn prune persistence", () => {
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [finalAssistant] });
 		await session.waitForIdle();
 
-		// The per-turn pass rewrote the live context…
-		expect(liveResultText()).toBe(USELESS_NOTICE);
+		// The per-turn pass rewrote the live context: the useless notice plus a
+		// recovery pointer into the session artifact store (the original is
+		// 220 KB — far above the spill floor).
+		const liveText = liveResultText();
+		expect(liveText.startsWith(USELESS_NOTICE)).toBe(true);
+		const pointer = liveText.match(/\[full output: artifact:\/\/(\d+)\]/);
+		if (!pointer) throw new Error(`Expected an artifact recovery pointer, got: ${liveText}`);
+
+		// The artifact holds the original content.
+		const artifactPath = path.join(
+			sessionManager.getSessionFile()?.replace(/\.jsonl$/, "") ?? "",
+			`${pointer[1]}.grep.log`,
+		);
+		const spilled = await Bun.file(artifactPath).text();
+		expect(spilled.startsWith("match line\n")).toBe(true);
+		expect(spilled.length).toBeGreaterThan(200_000);
 
 		// …and the persisted file must rebuild to the SAME content (fork/resume
 		// read this file; a divergent prefix cold-misses the provider cache).
@@ -160,6 +174,6 @@ describe("AgentSession per-turn prune persistence", () => {
 			throw new Error("Expected the seeded tool result in the from-disk rebuild");
 		}
 		const rebuiltText = rebuilt.content.find(block => block.type === "text");
-		expect(rebuiltText?.type === "text" ? rebuiltText.text : undefined).toBe(USELESS_NOTICE);
+		expect(rebuiltText?.type === "text" ? rebuiltText.text : undefined).toBe(liveText);
 	});
 });

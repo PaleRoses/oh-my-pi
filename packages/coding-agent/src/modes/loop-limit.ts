@@ -139,6 +139,29 @@ function parseCompoundDuration(token: string): LoopLimitConfig | string | undefi
 	return { kind: "duration", durationMs: totalMs };
 }
 
+/**
+ * Parse a compact duration token such as `10m` or a compound `1h30m` into
+ * milliseconds. Returns `undefined` when the token is not duration-shaped or
+ * uses an unknown unit. Shared by the `/loop` CLI and the hub `schedule` op.
+ */
+export function parseDurationMs(token: string): number | undefined {
+	const normalized = token.trim().toLowerCase();
+	if (!/^(?:\d+[a-z]+)+$/.test(normalized)) return undefined;
+	const segments = normalized.match(/\d+[a-z]+/g);
+	if (!segments) return undefined;
+	let totalMs = 0;
+	for (const segment of segments) {
+		const match = /^(\d+)([a-z]+)$/.exec(segment);
+		if (!match) return undefined;
+		const unitMs = TIME_UNITS_MS.get(match[2]);
+		if (unitMs === undefined) return undefined;
+		const amount = Number(match[1]);
+		if (!Number.isSafeInteger(amount) || amount <= 0) return undefined;
+		totalMs += amount * unitMs;
+	}
+	return totalMs > 0 ? totalMs : undefined;
+}
+
 export function createLoopLimitRuntime(
 	config: LoopLimitConfig | undefined,
 	nowMs = Date.now(),

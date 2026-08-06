@@ -10,6 +10,12 @@ export interface SystemPromptProfile {
 	readonly projectContextOnly: boolean;
 	readonly memoryEnabled: boolean;
 	readonly mcpServerInstructionsEnabled: boolean;
+	/** Absolute paths of standing context images injected into the message stream at conversation start. */
+	readonly contextImages: readonly string[];
+	/** Phrase substituted for "the user" in the maintained system prompt; undefined keeps the generic wording. */
+	readonly userTitle?: string;
+	/** Tool names forming the model-facing active set; empty keeps the full set. */
+	readonly tools: readonly string[];
 }
 
 export type SystemPromptProfileDecision =
@@ -41,6 +47,9 @@ const systemPromptProfileSchema = type({
 	"projectContextOnly?": "boolean",
 	"memory?": "boolean",
 	"mcpServerInstructions?": "boolean",
+	"contextImages?": "string[]",
+	"userTitle?": "string",
+	"tools?": "string[]",
 });
 const systemPromptProfilesSchema = type({ "[string]": systemPromptProfileSchema });
 const profileRouteSchema = type({
@@ -100,6 +109,28 @@ async function loadPromptFile(profileId: string, source: string, cwd: string): P
 	}
 }
 
+async function resolveContextImage(profileId: string, source: string, index: number, cwd: string): Promise<string> {
+	const label = `systemPromptProfiles.${profileId}.contextImages[${index}]`;
+	const imagePath = resolveSystemPromptProfileFilePath(requireNonEmptyString(source, label), cwd);
+	if (!(await Bun.file(imagePath).exists())) {
+		throw new Error(`${label} does not exist: ${imagePath}`);
+	}
+	return imagePath;
+}
+
+function compileProfileTools(profileId: string, raw: readonly string[]): readonly string[] {
+	const seen = new Set<string>();
+	const tools: string[] = [];
+	raw.forEach((name, index) => {
+		const trimmed = requireNonEmptyString(name, `systemPromptProfiles.${profileId}.tools[${index}]`).toLowerCase();
+		if (!seen.has(trimmed)) {
+			seen.add(trimmed);
+			tools.push(trimmed);
+		}
+	});
+	return tools;
+}
+
 function compileModelMatcher(pattern: string, label: string): (model: string | undefined) => boolean {
 	const normalized = requireNonEmptyString(pattern, label).toLowerCase();
 	if (normalized === "*") return model => model !== undefined;
@@ -152,6 +183,15 @@ async function compileProfile(
 		projectContextOnly: raw.projectContextOnly === true,
 		memoryEnabled: raw.memory !== false,
 		mcpServerInstructionsEnabled: raw.mcpServerInstructions !== false,
+		contextImages:
+			raw.contextImages === undefined
+				? []
+				: await Promise.all(raw.contextImages.map((source, index) => resolveContextImage(profileId, source, index, cwd))),
+		tools: raw.tools === undefined ? [] : compileProfileTools(profileId, raw.tools),
+		userTitle:
+			raw.userTitle === undefined
+				? undefined
+				: requireNonEmptyString(raw.userTitle, `systemPromptProfiles.${profileId}.userTitle`),
 	};
 }
 

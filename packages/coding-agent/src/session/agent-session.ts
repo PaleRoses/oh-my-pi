@@ -144,7 +144,7 @@ import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
-import type { DaemonCompletionNotification } from "../launch/protocol";
+import type { DaemonCompletionNotification, ScheduleFireNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, ORCHESTRATE_NOTICE } from "../modes/orchestrate";
@@ -205,7 +205,7 @@ import { parseCommandArgs } from "../utils/command-args";
 import type { EditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
-import { normalizeModelContextImages } from "../utils/image-loading";
+import { loadImageInput, normalizeModelContextImages } from "../utils/image-loading";
 import type { InspectImageMode } from "../utils/inspect-image-mode";
 import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
@@ -298,6 +298,7 @@ import {
 	isUserInterruptAbort,
 	logProviderTurnError,
 	normalizeCustomMessagePayload,
+	PROFILE_CONTEXT_IMAGES_MESSAGE_TYPE,
 	type PythonExecutionMessage,
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
@@ -532,6 +533,7 @@ export class AgentSession {
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
 	readonly #assertSystemPromptProfileCompatible: ((model: Model | undefined) => void) | undefined;
+	readonly #profileContextImages: readonly string[];
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
@@ -1275,6 +1277,7 @@ export class AgentSession {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#assertSystemPromptProfileCompatible = config.assertSystemPromptProfileCompatible;
+		this.#profileContextImages = config.profileContextImages ?? [];
 		this.#scoutAllowedBySpawnPolicy = config.scoutAllowedBySpawnPolicy ?? true;
 		this.#providerSessionId = config.providerSessionId;
 		this.#providerPromptCacheKeyExplicit = config.providerPromptCacheKeySource === "explicit";
@@ -4785,6 +4788,55 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
+	 * Build the standing profile context-images message, or null when the
+	 * routed profile configures none or the live context already carries one.
+	 *
+	 * Deliberately stateless: the guard scans the agent's in-memory context for
+	 * the marker customType, so resume keeps the persisted copy, while `/new`,
+	 * `/reset`, and compaction — which all drop or rewrite that context — get a
+	 * fresh injection on the next turn without any sent-flag reset plumbing
+	 * (the flag approach stranded plan-reference delivery in issue #4094).
+	 * Unreadable images degrade to a skip: a standing portrait must never
+	 * block a turn.
+	 */
+	async #buildProfileContextImagesMessage(): Promise<CustomMessage | null> {
+		if (this.#profileContextImages.length === 0) return null;
+		const alreadyInContext = this.agent.state.messages.some(
+			message => message.role === "custom" && message.customType === PROFILE_CONTEXT_IMAGES_MESSAGE_TYPE,
+		);
+		if (alreadyInContext) return null;
+
+		const autoResize = this.settings.get("images.autoResize");
+		const content: (TextContent | ImageContent)[] = [];
+		for (const imagePath of this.#profileContextImages) {
+			try {
+				const loaded = await loadImageInput({
+					path: imagePath,
+					cwd: this.sessionManager.getCwd(),
+					autoResize,
+				});
+				if (!loaded) continue;
+				content.push(
+					{ type: "text", text: `Standing context image: ${imagePath}` },
+					{ type: "image", data: loaded.data, mimeType: loaded.mimeType },
+				);
+			} catch (error) {
+				logger.warn("Skipping unreadable profile context image", { path: imagePath, error });
+			}
+		}
+		if (!content.some(block => block.type === "image")) return null;
+
+		return {
+			role: "custom",
+			customType: PROFILE_CONTEXT_IMAGES_MESSAGE_TYPE,
+			content,
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+	}
+
+	/**
 	 * Build a plan mode message.
 	 * Returns null if plan mode is not enabled.
 	 * @returns The plan mode message, or null if plan mode is not enabled.
@@ -4974,7 +5026,7 @@ export class AgentSession {
 		}
 		if (this.#magicKeywordEnabled("workflow") && containsWorkflow(text)) {
 			const activeToolNames = this.getActiveToolNames();
-			if (activeToolNames.includes("task") && activeToolNames.includes("eval")) {
+			if (activeToolNames.includes("task") && activeToolNames.includes("kernel")) {
 				keywordNotices.push({
 					role: "custom",
 					customType: "workflow-notice",
@@ -5244,6 +5296,10 @@ export class AgentSession {
 
 			// Build messages array (session context, eager todo prelude, then active prompt message)
 			const messages: AgentMessage[] = [];
+			const profileContextImagesMessage = await this.#buildProfileContextImagesMessage();
+			if (profileContextImagesMessage) {
+				messages.push(await this.#normalizeAgentMessageImages(profileContextImagesMessage));
+			}
 			const planReferenceMessage = await this.#buildPlanReferenceMessage?.();
 			if (planReferenceMessage) {
 				messages.push(planReferenceMessage);
@@ -5722,6 +5778,23 @@ export class AgentSession {
 		);
 		this.yieldQueue.requestIdleFlush();
 		return delivered;
+	}
+
+	/**
+	 * Deliver a broker-owned schedule fire into this session through the IRC
+	 * path with a synthetic `schedule:<name>` sender: streaming → injected as a
+	 * non-interrupting aside at the next step boundary, idle → wake turn.
+	 */
+	queueScheduleFire(notification: ScheduleFireNotification): Promise<"injected" | "woken"> {
+		if (this.#isDisposed) return Promise.reject(new Error("Session disposed before schedule fire delivery"));
+		const { schedule, firedAt } = notification;
+		return this.#irc.deliver({
+			id: Snowflake.next(),
+			from: `schedule:${schedule.name}`,
+			to: this.sessionManager.getSessionId(),
+			body: schedule.message,
+			ts: firedAt,
+		});
 	}
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {

@@ -8,10 +8,13 @@ beforeAll(async () => {
 	await initTheme();
 });
 
-function createModelContext(advisorActive: boolean): SegmentContext {
+function createModelContext(
+	advisorActive: boolean,
+	model: { id: string; name: string } = { id: "test-model", name: "Test Model" },
+): SegmentContext {
 	return {
 		session: {
-			state: { model: { id: "test-model", name: "Test Model" } },
+			state: { model },
 			isFastModeActive: () => false,
 			isAutoThinking: false,
 			autoResolvedThinkingLevel: () => undefined,
@@ -122,5 +125,22 @@ describe("status line model segment compact thinking level", () => {
 		const rendered = renderSegment("model", createThinkingContext(true));
 		expect(Bun.stripANSI(rendered.content)).toBe(`${glyph} Test Model`);
 		expect(Bun.stripANSI(rendered.content)).not.toContain(theme.sep.dot);
+	});
+});
+
+describe("status line model segment label override", () => {
+	it("replaces the model name with the configured label", () => {
+		const ctx = createModelContext(false);
+		ctx.options = { model: { label: "You" } };
+		const rendered = renderSegment("model", ctx);
+		expect(rendered.content).toContain("You");
+		expect(rendered.content).not.toContain("Test Model");
+	});
+
+	it("strips the Claude prefix only when no label is configured", () => {
+		const claudeCtx = createModelContext(false, { id: "claude-fable-5", name: "Claude Fable 5" });
+		expect(renderSegment("model", claudeCtx).content).toContain("Fable 5");
+		claudeCtx.options = { model: { label: "Claude Anyway" } };
+		expect(renderSegment("model", claudeCtx).content).toContain("Claude Anyway");
 	});
 });

@@ -5,9 +5,9 @@
  * on `initialize`; its Context Mode fixture mode omits that field entirely.
  *
  * Used by `sdk-mcp-instructions.test.ts` to prove that deferred interactive
- * (`hasUI`) discovery rebuilds global mounted-route guidance independently of
- * optional server instructions, while still folding instructions into the
- * prompt when a connected server provides them.
+ * (`hasUI`) discovery presents mounted MCP tools through the xd:// device
+ * catalog, folds optional server instructions into the prompt when supplied,
+ * and stays notice-only (no prompt rebuild) when they are absent.
  *
  * Speaks newline-delimited JSON-RPC 2.0 (the wire format of `StdioTransport`):
  * one JSON object per line on stdin, one JSON response per line on stdout.

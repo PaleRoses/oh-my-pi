@@ -168,6 +168,29 @@ interface TaskDescriptionOptions {
 	parentSpawns: string;
 }
 
+/**
+ * Roster entries exist for agent SELECTION only — the subagent's behavior
+ * comes from its body file, which is rendered in full when it spawns. Foreign
+ * agent definitions (Claude Code marketplace plugins) pack multi-hundred-word
+ * trigger-matching `<example>` dialogues into their `description` frontmatter;
+ * rendered verbatim into the `task` tool schema they bloat every request's
+ * system prompt (~27 KB observed for one 16-agent plugin). Strip example and
+ * commentary blocks and cap what remains; the cap only ever fires on foreign
+ * definitions, native rosters stay byte-identical.
+ */
+const ROSTER_DESCRIPTION_CAP = 600;
+const ROSTER_STRIPPED_BLOCKS_RE = /<(example|commentary)>[\s\S]*?<\/\1>/g;
+
+export function rosterDescription(description: string): string {
+	const stripped = description
+		.replace(ROSTER_STRIPPED_BLOCKS_RE, "")
+		.replace(/[ \t]*\n[ \t]*(\n[ \t]*)+/g, "\n")
+		.trim();
+	if (stripped.length <= ROSTER_DESCRIPTION_CAP) return stripped;
+	const cut = stripped.slice(0, ROSTER_DESCRIPTION_CAP);
+	const boundary = Math.max(cut.lastIndexOf(" "), cut.lastIndexOf("\n"));
+	return `${cut.slice(0, boundary > 0 ? boundary : ROSTER_DESCRIPTION_CAP).trimEnd()}…`;
+}
 /** Render the tool description from a cached agent list and current settings. */
 function renderDescription(options: TaskDescriptionOptions): string {
 	const spawnPolicy = resolveSpawnPolicy(options.parentSpawns);
@@ -184,7 +207,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	}
 	const renderedAgents = filteredAgents.map(agent => ({
 		name: agent.name,
-		description: agent.description,
+		description: rosterDescription(agent.description),
 		readOnly: isReadOnlyAgent(agent),
 		blocking: agent.blocking === true,
 	}));

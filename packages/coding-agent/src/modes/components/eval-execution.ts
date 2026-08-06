@@ -1,6 +1,6 @@
 /**
  * Component for displaying user-initiated eval execution with streaming output.
- * Shares the same kernel session as the agent's eval tool.
+ * Shares the same kernel session as the agent's kernel tool.
  */
 
 import { Container, type Loader, Text, type TUI } from "@oh-my-pi/pi-tui";

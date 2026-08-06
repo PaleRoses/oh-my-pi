@@ -53,7 +53,7 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		// Core tools should always be present
-		expect(names).toContain("eval");
+		expect(names).toContain("kernel");
 		expect(names).toContain("bash");
 		expect(names).toContain("read");
 		expect(names).toContain("edit");
@@ -72,16 +72,18 @@ describe("createTools", () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "astGrep.enabled": false }),
 		});
-		const tools = await createTools(session, ["search", "find", "grep"]);
+		const tools = await createTools(session, ["search", "find", "eval", "grep"]);
 		const names = tools.map(t => t.name);
 
 		expect(names.filter(name => name === "grep")).toHaveLength(1);
 		expect(names).toContain("glob");
+		expect(names.filter(name => name === "kernel")).toHaveLength(1);
 		expect(names).not.toContain("search");
 		expect(names).not.toContain("find");
+		expect(names).not.toContain("eval");
 	});
 
-	it("includes bash and eval when both eval backends are allowed", async () => {
+	it("includes bash and kernel when both eval backends are allowed", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
 				"eval.py": true,
@@ -91,11 +93,11 @@ describe("createTools", () => {
 		const tools = await createTools(session);
 		const names = tools.map(t => t.name);
 
-		expect(names).toContain("eval");
+		expect(names).toContain("kernel");
 		expect(names).toContain("bash");
 	});
 
-	it("still exposes eval when only the js backend is allowed", async () => {
+	it("still exposes kernel when only the js backend is allowed", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
 				"eval.py": false,
@@ -106,10 +108,10 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toContain("bash");
-		expect(names).toContain("eval");
+		expect(names).toContain("kernel");
 	});
 
-	it("still exposes eval when python kernel is unavailable (dispatches to js)", async () => {
+	it("still exposes kernel when python kernel is unavailable (dispatches to js)", async () => {
 		const session = createTestSession();
 		vi.spyOn(
 			await import("@oh-my-pi/pi-coding-agent/eval/py/kernel"),
@@ -118,10 +120,10 @@ describe("createTools", () => {
 			ok: false,
 			reason: "missing python",
 		});
-		const tools = await createTools(session, ["eval"]);
+		const tools = await createTools(session, ["kernel"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toContain("eval");
+		expect(names).toContain("kernel");
 	});
 
 	it("excludes lsp tool when session disables LSP", async () => {

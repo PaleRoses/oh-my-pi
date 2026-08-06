@@ -135,7 +135,7 @@ function errorText(error: unknown): string {
 function profileFieldValue(
 	profile: SystemPromptProfileSetting,
 	field: PromptProfileField,
-): string | boolean | undefined {
+): string | boolean | readonly string[] | undefined {
 	return profile[field];
 }
 
@@ -170,6 +170,14 @@ function describeProfileField(profile: SystemPromptProfileSetting, field: Prompt
 					? "on"
 					: "off"
 				: `${defaultToggleValue(field) ? "on" : "off"} (default)`;
+		case "contextImages":
+			return Array.isArray(value) && value.length > 0
+				? value.map(entry => shortenPath(String(entry))).join(", ")
+				: "none";
+		case "userTitle":
+			return typeof value === "string" ? value : "the user (default)";
+		case "tools":
+			return Array.isArray(value) && value.length > 0 ? value.map(String).join(", ") : "all (default)";
 	}
 }
 
@@ -446,12 +454,17 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		});
 		switch (definition.input) {
 			case "markdown": {
-				const fileDefinition = PROMPT_PROFILE_FILE_DEFINITIONS[definition.field];
-				const source = profile[fileDefinition.field];
+				const fileDefinition =
+					definition.field === "userTitle" ? undefined : PROMPT_PROFILE_FILE_DEFINITIONS[definition.field];
+				const source = fileDefinition === undefined ? undefined : profile[fileDefinition.field];
 				const content = profile[definition.field];
 				const maintainedPromptFile = this.#state.model.maintainedPromptFile;
 				const configuredField =
-					source !== undefined ? fileDefinition.field : content !== undefined ? definition.field : undefined;
+					source !== undefined && fileDefinition !== undefined
+						? fileDefinition.field
+						: content !== undefined
+							? definition.field
+							: undefined;
 				const openAction: SelectorAction[] =
 					source !== undefined
 						? [
@@ -467,15 +480,18 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 									},
 								},
 							]
-						: content !== undefined
+						: content !== undefined || fileDefinition === undefined
 							? [
 									{
 										id: "open",
 										label: "Open inline Markdown editor",
-										description: `Stored in global config (${content.length} chars)`,
+										description:
+											content === undefined
+												? "Not configured"
+												: `Stored in global config (${content.length} chars)`,
 										run: () => {
 											void this.#editAndApply(fieldScreen, async () => {
-												const edited = await this.#callbacks.onEditMarkdown(content);
+												const edited = await this.#callbacks.onEditMarkdown(content ?? "");
 												if (edited === null || edited === undefined) return undefined;
 												return { type: "setField", profileId, field: definition.field, value: edited };
 											});
@@ -497,22 +513,28 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 										},
 									]
 								: [];
+				const pathAction: SelectorAction[] =
+					fileDefinition === undefined
+						? []
+						: [
+								{
+									id: "path",
+									label: source === undefined ? "Use Markdown file" : "Change file path",
+									description: source === undefined ? "Configure an existing Markdown file" : shortenPath(source),
+									run: () =>
+										this.#navigate({
+											type: "editPath",
+											profileId,
+											definition: fileDefinition,
+											owner: definition,
+											value: source ?? "",
+										}),
+								},
+							];
 				return this.#actionSelector(
 					[
 						...openAction,
-						{
-							id: "path",
-							label: source === undefined ? "Use Markdown file" : "Change file path",
-							description: source === undefined ? "Configure an existing Markdown file" : shortenPath(source),
-							run: () =>
-								this.#navigate({
-									type: "editPath",
-									profileId,
-									definition: fileDefinition,
-									owner: definition,
-									value: source ?? "",
-								}),
-						},
+						...pathAction,
 						...(configuredField === undefined ? [] : [restore(configuredField)]),
 						{ id: "back", label: "Back", run: back },
 					],

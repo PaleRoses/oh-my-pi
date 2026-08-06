@@ -273,7 +273,7 @@ describe("PromptProfileSelectorComponent", () => {
 		const harness = createHarness();
 
 		harness.component.handleInput("\n");
-		pressDown(harness.component, 5);
+		pressDown(harness.component, 6);
 		harness.component.handleInput("\n");
 		harness.component.handleInput("\n");
 		await settleOperation();

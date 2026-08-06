@@ -322,6 +322,12 @@ export interface SystemPromptProfileSetting {
 	readonly projectContextOnly?: boolean;
 	readonly memory?: boolean;
 	readonly mcpServerInstructions?: boolean;
+	/** Image file paths injected as standing context at conversation start (absolute, `~/`, or cwd-relative). */
+	readonly contextImages?: readonly string[];
+	/** Phrase substituted for "the user" in the maintained system prompt (e.g. a name). */
+	readonly userTitle?: string;
+	/** Tool names forming the model-facing active set; session contracts (ask, yield, checkpoint/rewind pairing, memory tools) are preserved. Empty/omitted keeps the full set. */
+	readonly tools?: readonly string[];
 }
 
 export type SystemPromptProfileRouteSetting =
@@ -1060,6 +1066,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Hide Tool Activity",
 			description: "Hide model-initiated tool calls and results from the transcript",
+		},
+	},
+
+	"display.modelLabel": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Model Label",
+			description:
+				'Replace the model name shown in the status line and welcome screen with a custom label (e.g. "You"); empty shows the real model name',
 		},
 	},
 
@@ -3602,7 +3620,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "Python Eval Backend",
-			description: "Allow the eval tool to dispatch Python cells to the IPython kernel",
+			description: "Allow the kernel tool to dispatch Python cells to the IPython kernel",
 		},
 	},
 
@@ -3613,7 +3631,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "JavaScript Eval Backend",
-			description: "Allow the eval tool to dispatch JavaScript cells to the in-process runtime",
+			description: "Allow the kernel tool to dispatch JavaScript cells to the in-process runtime",
 		},
 	},
 
@@ -3624,7 +3642,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "Ruby Eval Backend",
-			description: "Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel",
+			description: "Allow the kernel tool to dispatch Ruby cells to the persistent Ruby kernel",
 		},
 	},
 
@@ -3635,7 +3653,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "Julia Eval Backend",
-			description: "Allow the eval tool to dispatch Julia cells to the persistent Julia kernel",
+			description: "Allow the kernel tool to dispatch Julia cells to the persistent Julia kernel",
 		},
 	},
 

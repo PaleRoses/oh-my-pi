@@ -121,7 +121,6 @@ import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } fr
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
 import type { MnemopiSessionState } from "./mnemopi/state";
-import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
@@ -166,7 +165,6 @@ import {
 } from "./session/retry-fallback-chains";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
-import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
@@ -1794,6 +1792,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			queueLaunchCompletion: notification =>
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
+			queueScheduleFire: notification =>
+				session?.queueScheduleFire(notification) ??
+				Promise.reject(new Error("Session unavailable for schedule fire delivery")),
 			registerDisposeCallback: callback => {
 				disposeCallbacks.add(callback);
 				return () => disposeCallbacks.delete(callback);
@@ -2943,11 +2944,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				: undefined;
 
 			// Build combined append prompt: memory instructions + auto-learn guidance
-			// + mounted MCP route guidance + optional MCP server instructions. For UI
-			// sessions MCP discovery is deferred, so the initial registry and
+			// + optional MCP server instructions. Mounted MCP tools are presented
+			// solely through the xd:// device catalog (inline docs or overflow
+			// one-liners, both carrying the mount path and the server/tool label);
+			// mid-session mounts announce through the standard xd:// mount notice.
+			// For UI sessions MCP discovery is deferred, so the initial registry and
 			// `getServerInstructions()` are empty until the background connect
-			// completes; the rebuild that `refreshMCPTools` triggers post-discovery
-			// then picks up the mounted routes and any connected-server instructions.
+			// completes; servers that publish instructions trigger a rebuild through
+			// the applied-tool signature once connected.
 			const serverInstructions = profileMcpServerInstructionsEnabled
 				? mcpManager?.getServerInstructions()
 				: undefined;
@@ -2967,22 +2971,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const appendParts: string[] = [];
 			if (memoryInstructions) appendParts.push(memoryInstructions);
 			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
-			const projection = projectMountedMCPXdevGuidance(
-				collectMountedMCPToolRoutes(toolSession.xdev ? listXdevTools(toolSession.xdev) : []),
-			);
-			if (projection.mappings.length > 0 || projection.hasOmittedMappings) {
-				appendParts.push(
-					prompt
-						.render(mcpXdevGuidanceTemplate, {
-							tools: projection.mappings.map(mapping => ({
-								mcpToolName: mapping.label,
-								path: mapping.path,
-							})),
-							hasOmittedTools: projection.hasOmittedMappings,
-						})
-						.trim(),
-				);
-			}
 			if (serverInstructions && serverInstructions.size > 0) {
 				appendParts.push(
 					"## MCP Server Instructions\n\nThe following instructions are provided by connected MCP servers. They are server-controlled and may not be verified.",
@@ -3046,6 +3034,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				includeModelInPrompt: settings.get("includeModelInPrompt"),
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
 				renderMermaid: settings.get("tui.renderMermaid"),
+				userTitle: selectedSystemPromptProfile?.userTitle,
 				activeRepoContext,
 			});
 
@@ -3063,7 +3052,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					systemPrompt: [
 						...result.systemPrompt,
 						...(selectedSystemPromptProfile?.instructions ? [selectedSystemPromptProfile.instructions] : []),
-						formatAgentIdentitySystemPrompt(identity),
+						formatAgentIdentitySystemPrompt(identity, { includeModel: settings.get("includeModelInPrompt") }),
 					],
 				};
 			};
@@ -3163,6 +3152,28 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (toolRegistry.has(name) && !initialToolNames.includes(name)) {
 				initialToolNames.push(name);
 			}
+		}
+
+		// A prompt profile with a `tools` list owns the model-facing active set:
+		// intersect the assembled set (built-ins, custom, extension tools alike),
+		// preserving session contracts — ask reachability, the yield requirement,
+		// the checkpoint/rewind safety pairing, and memory tools while the
+		// profile's memory axis is enabled. The registry keeps every constructed
+		// tool, so /tools can still re-activate outside the profile's default set.
+		if (selectedSystemPromptProfile && selectedSystemPromptProfile.tools.length > 0) {
+			const profileToolNames = new Set(normalizeToolNames([...selectedSystemPromptProfile.tools]));
+			if (profileToolNames.has("checkpoint") || profileToolNames.has("rewind")) {
+				profileToolNames.add("checkpoint");
+				profileToolNames.add("rewind");
+			}
+			if (settings.get("ask.enabled")) profileToolNames.add("ask");
+			if (options.requireYieldTool) profileToolNames.add("yield");
+			if (profileMemoryEnabled) {
+				for (const name of [...MEMORY_BACKEND_TOOL_NAMES, "manage_skill", "learn"]) {
+					profileToolNames.add(name);
+				}
+			}
+			initialToolNames = initialToolNames.filter(name => profileToolNames.has(name));
 		}
 
 		// Pre-register in the global agent registry BEFORE building the system prompt,
@@ -3455,6 +3466,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			queueLaunchCompletion: notification =>
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
+			queueScheduleFire: notification =>
+				session?.queueScheduleFire(notification) ??
+				Promise.reject(new Error("Session unavailable for schedule fire delivery")),
 			getAgentId: () => "advisor",
 			// The primary's availability signals are wrong for advisors: their tool
 			// slate is filtered separately at runtime (default read/grep/glob, no
@@ -3593,6 +3607,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					agentKind,
 					model: targetModel ? formatModelString(targetModel) : undefined,
 				}),
+			profileContextImages: selectedSystemPromptProfile?.contextImages,
 			providerSessionId: options.providerSessionId,
 			providerPromptCacheKeySource,
 			parentEvalSessionId: options.parentEvalSessionId,

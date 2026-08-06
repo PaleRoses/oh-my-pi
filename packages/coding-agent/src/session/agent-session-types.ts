@@ -224,6 +224,8 @@ export interface AgentSessionConfig {
 	effectiveIdentity?: EffectiveSessionIdentity;
 	/** Rejects a model whose routed prompt profile differs from this transcript. */
 	assertSystemPromptProfileCompatible?: (model: Model | undefined) => void;
+	/** Absolute image paths from the routed prompt profile, injected as standing context at conversation start. */
+	profileContextImages?: readonly string[];
 	/** Provider-facing session ID override. */
 	providerSessionId?: string;
 	/** Whether the provider prompt-cache key was explicit or fork-inherited. */

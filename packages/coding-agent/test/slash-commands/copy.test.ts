@@ -61,7 +61,7 @@ describe("/copy slash command", () => {
 		const copySpy = spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
 		const harness = createRuntimeHarness([
 			assistantCalls([{ name: "bash", arguments: { command: "echo old" } }]),
-			assistantCalls([{ name: "eval", arguments: { language: "py", code: "print(42)" } }]),
+			assistantCalls([{ name: "kernel", arguments: { language: "py", code: "print(42)" } }]),
 		]);
 
 		expect(await executeBuiltinSlashCommand("/copy cmd", harness.runtime)).toBe(true);

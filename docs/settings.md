@@ -385,7 +385,7 @@ systemPromptProfileRoutes:
     profile: worker
 ```
 
-A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `instructions` or `instructionsFile` adds a final profile-owned system block after generated prompt context. `projectContextOnly: true` excludes context files outside the session cwd and its additional workspace roots. A route may use `deny: true` and an optional `reason` instead of `profile`.
+A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `instructions` or `instructionsFile` adds a final profile-owned system block after generated prompt context. `projectContextOnly: true` excludes context files outside the session cwd and its additional workspace roots. `contextImages` lists image paths injected once per conversation as hidden standing context in the message stream (system content is text-only, so images cannot ride the prompt itself). `userTitle` substitutes a name or phrase for "the user" throughout the maintained prompt (unset keeps the generic wording). `tools` names the model-facing active tool set; session contracts stay intact (ask, a required yield, the checkpoint/rewind pairing, and memory tools while the profile's memory is enabled), the full registry remains available through `/tools`. A route may use `deny: true` and an optional `reason` instead of `profile`.
 
 Use `/prompt` for the concise profile form instead of editing these record and
 array settings in the general panel. It shows profiles and ordered routes,
@@ -397,7 +397,7 @@ OMP pins the selected profile ID when it creates the transcript. Resume, model c
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `systemPromptProfiles` | record | `{}` | Named profiles with optional `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, and `mcpServerInstructions`. |
+| `systemPromptProfiles` | record | `{}` | Named profiles with optional `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, `mcpServerInstructions`, `contextImages`, `userTitle`, and `tools`. |
 | `systemPromptProfileRoutes` | array | `[]` | Ordered routes selected by optional `agentKind` and `model` glob. Each route names a `profile` or sets `deny: true`. |
 
 ### Advisor

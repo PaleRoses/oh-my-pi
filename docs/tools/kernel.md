@@ -1,13 +1,13 @@
-# eval
+# kernel
 
 > Execute one Python, JavaScript, Ruby, or Julia cell in a persistent language runtime. One tool call is one cell; state survives later calls.
 
-> **Notice:** Do not shell out to `python -c`, `ruby -e`, `julia -e`, `bun -e`, or `node -e` through `bash` for ad-hoc code. `eval` provides retained state, structured `display()` capture, tool/subagent bridges, streaming, cancellation, and artifact-backed truncation.
+> **Notice:** Do not shell out to `python -c`, `ruby -e`, `julia -e`, `bun -e`, or `node -e` through `bash` for ad-hoc code. `kernel` provides retained state, structured `display()` capture, tool/subagent bridges, streaming, cancellation, and artifact-backed truncation.
 
 ## Source
-- Entry and dynamic schema: `packages/coding-agent/src/tools/eval.ts`
+- Entry and dynamic schema: `packages/coding-agent/src/tools/kernel.ts`
 - Backend enablement: `packages/coding-agent/src/tools/eval-backends.ts`
-- Model-facing prompt: `packages/coding-agent/src/prompts/tools/eval.md`
+- Model-facing prompt: `packages/coding-agent/src/prompts/tools/kernel.md`
 - Shared contracts: `packages/coding-agent/src/eval/backend.ts`, `types.ts`, `executor-base.ts`, `kernel-base.ts`
 - Host bridges: `packages/coding-agent/src/eval/agent-bridge.ts`, `completion-bridge.ts`, `concurrency-bridge.ts`, `budget-bridge.ts`
 - JavaScript: `packages/coding-agent/src/eval/js/`
@@ -76,7 +76,7 @@ Ruby and Julia are opt-in. When at least one runtime is enabled, disabled runtim
 - `meta`: output truncation/artifact metadata supplied by `toolResult(...)`.
 - `isError`: set for backend failure or cancellation.
 
-The renderer merges call and result inline, syntax-highlights from the declared language, renders markdown and JSON trees specially, and shows timeout/truncation metadata. `session.allocateOutputArtifact?.("eval")` backs spilled output; `artifact://...` in `meta` reaches the full capture.
+The renderer merges call and result inline, syntax-highlights from the declared language, renders markdown and JSON trees specially, and shows timeout/truncation metadata. `session.allocateOutputArtifact?.("kernel")` backs spilled output; `artifact://...` in `meta` reaches the full capture.
 
 ## Execution flow
 
@@ -154,7 +154,7 @@ Runs one subagent through `runStructuredSubagent(...)`:
 - `agent` defaults from the current spawn policy. `model` may pin a selector/fallback chain. `schema` overrides agent/session schemas; `schemaMode`/`schema_mode` chooses `permissive` or `strict`.
 - `isolated` requests isolation. `apply` controls whether captured changes are integrated; `merge=false` selects patch mode while the normal setting controls branch mode.
 - `handle=true` returns `{ text, output, handle, id, agent }`, optional parsed `data`, and isolation metadata instead of only output/data.
-- Eval subagents are one-shot (`keepAlive=false`), are unregistered/disposed after completion, and **do not share the caller's eval executor** (`shareEvalSession=false`). Their code mutations therefore do not appear in the caller's retained VM/kernel.
+- Kernel subagents are one-shot (`keepAlive=false`), are unregistered/disposed after completion, and **do not share the caller's eval executor** (`shareEvalSession=false`). Their code mutations therefore do not appear in the caller's retained VM/kernel.
 - Spawn policy, discovered-agent availability, the `task.maxRecursionDepth` gate (default `2`; negative values disable the cap), hard turn budget, subagent failure, strict schema failure, and isolation-apply failure are enforced as cell errors.
 
 `parallel(thunks)` runs zero-argument callables in a bounded pool and preserves input order. `pipeline(items, ...stages)` applies each stage as a barriered wave. Pool width is read live from `task.maxConcurrency`; `0` means all items at once. The lowest-index failure is propagated.
@@ -165,15 +165,15 @@ Runs one subagent through `runStructuredSubagent(...)`:
 - Python, Ruby, and Julia use retained subprocess kernels speaking framed local IPC. JavaScript uses a worker VM.
 - Retained runtimes survive calls until reset, owner cleanup, or process exit.
 - Cancellation is destructive when needed: JS terminates its worker; managed kernels interrupt and may escalate to shutdown. A reset is likewise destructive to concurrent work sharing that backend session.
-- Eval-driven `agent()` may run tools and isolated workspaces, but its child is disposed rather than retained for hub follow-up.
+- Kernel-driven `agent()` may run tools and isolated workspaces, but its child is disposed rather than retained for hub follow-up.
 
 ## Limits and errors
 
-- Default timeout: 30 seconds; `0` disables. Nonzero timeouts are clamped through `clampTimeout("eval", ..., tools.maxTimeout)`.
+- Default timeout: 30 seconds; `0` disables. Nonzero timeouts are clamped through `clampTimeout("kernel", ..., tools.maxTimeout)`.
 - Output sink default window: 50 KiB (`DEFAULT_MAX_BYTES`); live tail: 100 KiB; truncation helpers cap at 3000 lines.
 - Each JSON display value included in model-visible text is capped at 8000 characters; the full structured value remains in `jsonOutputs`.
 - Transcript preview defaults to 10 lines.
-- Eval subagent spawning obeys `task.maxRecursionDepth` (default `2`; negative values allow unlimited depth). Helper fan-out uses `task.maxConcurrency` (default 32, `0` unbounded).
+- Kernel subagent spawning obeys `task.maxRecursionDepth` (default `2`; negative values allow unlimited depth). Helper fan-out uses `task.maxConcurrency` (default 32, `0` unbounded).
 - Malformed params are schema errors; unavailable/disabled backends and missing session are `ToolError`s.
 - Runtime exceptions become backend output with nonzero exit. Interactive stdin is an error. Output truncation does not fail the call.
 - A dead retained managed kernel may be replaced and the invocation retried once by its executor.
@@ -184,4 +184,4 @@ Runs one subagent through `runStructuredSubagent(...)`:
 - State is isolated by language; resetting Python does not reset JS, Ruby, or Julia.
 - Current schema tokens are only `py`, `js`, `rb`, and `jl`; long language names are renderer/approval formatting aliases, not wire values.
 - The former multi-cell `cells` payload, `*** Cell` parser, sniffing fallback, and constrained `eval.lark` grammar are removed.
-- Parent and ordinary task subagents may share an inherited eval executor id; children created by eval's own `agent()` explicitly do not.
+- Parent and ordinary task subagents may share an inherited eval executor id; children created by kernel's own `agent()` explicitly do not.

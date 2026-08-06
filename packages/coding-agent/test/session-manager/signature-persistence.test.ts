@@ -114,7 +114,7 @@ describe("SessionManager signature persistence", () => {
 
 		session.appendMessage({
 			role: "assistant",
-			content: [{ type: "toolCall", id: "tool_image", name: "eval", arguments: {} }],
+			content: [{ type: "toolCall", id: "tool_image", name: "kernel", arguments: {} }],
 			api: "anthropic-messages",
 			provider: "anthropic",
 			model: "claude-sonnet",
@@ -132,7 +132,7 @@ describe("SessionManager signature persistence", () => {
 		session.appendMessage({
 			role: "toolResult",
 			toolCallId: "tool_image",
-			toolName: "eval",
+			toolName: "kernel",
 			content: [{ type: "text", text: "displayed image" }, contentImage],
 			details: { images: [detailImage] },
 			isError: false,

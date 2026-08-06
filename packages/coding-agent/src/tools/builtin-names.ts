@@ -6,7 +6,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"ast_edit",
 	"ask",
 	"debug",
-	"eval",
+	"kernel",
 	"github",
 	"glob",
 	"grep",
@@ -40,6 +40,8 @@ export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];
 const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([
 	["search", "grep"],
 	["find", "glob"],
+	// legacy alias: pre-rename configs
+	["eval", "kernel"],
 ]);
 
 /** Return the canonical tool name for current and legacy built-in tool IDs. */

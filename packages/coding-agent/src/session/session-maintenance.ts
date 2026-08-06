@@ -39,8 +39,10 @@ import {
 	shouldUseOpenAiRemoteCompaction,
 	shouldUseProviderNativeCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction";
+import { invalidateMessageCache } from "@oh-my-pi/pi-agent-core/compaction/message-cache";
 import {
 	DEFAULT_PRUNE_CONFIG,
+	type PrunedResultRecord,
 	pruneSupersededToolResults,
 	pruneToolOutputs,
 	readToolSupersedeKey,
@@ -151,6 +153,14 @@ const PRUNE_CACHE_WARM_SUFFIX_TOKENS = 8_000;
  * still-warm prefix is busted by the flush. 90 min leaves margin over the 1h TTL.
  */
 const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
+
+/**
+ * Spill floor for pruned tool-result originals: below this many UTF-8 bytes the
+ * placeholder stays lossy — an artifact file per tiny prune is noise, and the
+ * loss is bounded by the floor. At or above it, the original is saved to the
+ * session artifact store and the placeholder gains a recovery pointer.
+ */
+const PRUNE_SPILL_MIN_BYTES = 2_048;
 
 /**
  * Hysteresis band for the post-maintenance "did we actually create headroom?"
@@ -343,6 +353,8 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
+		await this.#spillPrunedOriginals(result.pruned);
+
 		await this.#host.sessionManager.rewriteEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
@@ -386,6 +398,8 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
+		await this.#spillPrunedOriginals(result.pruned);
+
 		await this.#host.sessionManager.rewriteEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
@@ -393,6 +407,37 @@ export class SessionMaintenance {
 		this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return result;
+	}
+
+	/**
+	 * Save each pruned original to the session artifact store and append a
+	 * recovery pointer to its placeholder, so pruning demotes content from the
+	 * window to an address instead of destroying it. Runs before the callers'
+	 * `rewriteEntries`, so the pointer persists with the placeholder. Originals
+	 * below {@link PRUNE_SPILL_MIN_BYTES}, already recoverable ones (an
+	 * `artifact://` pointer in the text), and failed writes degrade to the
+	 * bare lossy placeholder.
+	 */
+	async #spillPrunedOriginals(pruned: readonly PrunedResultRecord[]): Promise<void> {
+		for (const record of pruned) {
+			const text = record.originalContent
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			if (Buffer.byteLength(text, "utf8") < PRUNE_SPILL_MIN_BYTES) continue;
+			if (text.includes("artifact://")) continue;
+			let artifactId: string | undefined;
+			try {
+				artifactId = await this.#host.sessionManager.saveArtifact(text, record.message.toolName ?? "pruned");
+			} catch {
+				continue;
+			}
+			const notice = record.message.content[0];
+			if (notice?.type === "text") {
+				notice.text += `\n[full output: artifact://${artifactId}]`;
+				invalidateMessageCache(record.message);
+			}
+		}
 	}
 
 	/**

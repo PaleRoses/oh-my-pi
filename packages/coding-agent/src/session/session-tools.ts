@@ -10,18 +10,18 @@ import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
-import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
+import type { LocalProtocolOptions } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
-import { usesCodexTaskPrompt } from "../task/prompt-policy";
+import { usesCodexTaskPrompt, usesFableConstitution } from "../task/prompt-policy";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
-import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
+import { isMountableUnderXdev, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
 import { formatLocalCalendarDate } from "../utils/local-date";
@@ -87,79 +87,6 @@ interface SessionToolsOptions {
 	skillWarnings?: SkillWarning[];
 	skillsSettings?: SkillsSettings;
 	skillsReloadable?: boolean;
-}
-
-export interface MountedMCPToolRouteSource {
-	readonly name: string;
-	readonly mcpServerName?: unknown;
-	readonly mcpToolName?: unknown;
-}
-
-export interface MountedMCPToolRoute {
-	readonly mcpServerName: string;
-	readonly mcpToolName: string;
-	readonly name: string;
-}
-
-export interface MCPXdevGuidanceMapping extends MountedMCPToolRoute {
-	readonly label: string;
-	readonly path: string;
-}
-
-export interface MCPXdevGuidanceProjection {
-	readonly mappings: readonly MCPXdevGuidanceMapping[];
-	readonly hasOmittedMappings: boolean;
-}
-
-const MAX_MCP_XDEV_GUIDANCE_MAPPING_DATA_LENGTH = 4000;
-const MAX_MCP_XDEV_GUIDANCE_MAPPINGS = 64;
-
-/** Yield exact mounted MCP ownership and route metadata. */
-export function* collectMountedMCPToolRoutes(
-	tools: Iterable<MountedMCPToolRouteSource>,
-): Generator<MountedMCPToolRoute> {
-	for (const tool of tools) {
-		if (typeof tool.mcpServerName !== "string" || typeof tool.mcpToolName !== "string") continue;
-		yield {
-			mcpServerName: tool.mcpServerName,
-			mcpToolName: tool.mcpToolName,
-			name: tool.name,
-		};
-	}
-}
-
-function formatMCPXdevGuidanceLabel(label: string): string {
-	return (JSON.stringify(label) ?? '""')
-		.replaceAll("`", "\\u0060")
-		.replaceAll("\u2028", "\\u2028")
-		.replaceAll("\u2029", "\\u2029");
-}
-
-/**
- * Project exact live MCP routes into the bounded, Markdown-safe mapping data
- * rendered by the static MCP guidance prompt.
- */
-export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRoute>): MCPXdevGuidanceProjection {
-	const mappings: MCPXdevGuidanceMapping[] = [];
-	let remainingMappingDataLength = MAX_MCP_XDEV_GUIDANCE_MAPPING_DATA_LENGTH;
-	let hasOmittedMappings = false;
-	for (const route of routes) {
-		const rawMappingDataLength = route.mcpToolName.length + XD_URL_PREFIX.length + route.name.length;
-		if (mappings.length >= MAX_MCP_XDEV_GUIDANCE_MAPPINGS || rawMappingDataLength > remainingMappingDataLength) {
-			hasOmittedMappings = true;
-			continue;
-		}
-		const label = formatMCPXdevGuidanceLabel(route.mcpToolName);
-		const path = `${XD_URL_PREFIX}${route.name}`;
-		const mappingDataLength = label.length + path.length;
-		if (mappingDataLength > remainingMappingDataLength) {
-			hasOmittedMappings = true;
-			continue;
-		}
-		mappings.push({ ...route, label, path });
-		remainingMappingDataLength -= mappingDataLength;
-	}
-	return { mappings, hasOmittedMappings };
 }
 
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
@@ -420,12 +347,17 @@ export class SessionTools {
 	#currentPromptModelKey(): string | undefined {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
+		// With `includeModelInPrompt: false` the key collapses to the prompt
+		// *policy* instead of the exact model — but every input that changes
+		// the rendered constitution must survive the collapse, or a model
+		// switch keeps the previous constitution (e.g. Opus waking up with the
+		// Fable prompt). Policy inputs: codex task policy + fable constitution.
 		const modelKey =
 			!model || this.#host.settings.get("includeModelInPrompt")
 				? model
-				: usesCodexTaskPrompt(model)
-					? "task-policy:gpt-5.6"
-					: "task-policy:default";
+				: `${usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default"}${
+						usesFableConstitution(model) ? ":fable" : ""
+					}`;
 		return this.#identity.prompt.profileId
 			? `system-prompt-profile:${this.#identity.prompt.profileId}:${modelKey ?? "model:none"}`
 			: modelKey;
@@ -747,10 +679,9 @@ export class SessionTools {
 	}
 
 	/**
-	 * Record a mid-session `xd://` mount delta for the model. Non-MCP mount
-	 * churn remains notice-only, leaving the system prompt and provider cache
-	 * prefix byte-stable; mounted MCP route changes additionally rebuild the
-	 * global route guidance through the applied-tool signature. The delta is NOT
+	 * Record a mid-session `xd://` mount delta for the model. Mount churn
+	 * (MCP-owned devices included) is notice-only, leaving the system prompt
+	 * and provider cache prefix byte-stable. The delta is NOT
 	 * steered immediately — a steered notice landing at a run's stop boundary
 	 * (or while the session is idle) forces an unsolicited extra assistant turn
 	 * — so it is coalesced into {@link #pendingXdevMountDelta} and rides along
@@ -1237,11 +1168,7 @@ export class SessionTools {
 	 *      `tool.customWireName` and overrides the internal name on the model wire
 	 *      (e.g. `edit` exposes itself as `apply_patch` to GPT-5 in apply_patch mode);
 	 *      a stale wire name would desync prompt guidance from actual tool routing.
-	 *   3. The bounded mounted-MCP projection: escaped original-name labels,
-	 *      actual `xd://` paths, and the omission flag in catalog order. These are
-	 *      the exact values rendered by the global transport guidance; catalog
-	 *      churn wholly behind the fallback does not change the prompt.
-	 *   4. MCP server instructions text (per server), since `rebuildSystemPrompt`
+	 *   3. MCP server instructions text (per server), since `rebuildSystemPrompt`
 	 *      embeds these in the appended prompt under "## MCP Server Instructions".
 	 *      A server upgrade can change instructions while keeping tools identical.
 	 *
@@ -1271,14 +1198,6 @@ export class SessionTools {
 		const describeTool = (tool: AgentTool): string =>
 			`${tool.name}=${tool.label ?? ""}|${tool.description ?? ""}|${tool.customWireName ?? ""}`;
 		const descriptionSegment = tools.map(describeTool).join("\u0002");
-		const mountedMCPProjection = projectMountedMCPXdevGuidance(
-			collectMountedMCPToolRoutes(this.#xdev ? listXdevTools(this.#xdev) : []),
-		);
-		const mountedMCPRouteSegment =
-			JSON.stringify({
-				mappings: mountedMCPProjection.mappings.map(mapping => [mapping.label, mapping.path] as const),
-				hasOmittedMappings: mountedMCPProjection.hasOmittedMappings,
-			}) ?? "{}";
 		const serverInstructions = this.#getMcpServerInstructions?.();
 		let instructionsSegment = "";
 		if (serverInstructions && serverInstructions.size > 0) {
@@ -1290,14 +1209,13 @@ export class SessionTools {
 			entries.sort();
 			instructionsSegment = entries.join("\u0006");
 		}
-		// The non-MCP remainder of the xd:// inventory is deliberately NOT part
-		// of the signature: its mount/unmount announces itself through
+		// The xd:// inventory is deliberately NOT part of the signature: device
+		// mount/unmount (MCP-owned included) announces itself through
 		// `#notifyXdevMountDelta` rather than rewriting the system prompt, keeping
-		// the provider cache prefix byte-stable. Mounted MCP routes are the narrow
-		// exception above, bounded to the exact projection rendered in the global
-		// route guidance so churn wholly behind its fallback does not rebuild.
+		// the provider cache prefix byte-stable; full docs join the prompt
+		// opportunistically on the next genuine rebuild.
 		const date = this.#getLocalCalendarDate();
-		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}|${date}`;
+		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}|${date}`;
 	}
 
 	/**

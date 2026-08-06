@@ -78,12 +78,12 @@ describe("extractLastCommand", () => {
 
 	it("extracts eval code from flat args and reports the language", () => {
 		const py = [
-			assistantCalls([{ name: "eval", arguments: { language: "py", code: "print(1)" } }]),
+			assistantCalls([{ name: "kernel", arguments: { language: "py", code: "print(1)" } }]),
 		] as unknown as AgentMessage[];
-		expect(extractLastCommand(py)).toEqual({ kind: "eval", code: "print(1)", language: "python" });
+		expect(extractLastCommand(py)).toEqual({ kind: "kernel", code: "print(1)", language: "python" });
 
 		const js = [
-			assistantCalls([{ name: "eval", arguments: { language: "js", code: "log(1)" } }]),
+			assistantCalls([{ name: "kernel", arguments: { language: "js", code: "log(1)" } }]),
 		] as unknown as AgentMessage[];
 		expect(extractLastCommand(js)?.language).toBe("javascript");
 	});
@@ -91,10 +91,10 @@ describe("extractLastCommand", () => {
 	it("still joins legacy multi-cell eval args from older transcripts", () => {
 		const py = [
 			assistantCalls([
-				{ name: "eval", arguments: { cells: [{ language: "py", code: "print(1)" }, { code: "print(2)" }] } },
+				{ name: "kernel", arguments: { cells: [{ language: "py", code: "print(1)" }, { code: "print(2)" }] } },
 			]),
 		] as unknown as AgentMessage[];
-		expect(extractLastCommand(py)).toEqual({ kind: "eval", code: "print(1)\n\nprint(2)", language: "python" });
+		expect(extractLastCommand(py)).toEqual({ kind: "kernel", code: "print(1)\n\nprint(2)", language: "python" });
 	});
 });
 

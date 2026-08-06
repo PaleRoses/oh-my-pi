@@ -762,6 +762,13 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	/** Short one-line summary used for tool discovery indexes. */
 	summary?: string;
 	/**
+	 * Full reference manual served by on-demand doc reads (`read xd://<tool>`,
+	 * help dispatch). When present, `description` can stay a short always-on
+	 * contract; on-demand rendering substitutes this text. Absent means
+	 * `description` already is the full documentation.
+	 */
+	manual?: string;
+	/**
 	 * Concurrency mode for tool scheduling when multiple calls are in one turn.
 	 * - "shared": can run alongside other shared tools (default)
 	 * - "exclusive": runs alone; other tools wait until it finishes

@@ -20,9 +20,9 @@ export type MessageBlock = ({ kind: "code" } & CodeBlock) | ({ kind: "quote" } &
 
 /** A runnable command found in the transcript. */
 export interface LastCommand {
-	kind: "bash" | "eval";
+	kind: "bash" | "kernel";
 	code: string;
-	/** Highlight language: "bash" for bash, or the resolved eval language ("python"/"javascript"/"ruby"/"julia"). */
+	/** Highlight language: "bash" for bash, or the resolved kernel language ("python"/"javascript"/"ruby"/"julia"). */
 	language: string;
 }
 
@@ -169,14 +169,14 @@ function commandFromToolCall(tc: ToolCall): LastCommand | undefined {
 	if (tc.name === "bash" && typeof tc.arguments.command === "string") {
 		return { kind: "bash", code: tc.arguments.command, language: "bash" };
 	}
-	if (tc.name === "eval") {
+	if (tc.name === "kernel") {
 		const evalResult = extractEvalCode(tc.arguments);
-		if (evalResult) return { kind: "eval", code: evalResult.code, language: evalResult.language };
+		if (evalResult) return { kind: "kernel", code: evalResult.code, language: evalResult.language };
 	}
 	return undefined;
 }
 
-/** Walk the transcript backwards for the most recent bash command or eval code. */
+/** Walk the transcript backwards for the most recent bash command or kernel code. */
 export function extractLastCommand(messages: readonly AgentMessage[]): LastCommand | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -312,7 +312,7 @@ function commandTarget(command: LastCommand, rank: number): CopyTarget {
 		preview: command.code,
 		language: command.language,
 		content: command.code,
-		copyMessage: `Copied ${command.kind === "bash" ? "bash command" : "eval code"} to clipboard`,
+		copyMessage: `Copied ${command.kind === "bash" ? "bash command" : "kernel code"} to clipboard`,
 	};
 }
 

@@ -8,7 +8,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 
 function makeEvalComponent() {
-	return new ToolExecutionComponent("eval", { code: "parallel([...])", language: "python" }, {}, undefined, uiStub);
+	return new ToolExecutionComponent("kernel", { code: "parallel([...])", language: "python" }, {}, undefined, uiStub);
 }
 
 /** Build an eval result whose `details.cells` carry agent-fan-out progress. */

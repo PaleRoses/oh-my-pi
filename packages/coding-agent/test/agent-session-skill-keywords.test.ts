@@ -22,7 +22,7 @@ type ObservedSkillTurn = {
 	texts: string[];
 };
 
-// Workflowz requires active `task` and `eval` tools; keep both active so
+// Workflowz requires active `task` and `kernel` tools; keep both active so
 // keyword steering exercises the notice path.
 const mockTaskTool: AgentTool = {
 	name: "task",
@@ -33,9 +33,9 @@ const mockTaskTool: AgentTool = {
 };
 
 const mockEvalTool: AgentTool = {
-	name: "eval",
-	label: "Eval",
-	description: "Mock eval tool",
+	name: "kernel",
+	label: "Kernel",
+	description: "Mock kernel tool",
 	parameters: type({}),
 	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
 };

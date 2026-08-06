@@ -1,5 +1,5 @@
 /**
- * Shared rendering primitives for bash/eval execution components.
+ * Shared rendering primitives for bash/kernel execution components.
  *
  * Each helper isolates a piece of structure both components share verbatim
  * (frame layout, collapsed preview, post-run status line). Differences in
@@ -20,7 +20,7 @@ export type ExecutionColorKey = "dim" | "bashMode" | "pythonMode";
 
 /**
  * Build the spacer + top border + content container + bottom border scaffold
- * that bash and eval execution components share. The caller appends the
+ * that bash and kernel execution components share. The caller appends the
  * header (command vs `>>>` prompt) and the returned loader to
  * `contentContainer` so per-mode order is preserved.
  */

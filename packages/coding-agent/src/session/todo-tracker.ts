@@ -14,7 +14,7 @@ const MID_RUN_NUDGE_MUTATION_THRESHOLD = 12;
 const MID_RUN_NUDGE_MAX_PER_CYCLE = 2;
 const MUTATING_TOOLS: Record<string, true> = {
 	bash: true,
-	eval: true,
+	kernel: true,
 	edit: true,
 	write: true,
 	ast_edit: true,

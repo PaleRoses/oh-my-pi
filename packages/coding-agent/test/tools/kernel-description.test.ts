@@ -3,9 +3,9 @@ import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { EvalTool, getEvalToolDescription } from "@oh-my-pi/pi-coding-agent/tools/eval";
+import { EvalTool, getEvalToolDescription, getEvalToolManual } from "@oh-my-pi/pi-coding-agent/tools/kernel";
 
-function makeSession(opts: { spawns?: string | null; backends?: Record<string, boolean> }): ToolSession {
+function makeSession(opts: { spawns?: string | null; backends?: Record<string, boolean>; xdev?: boolean }): ToolSession {
 	const settings = Settings.isolated();
 	for (const [key, value] of Object.entries(opts.backends ?? {})) settings.set(key as never, value);
 	return {
@@ -14,6 +14,7 @@ function makeSession(opts: { spawns?: string | null; backends?: Record<string, b
 		getSessionFile: () => null,
 		getSessionSpawns: () => opts.spawns ?? "*",
 		settings,
+		...(opts.xdev ? { xdev: { tools: new Map(), mountedNames: new Set(), builtInNames: new Set(), isActive: () => false } } : {}),
 	} as unknown as ToolSession;
 }
 
@@ -43,28 +44,43 @@ function wireCellFields(tool: EvalTool): {
 	};
 }
 
-describe("eval tool description", () => {
-	it("advertises agent() when spawns are allowed", () => {
+describe("kernel tool description", () => {
+	it("contract advertises agent() and the manual pointer when spawns are allowed", () => {
 		const text = getEvalToolDescription({ py: true, js: true, spawns: true });
-		expect(text).toContain("agent(prompt");
+		expect(text).toContain("agent()");
+		expect(text).toContain("xd://kernel");
 	});
 
 	it("omits agent() when the session forbids spawning", () => {
 		// Subagents with spawns: undefined (resolved to "") cannot launch tasks.
-		// The prelude doc must not promise a helper that always throws.
-		const text = getEvalToolDescription({ py: true, js: true, spawns: false });
-		expect(text).not.toContain("agent(prompt");
+		// Neither doc may promise a helper that always throws.
+		expect(getEvalToolDescription({ py: true, js: true, spawns: false })).not.toContain("agent(");
+		expect(getEvalToolManual({ py: true, js: true, spawns: false })).not.toContain("agent(prompt");
 	});
 
-	it("EvalTool description reflects spawn policy from the session", () => {
-		const wildcard = new EvalTool(makeSession({ spawns: "*" })).description;
-		const denied = new EvalTool(makeSession({ spawns: "" })).description;
-		expect(wildcard).toContain("agent(prompt");
-		expect(denied).not.toContain("agent(prompt");
+	it("manual carries the full prelude signatures", () => {
+		const text = getEvalToolManual({ py: true, js: true, spawns: true });
+		expect(text).toContain("agent(prompt");
+		expect(text).toContain("display(value)");
+		expect(text).toContain("<dag>");
+	});
+
+	it("EvalTool docs reflect spawn policy and transport availability", () => {
+		// xd:// transport present → slim contract on the wire, full manual on demand.
+		const slim = new EvalTool(makeSession({ spawns: "*", xdev: true }));
+		expect(slim.description).toContain("xd://kernel");
+		expect(slim.description).not.toContain("display(value)");
+		expect(slim.manual).toContain("display(value)");
+		expect(slim.manual).toContain("agent(prompt");
+		// No transport → the manual stays inline as the description (pre-split behavior).
+		const inlined = new EvalTool(makeSession({ spawns: "*" }));
+		expect(inlined.description).toContain("agent(prompt");
+		const denied = new EvalTool(makeSession({ spawns: "" }));
+		expect(denied.description).not.toContain("agent(prompt");
 	});
 });
 
-describe("eval tool dynamic schema", () => {
+describe("kernel tool dynamic schema", () => {
 	// resolveEvalBackends lets PI_* env flags override settings; neutralize them per-test
 	// so the schema is driven purely by the isolated settings (and restore to avoid leaks).
 	const EVAL_ENV_FLAGS = ["PI_PY", "PI_JS", "PI_RB", "PI_JL"] as const;
