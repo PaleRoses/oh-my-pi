@@ -236,7 +236,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		if (this.#interactive instanceof Input) this.#interactive.setUseTerminalCursor(useTerminalCursor);
 	}
 
-	render(width: number): readonly string[] {
+	override render(width: number): readonly string[] {
 		if (this.#interactive instanceof Input) this.#interactive.focused = this.focused;
 		return super.render(width);
 	}
@@ -520,7 +520,8 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 								{
 									id: "path",
 									label: source === undefined ? "Use Markdown file" : "Change file path",
-									description: source === undefined ? "Configure an existing Markdown file" : shortenPath(source),
+									description:
+										source === undefined ? "Configure an existing Markdown file" : shortenPath(source),
 									run: () =>
 										this.#navigate({
 											type: "editPath",

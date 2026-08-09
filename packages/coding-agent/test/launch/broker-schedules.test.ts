@@ -6,8 +6,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
-import { parseDaemonWireRequest } from "../../src/launch/protocol";
 import type { ScheduleFireNotification } from "../../src/launch/protocol";
+import { parseDaemonWireRequest } from "../../src/launch/protocol";
 import { buildScheduleSpec } from "../../src/tools/hub/schedule";
 
 const OWNER = "session-1";
@@ -218,8 +218,7 @@ describe("daemon broker schedules", () => {
 			await Bun.sleep(600);
 
 			const fires: ScheduleFireNotification[] = [];
-			let unregister: (() => void) | undefined;
-			unregister = client.onScheduleFire(OWNER, notification => {
+			const unregister = client.onScheduleFire(OWNER, notification => {
 				fires.push(notification);
 			});
 			// Subscribing publishes the owner; the broker replays the single
@@ -249,7 +248,9 @@ describe("daemon broker schedules", () => {
 
 		const client = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
 		try {
-			await expect(client.request({ op: "schedule-clear", name: "ghost" })).rejects.toThrow(/Unknown schedule ghost/);
+			await expect(client.request({ op: "schedule-clear", name: "ghost" })).rejects.toThrow(
+				/Unknown schedule ghost/,
+			);
 		} finally {
 			await shutdown(client);
 		}
@@ -258,12 +259,11 @@ describe("daemon broker schedules", () => {
 
 describe("hub schedule op validation", () => {
 	it("requires exactly one of at or every for a set", () => {
-		expect(() => buildScheduleSpec({ op: "schedule", name: "x", message: "m" }, OWNER)).toThrow(/exactly one of at or every/);
+		expect(() => buildScheduleSpec({ op: "schedule", name: "x", message: "m" }, OWNER)).toThrow(
+			/exactly one of at or every/,
+		);
 		expect(() =>
-			buildScheduleSpec(
-				{ op: "schedule", name: "x", message: "m", at: "2026-08-06T09:00:00", every: "20m" },
-				OWNER,
-			),
+			buildScheduleSpec({ op: "schedule", name: "x", message: "m", at: "2026-08-06T09:00:00", every: "20m" }, OWNER),
 		).toThrow(/exactly one of at or every/);
 	});
 
@@ -292,12 +292,12 @@ describe("hub schedule op validation", () => {
 	});
 
 	it("rejects malformed at datetimes and durations and missing message/name", () => {
-		expect(() =>
-			buildScheduleSpec({ op: "schedule", name: "x", message: "m", at: "not-a-date" }, OWNER),
-		).toThrow(/ISO-8601 datetime/);
-		expect(() =>
-			buildScheduleSpec({ op: "schedule", name: "x", message: "m", every: "fortnight" }, OWNER),
-		).toThrow(/duration like/);
+		expect(() => buildScheduleSpec({ op: "schedule", name: "x", message: "m", at: "not-a-date" }, OWNER)).toThrow(
+			/ISO-8601 datetime/,
+		);
+		expect(() => buildScheduleSpec({ op: "schedule", name: "x", message: "m", every: "fortnight" }, OWNER)).toThrow(
+			/duration like/,
+		);
 		expect(() => buildScheduleSpec({ op: "schedule", name: "x", every: "20m" }, OWNER)).toThrow(/requires message/);
 		expect(() => buildScheduleSpec({ op: "schedule", message: "m", every: "20m" }, OWNER)).toThrow(/requires name/);
 	});

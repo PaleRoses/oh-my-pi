@@ -6,7 +6,6 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $env, Snowflake } from "@oh-my-pi/pi-utils";
-import { parseCommandArgs } from "./command-args";
 
 /**
  * Returns the user's preferred editor command, or a platform default.
@@ -47,10 +46,14 @@ export async function openFileInEditor(
 	filePath: string,
 	options?: OpenFileInEditorOptions,
 ): Promise<boolean> {
-	const [editor, ...editorArgs] = parseCommandArgs(editorCmd);
-	if (editor === undefined) return false;
 	const stdio = options?.stdio ?? ["inherit", "inherit", "inherit"];
-	const child = spawn(editor, [...editorArgs, filePath], { stdio, shell: process.platform === "win32" });
+	const child =
+		process.platform === "win32"
+			? (() => {
+					const [editor, ...editorArgs] = editorCmd.split(" ");
+					return spawn(editor, [...editorArgs, filePath], { stdio, shell: true });
+				})()
+			: spawn("/bin/sh", ["-c", `${editorCmd} "$1"`, "sh", filePath], { stdio });
 	const { promise, reject, resolve } = Promise.withResolvers<number>();
 	child.once("exit", (code, signal) => resolve(code ?? (signal ? -1 : 0)));
 	child.once("error", error => reject(error));

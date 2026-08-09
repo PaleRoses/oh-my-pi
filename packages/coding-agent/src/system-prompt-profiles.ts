@@ -186,7 +186,9 @@ async function compileProfile(
 		contextImages:
 			raw.contextImages === undefined
 				? []
-				: await Promise.all(raw.contextImages.map((source, index) => resolveContextImage(profileId, source, index, cwd))),
+				: await Promise.all(
+						raw.contextImages.map((source, index) => resolveContextImage(profileId, source, index, cwd)),
+					),
 		tools: raw.tools === undefined ? [] : compileProfileTools(profileId, raw.tools),
 		userTitle:
 			raw.userTitle === undefined

@@ -125,7 +125,12 @@ function schemaDeclaresIntentField(schema: unknown): boolean {
  * system-prompt inlining (`xdevDocsAll`/`xdevDocsFor`) stays on the short
  * always-on `description` contract.
  */
-function renderDocs(inst: Tool, heading = "#", descriptionCap?: number, docSource: "contract" | "manual" = "manual"): string {
+function renderDocs(
+	inst: Tool,
+	heading = "#",
+	descriptionCap?: number,
+	docSource: "contract" | "manual" = "manual",
+): string {
 	const schema = jsonSchemaToTypeScript(toolWireSchema(inst as AiTool));
 	let description = (docSource === "manual" ? (inst.manual ?? inst.description) : inst.description) ?? "";
 	if (docSource === "contract" && inst.manual && !description.includes(`${XD_URL_PREFIX}${inst.name}`)) {

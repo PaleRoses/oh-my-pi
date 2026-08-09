@@ -9,7 +9,7 @@
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { formatDuration } from "@oh-my-pi/pi-utils";
-import { daemonClientForProject, type DaemonBrokerClient } from "../../launch/client";
+import { type DaemonBrokerClient, daemonClientForProject } from "../../launch/client";
 import type { DaemonOperation, ScheduleSnapshot, ScheduleSpec } from "../../launch/protocol";
 import { parseDurationMs } from "../../modes/loop-limit";
 import type { ToolSession } from "..";
@@ -157,9 +157,7 @@ export async function executeSchedule(
 				content: [
 					{
 						type: "text",
-						text: result.schedules.length
-							? result.schedules.map(scheduleLabel).join("\n")
-							: "No schedules.",
+						text: result.schedules.length ? result.schedules.map(scheduleLabel).join("\n") : "No schedules.",
 					},
 				],
 				details: { op: "schedule", schedules: result.schedules },

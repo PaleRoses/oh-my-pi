@@ -54,7 +54,9 @@ function execOpts(): ExecutorBackendExecOptions {
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
 	return (
 		result.content
-			.filter((block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string")
+			.filter(
+				(block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string",
+			)
 			.map(block => block.text)
 			.join("\n") || ""
 	);
@@ -104,7 +106,9 @@ describe("tool capture → Python kernel binding", () => {
 		// 18 bytes = "line1\nline2\nline3\n"; the trailing newline is not a line.
 		expect(header!.bytes).toBe(18);
 		expect(header!.lines).toBe(3);
-		expect(text).toBe(`[captured → bash_out: 18 bytes, 3 lines, artifact://${header!.artifactId}]\nline1\nline2\nline3`);
+		expect(text).toBe(
+			`[captured → bash_out: 18 bytes, 3 lines, artifact://${header!.artifactId}]\nline1\nline2\nline3`,
+		);
 
 		// The artifact holds the full raw output.
 		const artifactPath = await artifactManager.getPath(header!.artifactId);
@@ -116,7 +120,10 @@ describe("tool capture → Python kernel binding", () => {
 		const followUp = await pythonBackend.execute(`print(len(bash_out))`, execOpts());
 		expect(followUp.exitCode).toBe(0);
 		expect(followUp.output.trim()).toBe(String(header!.bytes));
-		const contentCheck = await pythonBackend.execute(`print(bash_out.startswith("line1\\nline2\\nline3"))`, execOpts());
+		const contentCheck = await pythonBackend.execute(
+			`print(bash_out.startswith("line1\\nline2\\nline3"))`,
+			execOpts(),
+		);
 		expect(contentCheck.output.trim()).toBe("True");
 	});
 

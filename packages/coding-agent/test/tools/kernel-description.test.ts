@@ -5,7 +5,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool, getEvalToolDescription, getEvalToolManual } from "@oh-my-pi/pi-coding-agent/tools/kernel";
 
-function makeSession(opts: { spawns?: string | null; backends?: Record<string, boolean>; xdev?: boolean }): ToolSession {
+function makeSession(opts: {
+	spawns?: string | null;
+	backends?: Record<string, boolean>;
+	xdev?: boolean;
+}): ToolSession {
 	const settings = Settings.isolated();
 	for (const [key, value] of Object.entries(opts.backends ?? {})) settings.set(key as never, value);
 	return {
@@ -14,7 +18,9 @@ function makeSession(opts: { spawns?: string | null; backends?: Record<string, b
 		getSessionFile: () => null,
 		getSessionSpawns: () => opts.spawns ?? "*",
 		settings,
-		...(opts.xdev ? { xdev: { tools: new Map(), mountedNames: new Set(), builtInNames: new Set(), isActive: () => false } } : {}),
+		...(opts.xdev
+			? { xdev: { tools: new Map(), mountedNames: new Set(), builtInNames: new Set(), isActive: () => false } }
+			: {}),
 	} as unknown as ToolSession;
 }
 

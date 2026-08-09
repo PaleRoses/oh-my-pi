@@ -244,11 +244,22 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		},
 		{
 			caption: "Re-enter this session at 9am",
-			call: { op: "schedule", name: "morning", message: "It's 9am — re-enter and pick up today's plan.", at: "2026-08-06T09:00:00" },
+			call: {
+				op: "schedule",
+				name: "morning",
+				message: "It's 9am — re-enter and pick up today's plan.",
+				at: "2026-08-06T09:00:00",
+			},
 		},
 		{
 			caption: "Poke this session every 2h while a daemon runs",
-			call: { op: "schedule", name: "checkin", message: "2h check-in while the build daemon runs.", every: "2h", while: "web" },
+			call: {
+				op: "schedule",
+				name: "checkin",
+				message: "2h check-in while the build daemon runs.",
+				every: "2h",
+				while: "web",
+			},
 		},
 		{
 			caption: "List schedules",

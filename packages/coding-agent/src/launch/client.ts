@@ -15,9 +15,9 @@ import {
 	type DaemonOperation,
 	type DaemonRpcResult,
 	type DaemonWireMessage,
-	type ScheduleFireNotification,
 	parseDaemonRpcResult,
 	parseDaemonWireMessage,
+	type ScheduleFireNotification,
 } from "./protocol";
 import { resolveDaemonSpawnOptions } from "./spawn-options";
 
@@ -62,10 +62,7 @@ export interface DaemonBrokerClient {
 	 * live subscriber are retained by the broker (latest per schedule name) and
 	 * replayed on the next owner subscription.
 	 */
-	onScheduleFire(
-		owner: string,
-		sink: (notification: ScheduleFireNotification) => Promise<void> | void,
-	): () => void;
+	onScheduleFire(owner: string, sink: (notification: ScheduleFireNotification) => Promise<void> | void): () => void;
 	/** Canonical project directory or synthetic directory identifying a global scope. */
 	readonly projectDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
@@ -162,10 +159,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #idleGraceMs: number | undefined;
 	readonly #pending = new Map<string, PendingRequest>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
-	readonly #scheduleFireSinks = new Map<
-		string,
-		(notification: ScheduleFireNotification) => Promise<void> | void
-	>();
+	readonly #scheduleFireSinks = new Map<string, (notification: ScheduleFireNotification) => Promise<void> | void>();
 	readonly #completionUnsubscribes = new Set<string>();
 	readonly #preservedCompletionOwners = new Set<string>();
 	readonly #completionReplays = new Set<string>();
@@ -276,10 +270,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		};
 	}
 
-	onScheduleFire(
-		owner: string,
-		sink: (notification: ScheduleFireNotification) => Promise<void> | void,
-	): () => void {
+	onScheduleFire(owner: string, sink: (notification: ScheduleFireNotification) => Promise<void> | void): () => void {
 		this.#scheduleFireSinks.set(owner, sink);
 		this.#publishCompletionOwners();
 		return () => {
@@ -400,7 +391,17 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			try {
 				message = parseDaemonWireMessage(decoded);
 			} catch (error) {
-				this.#rejectPending(error instanceof Error ? error : new Error(String(error)));
+				const parseError = error instanceof Error ? error : new Error(String(error));
+				if (
+					typeof decoded === "object" &&
+					decoded !== null &&
+					"event" in decoded &&
+					decoded.event === "daemon-completed"
+				) {
+					logger.warn("Ignoring malformed daemon completion", { error: parseError.message });
+					continue;
+				}
+				this.#rejectPending(parseError);
 				continue;
 			}
 			if ("event" in message) {

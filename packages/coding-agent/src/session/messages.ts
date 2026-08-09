@@ -44,6 +44,7 @@ export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
 export const BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE = "background-tan-dispatch";
 /** Standing context images configured on the routed system-prompt profile. */
 export const PROFILE_CONTEXT_IMAGES_MESSAGE_TYPE = "profile-context-images";
+export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
 
 /**
  * Logs provider-error turns so their actual cause is available outside the

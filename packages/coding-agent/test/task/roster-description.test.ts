@@ -15,7 +15,7 @@ describe("rosterDescription", () => {
 	it("strips <example> and <commentary> blocks from foreign descriptions", () => {
 		const foreign = [
 			"Use this agent when you need strict Rails review.",
-			"<example>Context: X.\nuser: \"do thing\"\nassistant: \"I'll use the agent\"\n<commentary>Because reasons.</commentary></example>",
+			'<example>Context: X.\nuser: "do thing"\nassistant: "I\'ll use the agent"\n<commentary>Because reasons.</commentary></example>',
 			"<example>another dialogue</example>",
 			"Final guidance sentence.",
 		].join("\n");

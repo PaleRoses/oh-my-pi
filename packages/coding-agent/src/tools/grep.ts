@@ -37,10 +37,10 @@ import {
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { type ArchiveReader, type ExtractedArchiveFile, openArchive, parseArchivePathCandidates } from "../utils/zip";
 import type { ToolSession } from ".";
+import { CAPTURE_PARAM_DESCRIPTION } from "./capture-schema";
 import { materializeReadUrlToFile, parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
-import { CAPTURE_PARAM_DESCRIPTION } from "./capture-schema";
 import { applyKernelCapture } from "./kernel-capture";
 import { formatMatchLine } from "./match-line-format";
 import type { OutputMeta } from "./output-meta";

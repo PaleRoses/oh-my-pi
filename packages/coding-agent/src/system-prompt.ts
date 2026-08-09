@@ -891,7 +891,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
 		fableSession: usesFableConstitution(model),
 		personality:
-			personality === "none" ? "" : prompt.render(PERSONALITY_SPECS[personality], { userTitle, userTitleCap }).trim(),
+			personality === "none"
+				? ""
+				: prompt.render(PERSONALITY_SPECS[personality], { userTitle, userTitleCap }).trim(),
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		eagerTasks,

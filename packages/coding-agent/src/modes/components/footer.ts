@@ -214,9 +214,7 @@ export class FooterComponent implements Component {
 				rightSide = `${identityBadge} • ${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} auto`}`;
 			} else {
 				const thinkingLevel = state.thinkingLevel ?? ThinkingLevel.Off;
-				if (thinkingLevel !== ThinkingLevel.Off) {
-					rightSide = `${identityBadge} • ${modelName} • ${thinkingLevel}`;
-				}
+				rightSide = `${identityBadge} • ${modelName} • ${thinkingLevel}`;
 			}
 		}
 
