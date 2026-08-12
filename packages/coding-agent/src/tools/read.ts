@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { splitAddressableFileLines } from "@oh-my-pi/hashline";
 import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
@@ -121,10 +122,15 @@ const MAX_ARTIFACT_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
 async function readBracketContextFullLines(absolutePath: string, fileSize: number): Promise<string[] | undefined> {
 	if (fileSize > SNAPSHOT_MAX_BYTES) return undefined;
 	try {
-		return normalizeToLF(await Bun.file(absolutePath).text()).split("\n");
+		return splitAddressableFileLines(normalizeToLF(await Bun.file(absolutePath).text()));
 	} catch {
 		return undefined;
 	}
+}
+
+interface StreamFileLinesOptions {
+	includeTerminalNewline?: boolean;
+	stopScanAfterCollect?: boolean;
 }
 
 async function streamLinesFromFile(
@@ -134,7 +140,7 @@ async function streamLinesFromFile(
 	maxBytes: number,
 	selectedLineLimit: number | null,
 	signal?: AbortSignal,
-	stopScanAfterCollect = false,
+	options: StreamFileLinesOptions = {},
 ): Promise<{
 	lines: string[];
 	totalFileLines: number;
@@ -143,9 +149,12 @@ async function streamLinesFromFile(
 	firstLinePreview?: { text: string; bytes: number };
 	firstLineByteLength?: number;
 	selectedBytesTotal: number;
+	/** Whether the fully scanned source ended in a newline. */
+	hasTrailingNewline: boolean;
 	/** False when `stopScanAfterCollect` cut the scan short — `totalFileLines` is then a lower bound. */
 	reachedEof: boolean;
 }> {
+	const { includeTerminalNewline = false, stopScanAfterCollect = false } = options;
 	const bufferChunk = Buffer.allocUnsafe(READ_CHUNK_SIZE);
 	const collectedLines: string[] = [];
 	let lineIndex = 0;
@@ -313,7 +322,7 @@ async function streamLinesFromFile(
 		}
 	}
 
-	if (reachedEof && (endedWithNewline || currentLineLength > 0 || !sawAnyByte)) {
+	if (reachedEof && (currentLineLength > 0 || !sawAnyByte || (endedWithNewline && includeTerminalNewline))) {
 		finalizeLine();
 	}
 
@@ -332,6 +341,7 @@ async function streamLinesFromFile(
 		firstLineByteLength,
 		selectedBytesTotal,
 		reachedEof,
+		hasTrailingNewline: reachedEof && endedWithNewline,
 	};
 }
 
@@ -696,7 +706,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					maxBytesForRead,
 					maxLines,
 					signal,
-					fileSize > SNAPSHOT_MAX_BYTES, // giant file: collected ranges don't need an exact EOF line count
+					{ includeTerminalNewline: rawSelector, stopScanAfterCollect: fileSize > SNAPSHOT_MAX_BYTES },
 				);
 				totalFileLines = streamResult.totalFileLines;
 				collectedLines = streamResult.lines;
@@ -1312,7 +1322,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						maxBytesForRead,
 						selectedLineLimit,
 						undefined, // plain-file read: deterministic and fast, never abort mid-read
-						fileSize > SNAPSHOT_MAX_BYTES, // giant file: don't scan to EOF just for an exact line count
+						{ includeTerminalNewline: rawSelector, stopScanAfterCollect: fileSize > SNAPSHOT_MAX_BYTES },
 					);
 
 					const {
@@ -1323,6 +1333,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						firstLinePreview,
 						firstLineByteLength,
 						reachedEof,
+						hasTrailingNewline,
 					} = streamResult;
 
 					// Check if offset is out of bounds - return graceful message instead of throwing
@@ -1403,7 +1414,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						const tag = isWholeFile
 							? getFileSnapshotStore(this.session).record(
 									canonicalSnapshotKey(absolutePath),
-									normalizeToLF(collectedLines.join("\n")),
+									normalizeToLF(`${collectedLines.join("\n")}${hasTrailingNewline ? "\n" : ""}`),
 								)
 							: await recordFileSnapshot(this.session, absolutePath);
 						if (tag) {
@@ -1750,7 +1761,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			maxBytesForRead,
 			selectedLineLimit,
 			signal,
-			artifact.size > SNAPSHOT_MAX_BYTES,
+			{ includeTerminalNewline: rawSelector, stopScanAfterCollect: artifact.size > SNAPSHOT_MAX_BYTES },
 		);
 		const {
 			lines: collectedLines,

@@ -164,7 +164,7 @@ describe("SDK system prompt profiles", () => {
 		expect(prompt).toContain("WORKER CONSTITUTION");
 		expect(prompt).not.toContain("DRIVER CONSTITUTION");
 		expect(prompt).not.toContain("AMBIENT SYSTEM PROMPT");
-		expect(prompt).toContain("ROLE\n==============");
+		expect(prompt).toContain("§ Role");
 		expect(prompt).toContain("PROJECT WORKER RULES");
 		expect(prompt).not.toContain("GLOBAL DRIVER IDENTITY");
 	});
@@ -318,7 +318,7 @@ describe("SDK system prompt profiles", () => {
 		const session = await create("driver-primary", settings);
 		const prompt = session.agent.state.systemPrompt.join("\n\n");
 
-		expect(prompt).toContain("ROLE\n==============");
+		expect(prompt).toContain("§ Role");
 		expect(prompt).toContain("Prompt profile: driver");
 		expect(session.effectiveIdentity.prompt.source).toBe("maintained-omp-prompt");
 	});
