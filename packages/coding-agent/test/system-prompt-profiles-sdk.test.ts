@@ -131,7 +131,7 @@ describe("SDK system prompt profiles", () => {
 		settings.override("hindsight.autoRecall", false);
 
 		const session = await create("driver-primary", settings);
-		const project = path.basename(dir.path());
+		const project = path.basename(dir.path()).toLowerCase();
 		const prompt = session.agent.state.systemPrompt.join("\n\n");
 		const hindsight = snapshotAgentIdentity(session).memory.hindsight;
 

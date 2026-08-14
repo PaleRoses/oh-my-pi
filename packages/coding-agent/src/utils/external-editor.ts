@@ -1,11 +1,10 @@
 /**
  * Utilities for launching an external text editor ($VISUAL / $EDITOR).
  */
-import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $env, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, $which, Snowflake } from "@oh-my-pi/pi-utils";
 
 /**
  * Returns the user's preferred editor command, or a platform default.
@@ -46,18 +45,13 @@ export async function openFileInEditor(
 	filePath: string,
 	options?: OpenFileInEditorOptions,
 ): Promise<boolean> {
-	const stdio = options?.stdio ?? ["inherit", "inherit", "inherit"];
-	const child =
+	const [stdin, stdout, stderr] = options?.stdio ?? ["inherit", "inherit", "inherit"];
+	const cmd =
 		process.platform === "win32"
-			? (() => {
-					const [editor, ...editorArgs] = editorCmd.split(" ");
-					return spawn(editor, [...editorArgs, filePath], { stdio, shell: true });
-				})()
-			: spawn("/bin/sh", ["-c", `${editorCmd} "$1"`, "sh", filePath], { stdio });
-	const { promise, reject, resolve } = Promise.withResolvers<number>();
-	child.once("exit", (code, signal) => resolve(code ?? (signal ? -1 : 0)));
-	child.once("error", error => reject(error));
-	return (await promise) === 0;
+			? ["cmd", "/c", `${editorCmd} "${filePath}"`]
+			: [$which("sh") ?? "sh", "-c", `${editorCmd} "$1"`, "sh", filePath];
+	const child = Bun.spawn(cmd, { stdin, stdout, stderr });
+	return (await child.exited) === 0;
 }
 
 /**
