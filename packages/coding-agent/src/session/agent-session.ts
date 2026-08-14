@@ -2871,10 +2871,17 @@ export class AgentSession {
 			// tool_result and corrupts message history. The handler also
 			// schedules its own retry, so a real empty stop never needs the
 			// active-goal threshold pre-empt below.
-			if (await this.#recovery.handleEmptyAssistantStop(msg)) {
+			const emptyOutputRecovery = await this.#recovery.handleEmptyAssistantStop(msg);
+			if (emptyOutputRecovery === "continue") {
 				maintenanceRoute("empty-stop-handled");
 				await emitAgentEndNotification({ willContinue: true });
 				return;
+			}
+			if (emptyOutputRecovery === "terminal") {
+				// The cap already closed retry state and made provider-empty errors
+				// non-retryable. Continue through terminal maintenance so session_stop
+				// hooks and queued follow-up handling retain their normal contract.
+				maintenanceRoute("empty-stop-retry-cap");
 			}
 
 			// Record quota exhaustion before deciding whether this failed turn may be
