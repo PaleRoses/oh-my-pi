@@ -1138,16 +1138,22 @@ These tools became available:
 	it("rolls back MCP catalog replacement when prompt rebuild fails", async () => {
 		let failRebuild = false;
 		const xdevState = createTestXdevState();
+		// Mounted xd:// tools are deliberately outside the rebuild signature, so a
+		// mounted-catalog swap on its own keeps the provider cache prefix byte-stable
+		// and skips the rebuild. Moving the server instructions alongside the swap is
+		// what demands the rebuild whose failure must roll the replacement back.
+		let serverInstructions = "nucleus v1";
 		const { session } = newSession(
 			async toolNames => {
 				if (failRebuild) throw new Error("rebuild failed");
 				return `tools:${toolNames.join(",")}`;
 			},
-			{ xdev: xdevState },
+			{ xdev: xdevState, getMcpServerInstructions: () => new Map([["nucleus", serverInstructions]]) },
 		);
 		const oldTool = createMcpCustomTool("mcp__nucleus_old", "nucleus", "old", "Old tool");
 		const newTool = createMcpCustomTool("mcp__nucleus_new", "nucleus", "new", "New tool");
 		await session.refreshMCPTools([oldTool]);
+		serverInstructions = "nucleus v2";
 		failRebuild = true;
 
 		await expect(session.refreshMCPTools([newTool])).rejects.toThrow("rebuild failed");
