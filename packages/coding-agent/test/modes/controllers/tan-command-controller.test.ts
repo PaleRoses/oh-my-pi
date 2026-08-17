@@ -213,6 +213,7 @@ describe("TanCommandController", () => {
 			harness.parentFile.slice(0, -6),
 			undefined,
 			{
+				copyArtifacts: false,
 				suppressBreadcrumb: true,
 				sessionFile: expect.stringMatching(/Tan-.+\.jsonl$/),
 				systemPromptProfile: "select",

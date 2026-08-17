@@ -26,7 +26,6 @@ import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { isMountableUnderXdev, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
-import { formatLocalCalendarDate } from "../utils/local-date";
 import {
 	extractPermissionLocations,
 	getPermissionIntent,
@@ -83,7 +82,6 @@ interface SessionToolsOptions {
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
 	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
-	getLocalCalendarDate?: () => string;
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	xdev?: XdevState;
 	setActiveToolNames?: (names: Iterable<string>) => void;
@@ -173,7 +171,6 @@ export class SessionTools {
 	#promptModelKey: string | undefined;
 	readonly #identity: EffectiveSessionIdentity;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
-	#getLocalCalendarDate: () => string;
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
 	#ensureWriteRegistered: SessionToolsOptions["ensureWriteRegistered"];
@@ -206,7 +203,6 @@ export class SessionTools {
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
 		this.#ensureWriteRegistered = options.ensureWriteRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
-		this.#getLocalCalendarDate = options.getLocalCalendarDate ?? formatLocalCalendarDate;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdev = options.xdev;
 		if (this.#xdev && this.#xdev.tools !== this.#toolRegistry) {
@@ -1431,10 +1427,10 @@ export class SessionTools {
 	 * For everything else, callers must explicitly call {@link refreshBaseSystemPrompt}
 	 * after side-effecting changes; see the memory hooks and {@link syncAfterModelChange}.
 	 *
-	 * The current calendar date IS covered (appended as a segment) because
-	 * `buildSystemPrompt` injects it into the prompt body (`Today is '{{date}}'`).
-	 * Without this, a session spanning midnight with only tool-stable MCP
-	 * reconnects would keep yesterday's date indefinitely.
+	 * The calendar date is deliberately NOT part of the signature: the date/cwd
+	 * reminder rides on the first user turn at request time (`date-cwd-reminder`),
+	 * so a session spanning midnight must NOT rebuild a prompt that no longer
+	 * embeds the date — the reminder picks up the new day on its own.
 	 */
 	#computeAppliedToolSignature(toolNames: string[], tools: AgentTool[]): string {
 		// Order-preserving join: any reorder must produce a different signature so
@@ -1458,9 +1454,10 @@ export class SessionTools {
 		// mount/unmount (MCP-owned included) announces itself through
 		// `#notifyXdevMountDelta` rather than rewriting the system prompt, keeping
 		// the provider cache prefix byte-stable; full docs join the prompt
-		// opportunistically on the next genuine rebuild.
-		const date = this.#getLocalCalendarDate();
-		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}|${date}`;
+		// opportunistically on the next genuine rebuild. The calendar date is not
+		// part of the signature either: the date/cwd reminder rides on the first
+		// user turn at request time.
+		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}`;
 	}
 
 	/**
