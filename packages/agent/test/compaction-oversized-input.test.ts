@@ -124,6 +124,31 @@ describe("summarization input budget", () => {
 		}
 	});
 
+	test("keeps the window floor inside a small model's context", async () => {
+		// The absolute 16,384-token floor plus the carried summary and output
+		// reserves exceeds a 40k window outright, and overflow recovery would then
+		// bail at the very floor that caused the rejection. The floor scales with
+		// the window instead, so a small-context model still folds successfully.
+		const providerCapChars = 26_000; // what a 40k window can host next to the reserves
+		const spy = vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, context) => {
+			const prompt = promptTextOf([_model, context]);
+			if (prompt.length > providerCapChars) {
+				throw new Error(`400 prompt is too long: ${prompt.length} tokens > ${providerCapChars} maximum`);
+			}
+			return createAssistantMessage("summary");
+		});
+		try {
+			const messages = Array.from({ length: 12 }, (_, i) => turn(i, 4_000)).flat();
+			const summary = await generateSummary(messages, getModel(40_000), 16_384, "test-key");
+			expect(summary).toBe("summary");
+			for (const prompt of spy.mock.calls.map(promptTextOf)) {
+				expect(prompt.length).toBeLessThanOrEqual(providerCapChars);
+			}
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
 	test("propagates a non-overflow failure instead of shrinking", async () => {
 		let calls = 0;
 		const spy = vi.spyOn(ai, "completeSimple").mockImplementation(async () => {

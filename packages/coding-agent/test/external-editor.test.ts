@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -98,6 +98,27 @@ describe("openFileInEditor", () => {
 });
 
 describe("openInEditor", () => {
+	it("uses caller-supplied pane stdio", async () => {
+		const spawn = spyOn(Bun, "spawn").mockReturnValue({
+			exited: Promise.resolve(1),
+		} as never);
+		try {
+			await openInEditor("editor", "original", {
+				extension: ".md",
+				stdio: [0, 1, 2],
+			} as never);
+
+			expect(spawn).toHaveBeenCalledTimes(1);
+			expect(spawn.mock.calls[0]?.[1]).toMatchObject({
+				stdin: 0,
+				stdout: 1,
+				stderr: 2,
+			});
+		} finally {
+			spawn.mockRestore();
+		}
+	});
+
 	it("passes the cmd.exe command line verbatim on Windows", () => {
 		const tmpFile = String.raw`C:\Users\Example User\AppData\Local\Temp\omp-editor-123.omp.md`;
 

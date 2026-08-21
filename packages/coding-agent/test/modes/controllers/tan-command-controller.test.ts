@@ -54,6 +54,8 @@ function createCloneStub(overrides?: {
 	abort?: () => void;
 	sessionManager?: { appendSessionInit: (init: unknown) => void };
 	lastAssistantText?: string;
+	activeToolNames?: string[];
+	enabledToolNames?: string[];
 }) {
 	const appendMessage = vi.fn();
 	let listener: ((event: TanSessionEvent) => void) | undefined;
@@ -62,6 +64,8 @@ function createCloneStub(overrides?: {
 		systemPrompt: ["worker system prompt"],
 		sessionManager: overrides?.sessionManager,
 		setTodoPhases: vi.fn(),
+		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
+		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
 		subscribe: vi.fn((l: (event: TanSessionEvent) => void) => {
 			listener = l;
 			return () => {
@@ -89,6 +93,8 @@ function createContext(overrides?: {
 	agentId?: string;
 	parentPromptCacheKey?: string;
 	register?: (run: CapturedJobRun, options?: AsyncJobRegisterOptions) => string;
+	activeToolNames?: string[];
+	enabledToolNames?: string[];
 }) {
 	const tempDir = TempDir.createSync("@omp-tan-controller-");
 	const parentFile = path.join(tempDir.path(), "parent.jsonl");
@@ -113,7 +119,8 @@ function createContext(overrides?: {
 		sessionId: "parent-session",
 		configuredThinkingLevel: vi.fn(() => undefined),
 		systemPrompt: ["system prompt"],
-		getActiveToolNames: vi.fn(() => ["read", "bash"]),
+		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
+		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
 		modelRegistry: { authStorage: { marker: "auth" } },
 		getAgentId: vi.fn(() => overrides?.agentId),
 		sendCustomMessage: vi.fn(async () => {
@@ -389,6 +396,30 @@ describe("TanCommandController", () => {
 		expect(detachSession).toHaveBeenCalledWith(expect.stringMatching(/^Tan-/));
 		expect(clone.dispose).toHaveBeenCalled();
 		expect(unregister).not.toHaveBeenCalled();
+	});
+
+	it("copies and persists the full enabled Code Mode tool set", async () => {
+		const enabledToolNames = ["kernel", "read", "bash"];
+		const harness = createContext({ activeToolNames: ["kernel"], enabledToolNames });
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const appendSessionInit = vi.fn();
+		const { clone } = createCloneStub({
+			sessionManager: { appendSessionInit },
+			activeToolNames: ["kernel"],
+			enabledToolNames,
+		});
+		const createAgentSessionSpy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: clone,
+		} as unknown as CreateAgentSessionResult);
+		const controller = new TanCommandController(harness.ctx);
+
+		await controller.start("preserve bridge tools");
+		const run = harness.capturedRun;
+		if (!run) throw new Error("run function was not captured");
+		await run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} });
+
+		expect(createAgentSessionSpy.mock.calls[0]?.[0]?.toolNames).toEqual(enabledToolNames);
+		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: enabledToolNames }));
 	});
 
 	it("isolates the fork: clears inherited todos, injects the fork notice, and re-injects after compaction", async () => {
