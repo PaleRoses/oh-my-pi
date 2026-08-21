@@ -36,6 +36,12 @@
 - Fixed automatic fallback, resume, and manual model transitions leaving the provider-facing system prompt or hidden task policy built for the previous model. Model mutation now owns prompt/tool reconciliation and rolls back when synchronization fails.
 - Fixed live Hindsight bank and scoping changes leaving active subagents pinned to the parent's replaced client, config, tags, and bank cache. Child operations now resolve through the parent's current state while queued retains preserve the route captured at enqueue time.
 
+## [17.4.3] - 2026-08-21
+
+### Fixed
+
+- Fixed the edit tool rejecting payloads containing a glued `«»` line: after MATCH it now reads as the mistyped `»` separator, elsewhere as a stray terminator to drop.
+
 ## [17.4.2] - 2026-08-21
 
 ### Added
