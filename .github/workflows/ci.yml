@@ -68,18 +68,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          library="$(
-            cd release
-            cabal list-bin \
-              moonlight-triangulation:flib:moonlight-triangulation-c \
-              --enable-shared
-          )"
-          library="$(realpath "$library")"
-          test -f "$library"
+          mapfile -t libraries < <(
+            find release/dist-newstyle \
+              -type f \
+              -name 'libmoonlight-triangulation-c.so.2' \
+              -print
+          )
+          if [[ "${#libraries[@]}" -ne 1 ]]; then
+            printf 'expected one versioned foreign library, found %d\n' \
+              "${#libraries[@]}" >&2
+            printf '%s\n' "${libraries[@]}" >&2
+            exit 1
+          fi
+
+          library="$(realpath "${libraries[0]}")"
           library_directory="$(dirname "$library")"
+          dynamic_library_path="$(
+            find release/dist-newstyle "$HOME/.cabal/store" \
+              -type f \
+              \( -name '*.so' -o -name '*.so.*' \) \
+              -printf '%h\n' \
+              | sort -u \
+              | paste -sd: -
+          )"
 
           printf 'shared_library=%s\n' "$library" | tee ffi-smoke-library.txt
-          ldd "$library" | tee ffi-smoke-library-ldd.txt
+          env LD_LIBRARY_PATH="$dynamic_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            ldd "$library" \
+            | tee ffi-smoke-library-ldd.txt
 
           gcc \
             -std=c11 \
@@ -94,11 +110,12 @@ jobs:
             -pthread \
             -o tools/moonlight-ffi-smoke/ffi_smoke
 
-          LD_LIBRARY_PATH="$library_directory${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+          LD_LIBRARY_PATH="$dynamic_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             tools/moonlight-ffi-smoke/ffi_smoke \
             | tee ffi-smoke-output.txt
 
-          ldd tools/moonlight-ffi-smoke/ffi_smoke \
+          env LD_LIBRARY_PATH="$dynamic_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            ldd tools/moonlight-ffi-smoke/ffi_smoke \
             | tee ffi-smoke-executable-ldd.txt
 
       - name: Assemble and re-run relocatable proof bundle
