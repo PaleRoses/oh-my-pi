@@ -173,8 +173,6 @@ export class SessionTools {
 	#codeModeDirectWireSignature: string | undefined;
 	/** Direct partition of the last applied Code Mode surface; undefined when inactive. */
 	#codeModeDirectToolNames: readonly string[] | undefined;
-	/** Whether kernel was added only as the current Code Mode transport. */
-	#codeModeInjectedKernel = false;
 	/**
 	 * `xd://` device names the current base system prompt renders in its catalog
 	 * (the last rebuild's {@link BuildSystemPromptResult.xdevCatalogNames}). Consulted
@@ -693,10 +691,7 @@ export class SessionTools {
 
 	/** Reapplies the enabled set after model or Code Mode setting changes. */
 	reconcileCodeMode(): Promise<void> {
-		const enabledToolNames = this.getEnabledToolNames();
-		return this.applyActiveToolsByName(
-			this.#codeModeInjectedKernel ? enabledToolNames.filter(name => name !== "kernel") : enabledToolNames,
-		);
+		return this.applyActiveToolsByName(this.getEnabledToolNames());
 	}
 
 	/** Enabled MCP tools in their current presentation partition. */
@@ -836,18 +831,14 @@ export class SessionTools {
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		toolNames = normalizeToolNames(toolNames);
-		const injectKernel = this.#toolRegistry.has("kernel") && !toolNames.includes("kernel");
-		const codeModeToolNames = injectKernel ? [...toolNames, "kernel"] : toolNames;
 		const codeMode = resolveCodeMode({
 			provider: this.#host.model()?.provider ?? "",
 			toolMode: this.#host.model()?.toolMode,
 			setting: this.#host.settings.get("providers.openai-codex.codeMode"),
 			extraDirectTools: this.#host.settings.get("providers.openai-codex.codeModeDirectTools"),
-			enabledToolNames: codeModeToolNames,
+			enabledToolNames: toolNames,
 			kernelTransportAvailable: this.#hasCodeModeKernelTransport(),
 		});
-		const nextCodeModeInjectedKernel = codeMode.active && injectKernel;
-		if (codeMode.active) toolNames = codeModeToolNames;
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		if (toolNames.includes("write") && !builtInWriteAvailable) {
 			const writeRegistration = this.#ensureWriteRegistered?.();
@@ -1010,7 +1001,6 @@ export class SessionTools {
 		this.#codeModeDirectWireSignature = codeMode.active
 			? this.#computeCodeModeDirectWireSignature(appliedNames)
 			: undefined;
-		this.#codeModeInjectedKernel = nextCodeModeInjectedKernel;
 		if (rebuiltSystemPrompt && rebuiltSignature) {
 			if (this.#lastAppliedToolSignature !== undefined) this.#host.clearInheritedProviderPromptCacheKey();
 			this.#baseSystemPrompt = rebuiltSystemPrompt;

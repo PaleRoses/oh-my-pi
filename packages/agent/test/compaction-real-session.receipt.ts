@@ -8,10 +8,11 @@
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { DEFAULT_COMPACTION_SETTINGS, generateSummary, prepareCompaction, type SessionEntry } from "../src/compaction";
-import { countTokens } from "../src/tokenizer";
+import { Tokenizer } from "../src/tokenizer";
 
 const [file, cutArg] = process.argv.slice(2);
 const model = getBundledModel("anthropic", "claude-opus-5") as Model;
+const tokenizer = new Tokenizer(model);
 const entries: SessionEntry[] = [];
 for (const line of (await Bun.file(file).text()).split("\n")) {
 	if (!line.startsWith("{")) continue;
@@ -59,7 +60,7 @@ for (const cap of [1_000_000, 200_000]) {
 		{
 			completeImpl: async (_model, context) => {
 				const text = (context.messages[0].content as { type: string; text: string }[])[0].text;
-				const tokens = countTokens(text);
+				const tokens = tokenizer.countTokens(text);
 				if (tokens > cap) {
 					rejected++;
 					throw new Error(`400 invalid_request_error: prompt is too long: ${tokens} tokens > ${cap} maximum`);

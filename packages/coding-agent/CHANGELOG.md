@@ -21,7 +21,8 @@
 
 ### Changed
 
-- Renamed the built-in `eval` tool to `kernel`; the legacy `eval` name is still accepted in tool lists.
+- Renamed the built-in `eval` tool to `kernel`. The public tool name is `kernel`; the legacy `eval` config alias is removed.
+- Code Mode no longer injects `kernel` when the caller omitted it. A restricted tool set without `kernel` stays without `kernel`, and Code Mode stays inactive.
 - Hindsight recall rendering now consumes the canonical `fact_type` field exclusively; the legacy `type` compatibility field is no longer interpreted.
 - Removed the redundant "## MCP Tool Routes" system-prompt section: the xd:// device catalog is now the sole owner of mounted MCP tool presentation, with overflow one-liners carrying an optional `(server/tool)` label alias next to the mount path. Mounted MCP churn no longer participates in the applied-tool signature — like every other device it is announced through xd:// mount notices, keeping the provider cache prefix byte-stable; servers that publish instructions still trigger a prompt rebuild.
 - Trimmed the Hindsight "# Memory" developer-instruction block to the injected-content interpretation rules (`<memories>`, `<mental_models>`); when-to-use guidance for `recall`/`retain`/`reflect` lives solely in the tool descriptions, which previously restated it near-verbatim.

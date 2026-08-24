@@ -8,4 +8,9 @@ describe("normalizeToolName", () => {
 		expect(normalizeToolName("CaseAdd")).toBe("CaseAdd");
 		expect(normalizeToolName("Constructor")).toBe("Constructor");
 	});
+
+	it("does not remap eval to kernel", () => {
+		expect(normalizeToolName("eval")).toBe("eval");
+		expect(normalizeToolName("kernel")).toBe("kernel");
+	});
 });

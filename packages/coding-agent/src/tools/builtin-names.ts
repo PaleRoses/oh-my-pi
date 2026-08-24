@@ -39,8 +39,6 @@ export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];
 const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([
 	["search", "grep"],
 	["find", "glob"],
-	// legacy alias: pre-rename configs
-	["eval", "kernel"],
 ]);
 
 const CANONICAL_TOOL_NAMES: Record<string, true> = Object.fromEntries(

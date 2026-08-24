@@ -426,29 +426,16 @@ describe("Code Mode session reconciliation", () => {
 		expect(session.getActiveToolNames()).toEqual(["kernel"]);
 	});
 
-	test("reduced tool sets retain kernel as the Code Mode transport", async () => {
+	test("a caller slate without kernel keeps Code Mode inactive", async () => {
 		const { session } = createSession(Settings.isolated({ "providers.openai-codex.codeMode": "auto" }));
 
 		await session.setActiveToolsByName(["read"]);
 
-		expect(session.getActiveToolNames()).toEqual(["kernel"]);
-		expect(session.getEnabledToolNames()).toEqual(["read", "kernel"]);
-		expect(session.getToolForEvalBridge("read")?.name).toBe("read");
-	});
-
-	test("Code Mode deactivation removes transport-injected kernel", async () => {
-		const settings = Settings.isolated();
-		settings.set("providers.openai-codex.codeMode", "auto");
-		const { session } = createSession(settings);
-		await session.setActiveToolsByName(["read"]);
-		expect(session.getEnabledToolNames()).toEqual(["read", "kernel"]);
-
-		settings.set("providers.openai-codex.codeMode", "off");
-		await session.runToolRegistryMutation(async () => undefined);
-
-		expect(session.getActiveToolNames()).toEqual(["read"]);
 		expect(session.getEnabledToolNames()).toEqual(["read"]);
+		expect(session.getActiveToolNames()).toEqual(["read"]);
+		expect(session.codeModeNamespacesInfo).toBeUndefined();
 	});
+
 	test("Vibe teardown preserves bridge-enabled Code Mode tools", async () => {
 		const { session } = createSession(Settings.isolated({ "providers.openai-codex.codeMode": "auto" }));
 		await session.setActiveToolsByName(["kernel", "read"]);
