@@ -243,7 +243,9 @@ function retentionPrefixKey(messages: HindsightMessage[], count: number): string
 	for (let i = 0; i < count; i++) {
 		const message = messages[i];
 		if (message === undefined) break;
-		key = Bun.hash(`${key}\u0000${message.role}\u0000${message.content}`).toString(36);
+		key = Bun.hash(`${key}\u0000${message.role}\u0000${message.content}\u0000${message.timestamp ?? ""}`).toString(
+			36,
+		);
 	}
 	return key;
 }
@@ -481,9 +483,20 @@ export class HindsightSessionState {
 		}
 	}
 
+	#sessionSourceTimestamp(): Date | undefined {
+		const header = this.session.sessionManager?.getHeader?.();
+		const timestamp = header?.timestamp;
+		if (typeof timestamp !== "string") return undefined;
+		const trimmed = timestamp.trim();
+		if (!trimmed) return undefined;
+		const parsed = new Date(trimmed);
+		return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+	}
+
 	async retainSession(messages: HindsightMessage[]): Promise<void> {
 		const route = this.captureRoute();
 		const retainedAt = new Date();
+		const sourceTimestamp = this.#sessionSourceTimestamp() ?? retainedAt;
 		const retainFullWindow = route.config.retainMode === "full-session";
 		let documentId: string;
 		let transcript: string;
@@ -498,7 +511,7 @@ export class HindsightSessionState {
 				this.#lastRetainedPrefixKey = "";
 			}
 			const newMessages = messages.slice(this.#lastRetainedMessageIndex);
-			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true);
+			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true, { includeTimestamps: true });
 			if (!newPart) return;
 			nextCachedTranscript = this.#cachedTranscript ? `${this.#cachedTranscript}\n\n${newPart}` : newPart;
 			transcript = nextCachedTranscript;
@@ -509,7 +522,7 @@ export class HindsightSessionState {
 			this.#lastRetainedMessageIndex = 0;
 			this.#cachedTranscript = "";
 			this.#lastRetainedPrefixKey = "";
-			const { transcript: windowTranscript } = prepareRetentionTranscript(target, true);
+			const { transcript: windowTranscript } = prepareRetentionTranscript(target, true, { includeTimestamps: true });
 			if (!windowTranscript) return;
 			transcript = windowTranscript;
 		}
@@ -521,7 +534,7 @@ export class HindsightSessionState {
 			context: route.config.retainContext,
 			metadata,
 			tags: route.retainTags,
-			timestamp: retainedAt,
+			timestamp: sourceTimestamp,
 			async: true,
 		});
 		if (nextCachedTranscript !== undefined) {

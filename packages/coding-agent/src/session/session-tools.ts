@@ -21,6 +21,7 @@ import { usesCodexTaskPrompt, usesFableConstitution } from "../task/prompt-polic
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
+import { isFilesystemSourcePath } from "../tools/path-utils";
 import { supportsExternalThinking } from "../tools/think";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { isMountableUnderXdev, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
@@ -81,6 +82,8 @@ interface SessionToolsOptions {
 	/** MCP tool names whose current registry entries came from the manager snapshot. */
 	mcpManagerToolNames?: Iterable<string>;
 	ensureWriteRegistered?: () => Promise<boolean>;
+	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
+	ensureGoalRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
@@ -168,7 +171,9 @@ export class SessionTools {
 	#toolPredicateNames: readonly string[] | undefined;
 	/** Wire-name snapshot for the direct Code Mode tools last applied successfully. */
 	#codeModeDirectWireSignature: string | undefined;
-	/** Whether eval was added only as the current Code Mode transport. */
+	/** Direct partition of the last applied Code Mode surface; undefined when inactive. */
+	#codeModeDirectToolNames: readonly string[] | undefined;
+	/** Whether kernel was added only as the current Code Mode transport. */
 	#codeModeInjectedKernel = false;
 	/**
 	 * `xd://` device names the current base system prompt renders in its catalog
@@ -186,6 +191,7 @@ export class SessionTools {
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
 	#ensureWriteRegistered: SessionToolsOptions["ensureWriteRegistered"];
+	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -214,6 +220,7 @@ export class SessionTools {
 		}
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
 		this.#ensureWriteRegistered = options.ensureWriteRegistered;
+		this.#ensureGoalRegistered = options.ensureGoalRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdev = options.xdev;
@@ -344,6 +351,11 @@ export class SessionTools {
 		return this.getEnabledToolNames();
 	}
 
+	/** Tools left directly model-visible by the last applied Code Mode partition; undefined when inactive. */
+	getCodeModeDirectToolNames(): readonly string[] | undefined {
+		return this.#codeModeDirectToolNames;
+	}
+
 	#hasCodeModeKernelTransport(): boolean {
 		const kernelTool = this.#toolRegistry.get("kernel") as
 			| (AgentTool & { supportsCodeModeTransport?: () => boolean })
@@ -456,7 +468,7 @@ export class SessionTools {
 						? "sdk"
 						: "extension";
 			const sourceInfo: SourceInfo = {
-				path: `<${source}:${name}>`,
+				path: registeredFilesystemSourcePath(this.#host.extensionRunner(), name) ?? `<${source}:${name}>`,
 				source,
 				scope: "temporary",
 				origin: "top-level",
@@ -679,7 +691,7 @@ export class SessionTools {
 		return signature;
 	}
 
-	/** Reapplies the preserved enabled set after model or Code Mode setting changes. */
+	/** Reapplies the enabled set after model or Code Mode setting changes. */
 	reconcileCodeMode(): Promise<void> {
 		const enabledToolNames = this.getEnabledToolNames();
 		return this.applyActiveToolsByName(
@@ -842,6 +854,14 @@ export class SessionTools {
 			builtInWriteAvailable = writeRegistration ? (await untilAborted(signal, writeRegistration)) === true : false;
 			if (builtInWriteAvailable) this.#builtInToolNames.add("write");
 		}
+		// Goal mode may have been enabled after session creation, leaving the
+		// registry without `goal`. Register it before resolving the selection so
+		// `#enterGoalMode`'s `[...tools, "goal"]` request is honored instead of
+		// silently dropped (issue #9444).
+		if (toolNames.includes("goal") && !this.#toolRegistry.has("goal")) {
+			const goalRegistration = this.#ensureGoalRegistered?.();
+			if (goalRegistration) await untilAborted(signal, goalRegistration);
+		}
 		const selectedTools = toolNames.flatMap(name => {
 			const tool = this.#toolRegistry.get(name);
 			return tool ? [{ name, tool }] : [];
@@ -925,11 +945,16 @@ export class SessionTools {
 		const previousMounted = new Set(this.#xdev?.mountedNames ?? []);
 		const previousActiveToolNames = this.getActiveToolNames();
 		const previousEnabledToolNames = this.#enabledToolNames;
+		const previousCodeModeDirectToolNames = this.#codeModeDirectToolNames;
 		const previousToolPredicateNames = this.#toolPredicateNames;
 		this.#enabledToolNames = new Set([...validToolNames, ...mountNames]);
 		this.#setMountedNames(mountNames);
 		this.#toolPredicateNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames);
+		// The eval tool advertises whatever stays direct, including a plan-mode
+		// transport `write`, so the applied partition lands before the rebuild
+		// reads the tool descriptions.
+		this.#codeModeDirectToolNames = codeMode.active ? appliedNames : undefined;
 
 		let rebuiltSystemPrompt: string[] | undefined;
 		let rebuiltSignature: string | undefined;
@@ -966,6 +991,7 @@ export class SessionTools {
 			this.#toolPredicateNames = previousToolPredicateNames;
 			this.#setActiveToolNames?.(previousToolPredicateNames ?? previousActiveToolNames);
 			this.#enabledToolNames = previousEnabledToolNames;
+			this.#codeModeDirectToolNames = previousCodeModeDirectToolNames;
 			throw error;
 		}
 
@@ -974,6 +1000,7 @@ export class SessionTools {
 			this.#toolPredicateNames = previousToolPredicateNames;
 			this.#setActiveToolNames?.(previousToolPredicateNames ?? previousActiveToolNames);
 			this.#enabledToolNames = previousEnabledToolNames;
+			this.#codeModeDirectToolNames = previousCodeModeDirectToolNames;
 			return;
 		}
 
@@ -1761,4 +1788,11 @@ export class SessionTools {
 			throw error;
 		}
 	}
+}
+
+function registeredFilesystemSourcePath(runner: ExtensionRunner | undefined, name: string): string | undefined {
+	const registered = runner?.getRegisteredTool(name);
+	if (!registered) return undefined;
+	const candidate = registered.definition.sourcePath ?? registered.extensionPath;
+	return candidate && isFilesystemSourcePath(candidate) ? candidate : undefined;
 }
