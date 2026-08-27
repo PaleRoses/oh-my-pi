@@ -3278,8 +3278,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// A prompt profile with a `tools` list owns the model-facing active set:
 		// intersect the assembled set (built-ins, custom, extension tools alike),
 		// preserving session contracts — ask reachability, the yield requirement,
-		// the checkpoint/rewind safety pairing, and memory tools while the
-		// profile's memory axis is enabled. The registry keeps every constructed
+		// the checkpoint/rewind and task/hub safety pairings, and memory tools while
+		// the profile's memory axis is enabled. The registry keeps every constructed
 		// tool, so /tools can still re-activate outside the profile's default set.
 		if (selectedSystemPromptProfile && selectedSystemPromptProfile.tools.length > 0) {
 			const profileToolNames = new Set(normalizeToolNames([...selectedSystemPromptProfile.tools]));
@@ -3287,6 +3287,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				profileToolNames.add("checkpoint");
 				profileToolNames.add("rewind");
 			}
+			// Task and hub are a pair: spawning subagents without `hub` leaves the
+			// orchestrator unable to steer, wait on, or cancel what it started — and
+			// the kernel bridge refusing `tool.hub` while the prompt documents it.
+			// Same safety pairing as checkpoint/rewind above.
+			if (profileToolNames.has("task")) profileToolNames.add("hub");
 			if (settings.get("ask.enabled")) profileToolNames.add("ask");
 			if (options.requireYieldTool) profileToolNames.add("yield");
 			if (profileMemoryEnabled) {

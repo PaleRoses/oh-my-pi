@@ -454,4 +454,51 @@ describe("SDK system prompt profiles", () => {
 		);
 		expect(session.systemPromptProfileId).toBe("driver");
 	});
+
+	it("pairs hub into the active set for a profile that allowlists task without it", async () => {
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			systemPromptProfiles: { orchestrator: { tools: ["read", "task"] } },
+			systemPromptProfileRoutes: [{ agentKind: "main", profile: "orchestrator" }],
+		});
+		const session = await create("driver-primary", settings, { toolNames: ["read", "task", "hub"] });
+
+		expect(session.systemPromptProfileId).toBe("orchestrator");
+		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "task", "hub"]));
+		// The kernel `tool.<name>` bridge resolves against the same enabled set.
+		expect(session.getToolForEvalBridge("hub")?.name).toBe("hub");
+	});
+
+	it("keeps hub out of the active set for a profile that allowlists neither task nor hub", async () => {
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			systemPromptProfiles: { reader: { tools: ["read"] } },
+			systemPromptProfileRoutes: [{ agentKind: "main", profile: "reader" }],
+		});
+		const session = await create("driver-primary", settings, { toolNames: ["read", "task", "hub"] });
+
+		expect(session.getActiveToolNames()).toContain("read");
+		expect(session.getActiveToolNames()).not.toContain("task");
+		expect(session.getActiveToolNames()).not.toContain("hub");
+		expect(session.getToolForEvalBridge("hub")).toBeUndefined();
+	});
+
+	it("keeps the checkpoint/rewind pairing intact under a profile tool allowlist", async () => {
+		const settings = Settings.isolated({
+			"checkpoint.enabled": true,
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			systemPromptProfiles: { checkpointer: { tools: ["read", "checkpoint"] } },
+			systemPromptProfileRoutes: [{ agentKind: "main", profile: "checkpointer" }],
+		});
+		const session = await create("driver-primary", settings, { toolNames: ["read", "checkpoint"] });
+
+		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "checkpoint", "rewind"]));
+		expect(session.getActiveToolNames()).not.toContain("hub");
+	});
 });
