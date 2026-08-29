@@ -62,6 +62,43 @@ export declare class DesktopSession {
 }
 
 /**
+ * Incrementally ingests old/new text and computes an exact line diff on a
+ * worker thread once both sides finish.
+ *
+ * Complete lines are observable during ingestion. Only equal leading lines
+ * are declared stable before EOF; future input can change Myers alignment
+ * after the first mismatch.
+ */
+export declare class DiffStream {
+  /** Create an empty two-sided stream. */
+  constructor()
+  /** Append a JavaScript text chunk to one side. */
+  push(side: DiffSide, chunk: string): DiffStreamProgress
+  /** Append a UTF-8 subprocess/file chunk without a JS string conversion. */
+  pushBytes(side: DiffSide, chunk: Uint8Array): DiffStreamProgress
+  /** Mark one side complete; an unfinished final line then becomes visible. */
+  finishSide(side: DiffSide): DiffStreamProgress
+  /** Mark one side too large and complete without further ingestion. */
+  markTooLarge(side: DiffSide): DiffStreamProgress
+  /** Current ingestion state. */
+  progress(): DiffStreamProgress
+  /** Complete display lines from `from`, excluding newline terminators. */
+  lines(side: DiffSide, from: number, limit?: number | undefined | null): Array<string>
+  /** Snapshot all ingested text for one side. */
+  text(side: DiffSide): string
+  /**
+   * Read a filesystem path directly into one side on the native worker pool.
+   *
+   * JavaScript can poll [`DiffStream::progress`] and [`DiffStream::lines`]
+   * while this promise is pending; file bytes never need to cross into JS
+   * and back into the differ.
+   */
+  openFile(side: DiffSide, path: string, maxBytes?: number | undefined | null, signal?: unknown | undefined | null): Promise<DiffStreamProgress>
+  /** Compute exact Myers runs and unified hunks off the JavaScript thread. */
+  finish(context?: number | undefined | null): Promise<DiffStreamResult>
+}
+
+/**
  * Process-owned cross-platform advisory lock.
  *
  * `tryAcquire()` is non-blocking; its returned handle reports whether it won
@@ -355,6 +392,8 @@ export declare class VcsGitRepo {
   logOnelines(count: number, signal?: unknown | undefined | null): Promise<Array<string>>
   /** Commits in a range. */
   revListRange(base: string, head: string, signal?: unknown | undefined | null): Promise<Array<string>>
+  /** Best common ancestor of two revisions. */
+  mergeBase(a: string, b: string, signal?: unknown | undefined | null): Promise<string | undefined | null>
   /** Commits touching a file. */
   revListTouching(rev: string, file: string, limit: number, signal?: unknown | undefined | null): Promise<Array<string>>
   /** Commit details. */
@@ -534,7 +573,7 @@ export declare function __ompInstallTokioRuntime(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV18_0_4(): void
+export declare function __piNativesV18_0_10(): void
 
 /**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
@@ -1050,6 +1089,44 @@ export interface DiffRun {
   removed: boolean
 }
 
+/** One side of a streamed line diff. */
+export declare enum DiffSide {
+  /** Original/base text. */
+  Old = 'Old',
+  /** Updated/target text. */
+  New = 'New'
+}
+
+/** Observable ingestion state for [`DiffStream`]. */
+export interface DiffStreamProgress {
+  /** Complete old-side lines available for rendering. */
+  oldLines: number
+  /** Complete new-side lines available for rendering. */
+  newLines: number
+  /** Leading complete lines proven equal on both sides. */
+  stableCommonLines: number
+  /** Whether old-side ingestion has finished. */
+  oldDone: boolean
+  /** Whether new-side ingestion has finished. */
+  newDone: boolean
+  /** Whether either side contains a NUL byte/code unit. */
+  binary: boolean
+  /** Whether either native file exceeded its caller-provided size limit. */
+  tooLarge: boolean
+}
+
+/** Exact line-diff output produced when a [`DiffStream`] finishes. */
+export interface DiffStreamResult {
+  /** Line-token Myers runs used to align the complete files. */
+  runs: Array<DiffRun>
+  /** Unified hunks for the requested context. */
+  hunks: Array<PatchHunk>
+  /** Whether the old text ends in a newline. */
+  oldEndsNewline: boolean
+  /** Whether the new text ends in a newline. */
+  newEndsNewline: boolean
+}
+
 /**
  * Word diff with jsdiff `diffWords(oldText, newText)` semantics (default
  * options).
@@ -1128,6 +1205,22 @@ export declare enum Encoding {
   /** GLM-5.x exact; GLM-4.x near-exact. */
   Glm5 = 'Glm5'
 }
+
+/**
+ * Replace the current process image via `execvp(3)`.
+ *
+ * On success this never returns: the kernel tears down every other thread and
+ * the new program takes over this PID, controlling terminal, and inherited
+ * (non-`CLOEXEC`) file descriptors. Callers must flush logs and restore the
+ * terminal first — no JS or native cleanup runs after a successful call.
+ *
+ * # Errors
+ * Returns an error, leaving the process untouched, when `argv` is empty, an
+ * argument contains an interior NUL byte, or the exec itself fails (e.g.
+ * executable not found). Windows has no exec-replace semantics, so this
+ * always errors there; callers fall back to spawn-and-wait.
+ */
+export declare function execReplace(argv: Array<string>): void
 
 /**
  * Execute a brush shell command.
@@ -2025,6 +2118,18 @@ export interface PtyStartOptions {
 }
 
 /**
+ * Rasterize SVG/SVGZ bytes into a bounded PNG without resolving local files.
+ *
+ * Conversion runs on the native blocking pool so parsing and rendering do not
+ * stall the JavaScript event loop.
+ *
+ * # Errors
+ * Returns an error for invalid SVG data, zero/oversized limits, allocation
+ * failure, or PNG encoding failure.
+ */
+export declare function rasterizeSvg(input: Uint8Array, maxWidthPx: number, maxHeightPx: number): Promise<Uint8Array>
+
+/**
  * Read an image from the system clipboard.
  *
  * Returns `Ok(None)` when no image data is available.
@@ -2523,6 +2628,9 @@ export interface VectorTopK {
  * Tabs count as a fixed-width cell.
  */
 export declare function visibleWidth(text: string, tabWidth: number): number
+
+/** Warm syntax grammars and scope matchers on the native worker pool. */
+export declare function warmHighlighter(): Promise<undefined>
 
 /** Profiling results returned to JavaScript. */
 export interface WorkProfile {

@@ -488,6 +488,7 @@ export class SelectorController {
 				modelRegistry: this.ctx.session.modelRegistry,
 				activeModelPattern,
 				defaultModelPattern,
+				extensionRoots: () => this.ctx.session.effectiveExtensionRoots,
 			},
 			{ onCancel: () => done() },
 		);
@@ -648,6 +649,12 @@ export class SelectorController {
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
+			case "display.showTurnTime":
+				// Same as showTokenUsage: the prompt→yield delta lives in the same
+				// usage row, so toggling it must rebuild and retire committed rows.
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
+				break;
 			case "tui.tight":
 				setTuiTight(value as boolean);
 				this.ctx.ui.invalidate();
@@ -803,6 +810,11 @@ export class SelectorController {
 		const current = this.ctx.session.model;
 		const quickRoleOrder = this.ctx.settings.get("cycleOrder");
 		const quickRoleCycle = this.ctx.session.getRoleModelCycle(quickRoleOrder);
+		const currentSelector = current ? `${current.provider}/${current.id}` : undefined;
+		// Preselect the effective Task model in task mode: the configured override,
+		// else the session model (the bundled task agent inherits it by default).
+		const taskOverride = this.ctx.settings.get("task.agentModelOverrides").task;
+		const taskSelector = (Array.isArray(taskOverride) ? taskOverride[0] : taskOverride) ?? currentSelector;
 		let overlayHandle: OverlayHandle | undefined;
 		let closed = false;
 		const done = () => {
@@ -871,11 +883,24 @@ export class SelectorController {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
 					}
 				},
+				onPickTask: (_model, selector) => {
+					// Session-only: layer the Task override onto the runtime settings
+					// layer so it is never persisted, mirroring the session-model pick.
+					this.ctx.settings.override("task.agentModelOverrides", {
+						...this.ctx.settings.get("task.agentModelOverrides"),
+						task: selector,
+					});
+					this.ctx.showStatus(`Task subagent model (session-only): ${selector}. Use /agents to persist.`);
+					done();
+				},
 				onCancel: done,
 			},
 			{
 				currentContextTokens,
-				currentSelector: current ? `${current.provider}/${current.id}` : undefined,
+				currentSelector,
+				taskModeKeys: this.ctx.keybindings.getKeys("app.model.selectTemporary"),
+				taskModeKeyLabel: this.ctx.keybindings.getDisplayString("app.model.selectTemporary") || "alt+p",
+				taskSelector,
 				quickRoles: quickRoleCycle?.models,
 				quickRoleOrder,
 				currentQuickRole: quickRoleCycle?.models[quickRoleCycle.currentIndex]?.role,
@@ -1739,7 +1764,7 @@ export class SelectorController {
 		const previousCwd = this.ctx.sessionManager.getCwd();
 		// Flush pending settings writes before switching sessions so a save
 		// failure leaves the session, process project dir, and Settings in the
-		// source scope — the switch below mutates the SessionManager cwd.
+		// source scope.
 		if (!options?.settingsFlushed) {
 			try {
 				await this.ctx.settings.flush();
@@ -1748,17 +1773,21 @@ export class SelectorController {
 				return false;
 			}
 		}
-		// Switch session via AgentSession (emits hook and tool session events). The
-		// SessionManager adopts the resumed session's own cwd when it differs.
-		await this.ctx.session.switchSession(sessionPath);
+		// AgentSession owns the transaction. It restores the complete source state
+		// if applying the target project's cwd fails, including in-memory sessions.
+		if (
+			(await this.ctx.session.switchSession(sessionPath, {
+				onCwdChange: async (newCwd, sourceCwd) => {
+					if (normalizePathForComparison(newCwd) === normalizePathForComparison(sourceCwd)) return true;
+					return this.ctx.applyCwdChange(newCwd);
+				},
+			})) === false
+		) {
+			return false;
+		}
 		this.ctx.clearTransientSessionUi();
 		const newCwd = this.ctx.sessionManager.getCwd();
 		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
-		if (movedProject) {
-			// Resumed a session from another project: re-point the process and every
-			// cwd-derived cache at it before rendering.
-			await this.ctx.applyCwdChange(newCwd);
-		}
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
