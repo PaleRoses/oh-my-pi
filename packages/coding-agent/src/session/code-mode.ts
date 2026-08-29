@@ -1,6 +1,6 @@
 /**
  * Codex Code Mode: collapse the direct tool surface for code_mode_only models
- * to a small keep-set and expose every other session tool through the kernel
+ * to a small keep-set and expose every other session tool through the eval
  * bridge, mirroring codex-rs ToolMode::CodeModeOnly.
  */
 
@@ -15,7 +15,7 @@ import { logger } from "@oh-my-pi/pi-utils";
  * on the direct surface.
  */
 export const CODE_MODE_KEEP_TOOLS: Record<string, true> = {
-	kernel: true,
+	eval: true,
 	ask: true,
 	todo: true,
 	yield: true,
@@ -38,12 +38,12 @@ export function resolveCodeMode(args: {
 	setting: "off" | "on" | "auto";
 	extraDirectTools?: readonly string[];
 	enabledToolNames: readonly string[];
-	kernelTransportAvailable: boolean;
+	evalTransportAvailable: boolean;
 }): CodeModeResolution {
 	const active =
 		args.provider === "openai-codex" &&
-		args.enabledToolNames.includes("kernel") &&
-		args.kernelTransportAvailable &&
+		args.enabledToolNames.includes("eval") &&
+		args.evalTransportAvailable &&
 		(args.setting === "on" || (args.setting === "auto" && args.toolMode === "code_mode_only"));
 	if (!active) return { active: false, directToolNames: new Set(args.enabledToolNames) };
 	const direct = new Set<string>();

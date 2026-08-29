@@ -72,6 +72,7 @@ function assistant(opts: {
 	toolCall?: { name: string; arguments: Record<string, unknown> };
 	stopReason?: AssistantMessage["stopReason"];
 	errorMessage?: string;
+	usage?: AssistantMessage["usage"];
 }): AssistantMessage {
 	const content: AssistantMessage["content"] = [];
 	if (opts.text) content.push({ type: "text", text: opts.text });
@@ -84,7 +85,7 @@ function assistant(opts: {
 		api: "openai-responses",
 		provider: "p",
 		model: "default",
-		usage: {
+		usage: opts.usage ?? {
 			input: 0,
 			output: 0,
 			cacheRead: 0,
@@ -197,6 +198,26 @@ describe("runEvalCompletion", () => {
 			return `${model.provider}/${model.id}`;
 		});
 		expect(resolved).toEqual(["p/smol", "p/default", "p/slow"]);
+	});
+
+	it("emits provider usage in the completion status receipt", async () => {
+		const usage: AssistantMessage["usage"] = {
+			input: 120,
+			output: 30,
+			cacheRead: 400,
+			cacheWrite: 50,
+			totalTokens: 600,
+			cost: { input: 0.12, output: 0.06, cacheRead: 0.04, cacheWrite: 0.05, total: 0.27 },
+		};
+		vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok", usage }));
+		const events: Array<{ op: string; usage?: unknown }> = [];
+
+		await runEvalCompletion(
+			{ prompt: "q", model: "smol" },
+			{ session: makeSession(), emitStatus: event => events.push(event) },
+		);
+
+		expect(events.find(event => event.op === "completion")?.usage).toEqual(usage);
 	});
 
 	it("prefers the session active model for the default tier, falling back to @default", async () => {

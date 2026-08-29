@@ -40,8 +40,8 @@ import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { CAPTURE_PARAM_DESCRIPTION } from "./capture-schema";
 import { resolveEvalBackends } from "./eval-backends";
+import { applyEvalCapture } from "./eval-capture";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
-import { applyKernelCapture } from "./kernel-capture";
 import {
 	formatStyledTruncationWarning,
 	type OutputMeta,
@@ -604,7 +604,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasRead: isToolActive("read", true),
 			hasLaunch: isToolActive("hub", this.session.settings.get("launch.enabled")),
 			hasEval: isToolActive(
-				"kernel",
+				"eval",
 				evalBackends.python || evalBackends.js || evalBackends.ruby || evalBackends.julia,
 			),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
@@ -749,7 +749,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const fullOutput = normalizeResultOutput(result);
 		const applyCapture = async (displayText: string): Promise<string> => {
 			if (!options.capture) return displayText;
-			const capture = await applyKernelCapture(this.session, {
+			const capture = await applyEvalCapture(this.session, {
 				toolLabel: "bash",
 				captureName: options.capture,
 				text: fullOutput,

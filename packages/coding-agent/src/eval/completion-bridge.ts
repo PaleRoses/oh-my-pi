@@ -203,6 +203,7 @@ export async function runEvalCompletion(
 		model: formatModelString(model),
 		tier: finalTier,
 		chars: resultText.length,
+		usage: response.usage,
 	});
 
 	return {

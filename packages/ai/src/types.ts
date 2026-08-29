@@ -593,6 +593,15 @@ export interface StreamOptions {
 }
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
+export interface AnthropicServerCompactionRequest {
+	/** Input-token threshold; Anthropic currently requires at least 50,000. */
+	triggerTokens: number;
+	/** Stop after emitting the provider-native compaction block. */
+	pauseAfterCompaction: boolean;
+	/** Optional replacement instructions for the server-generated compacted history. */
+	instructions?: string;
+}
+
 export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	/**
 	 * API key for the request: either a static bearer string, or an
@@ -603,6 +612,8 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	 */
 	apiKey?: ApiKey;
 	reasoning?: Effort;
+	/** Official Anthropic Messages server-side compaction request. Ignored by other APIs. */
+	anthropicServerCompaction?: AnthropicServerCompactionRequest;
 	/**
 	 * Force-disable reasoning for the request even when the model supports it.
 	 * Takes precedence over `reasoning`. Useful for fast utility calls
@@ -723,6 +734,12 @@ export interface AnthropicFallbackContent {
 	type: "fallback";
 	from: { model: string };
 	to: { model: string };
+}
+
+/** Provider-native server compaction boundary returned by the Anthropic Messages API. */
+export interface AnthropicCompactionContent {
+	type: "anthropicCompaction";
+	content: string;
 }
 
 /**
@@ -858,7 +875,14 @@ export interface OpenAIResponsesHistoryPayload {
 	items: Array<Record<string, unknown>>;
 }
 
-export type ProviderPayload = OpenAIResponsesHistoryPayload;
+/** Typed replay boundary for one Anthropic provider-native compaction block. */
+export interface AnthropicCompactionHistoryPayload {
+	type: "anthropicCompactionHistory";
+	provider?: string;
+	content: string;
+}
+
+export type ProviderPayload = OpenAIResponsesHistoryPayload | AnthropicCompactionHistoryPayload;
 
 export interface UserMessage {
 	role: "user";
@@ -879,6 +903,10 @@ export interface DeveloperMessage {
 	content: string | (TextContent | ImageContent)[];
 	/** Who initiated this message for billing/attribution semantics. */
 	attribution?: MessageAttribution;
+	/** True if the message was injected by the system (e.g., auto-continue) and initiates a fresh run rather than continuing the current one. */
+	synthetic?: boolean;
+	/** True when the synthetic prompt was a deliberate operator action (`.`, `c` continue shortcut) rather than an automatic continuation — its timestamp is the turn's prompt time. */
+	userInitiated?: boolean;
 	/** Provider-specific opaque payload used to reconstruct transport-native history. */
 	providerPayload?: ProviderPayload;
 	timestamp: number; // Unix timestamp in milliseconds
@@ -933,6 +961,7 @@ export interface AssistantMessage {
 		| ThinkingContent
 		| RedactedThinkingContent
 		| AnthropicFallbackContent
+		| AnthropicCompactionContent
 		| AnthropicServerToolContent
 		| ImageContent
 		| ToolCall
@@ -976,6 +1005,8 @@ export interface AssistantMessage {
 	timestamp: number; // Unix timestamp in milliseconds
 	duration?: number; // Request duration in milliseconds
 	ttft?: number; // Time to first token in milliseconds
+	/** Local wall-clock time the response finished streaming (ms since epoch); stamped by the session at message_end so prompt→yield timing never depends on provider-reported duration. */
+	completedAt?: number;
 }
 
 export interface ToolResultMessage<TDetails = unknown> {

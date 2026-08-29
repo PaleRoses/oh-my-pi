@@ -67,8 +67,8 @@ import {
 	scanConflictLines,
 	scanFileForConflicts,
 } from "./conflict-detect";
+import { applyEvalCapture } from "./eval-capture";
 import { executeReadUrl, fetchReadUrl, parseReadUrlTarget } from "./fetch";
-import { applyKernelCapture } from "./kernel-capture";
 import { type OutputMeta, resolveOutputMaxColumns } from "./output-meta";
 import {
 	expandPath,
@@ -1112,13 +1112,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (textBlocks.length === 0) return result;
 
 		const fullText = textBlocks.map(block => block.text).join("\n");
-		const applied = await applyKernelCapture(this.session, {
+		const applied = await applyEvalCapture(this.session, {
 			toolLabel: "read",
 			captureName: capture,
 			text: fullText,
 		});
 		// Captured: the stub replaces the content. Degraded: the original output
-		// plus the warning line (applyKernelCapture's failure content) replaces it
+		// plus the warning line (applyEvalCapture's failure content) replaces it
 		// — in both cases a single text block is the result.
 		return { ...result, content: [{ type: "text", text: applied.content }] };
 	}

@@ -36,12 +36,12 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("animates the kernel pending cell while the call is live", () => {
+	it("animates the eval pending cell while the call is live", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();
 		const requestComponentRender = vi.fn();
 		const component = new ToolExecutionComponent(
-			"kernel",
+			"eval",
 			{ language: "py", code: "import time\ntime.sleep(10)" },
 			{},
 			undefined,

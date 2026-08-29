@@ -9,10 +9,14 @@ import {
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
-function getModel(): Model {
+function getModel(): Model<"anthropic-messages"> {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("Expected built-in anthropic/claude-sonnet-4-5 to exist");
-	return model;
+	if (model.api !== "anthropic-messages") throw new Error("Expected an Anthropic Messages model");
+	const anthropicModel = model as Model<"anthropic-messages">;
+	// These fixtures exercise the configured generic compaction endpoint, not
+	// the separate official Anthropic server-compaction contract.
+	return { ...anthropicModel, compat: { ...anthropicModel.compat, officialEndpoint: false } };
 }
 
 describe("compaction summary boundaries", () => {

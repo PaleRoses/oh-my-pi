@@ -20,7 +20,7 @@ export type MessageBlock = ({ kind: "code" } & CodeBlock) | ({ kind: "quote" } &
 
 /** A runnable command found in the transcript. */
 export interface LastCommand {
-	kind: "bash" | "kernel";
+	kind: "bash" | "eval";
 	code: string;
 	/** Highlight language: "bash" for bash, or the resolved kernel language ("python"/"javascript"/"ruby"/"julia"). */
 	language: string;
@@ -169,9 +169,9 @@ function commandFromToolCall(tc: ToolCall): LastCommand | undefined {
 	if (tc.name === "bash" && typeof tc.arguments.command === "string") {
 		return { kind: "bash", code: tc.arguments.command, language: "bash" };
 	}
-	if (tc.name === "kernel") {
+	if (tc.name === "eval") {
 		const evalResult = extractEvalCode(tc.arguments);
-		if (evalResult) return { kind: "kernel", code: evalResult.code, language: evalResult.language };
+		if (evalResult) return { kind: "eval", code: evalResult.code, language: evalResult.language };
 	}
 	return undefined;
 }

@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Settings } from "../src/config/settings";
 import type { ToolSession } from "../src/tools";
+import { EvalTool } from "../src/tools/eval";
 import { generateCodeModeDeclarations } from "../src/tools/eval-format/code-mode-declarations";
-import { EvalTool } from "../src/tools/kernel";
 
 describe("generateCodeModeDeclarations", () => {
 	test("emits a declare-const block with typed signatures", () => {
@@ -84,8 +84,8 @@ test("EvalTool advertises only tools authorized for its bridge", () => {
 			["read", read],
 			["write", write],
 		]),
-		getEvalBridgeToolNames: () => ["kernel", "read"],
-		getCodeModeDirectToolNames: () => ["kernel"],
+		getEvalBridgeToolNames: () => ["eval", "read"],
+		getCodeModeDirectToolNames: () => ["eval"],
 	} as unknown as ToolSession;
 
 	const description = new EvalTool(session).description;
@@ -126,7 +126,7 @@ test("EvalTool advertises bridged tool declarations only while Code Mode is acti
 		getSessionFile: () => null,
 		settings: Settings.isolated(),
 		toolRegistry: new Map([["read", read]]),
-		getEvalBridgeToolNames: () => ["kernel", "read"],
+		getEvalBridgeToolNames: () => ["eval", "read"],
 	};
 	const active = new EvalTool({
 		...baseSession,
@@ -150,7 +150,7 @@ test("EvalTool withholds Code Mode transport support when the JS backend is disa
 		getSessionFile: () => null,
 		settings: Settings.isolated({ "eval.js": false, "eval.py": true }),
 		toolRegistry: new Map(),
-		getEvalBridgeToolNames: () => ["kernel"],
+		getEvalBridgeToolNames: () => ["eval"],
 	} as unknown as ToolSession;
 
 	expect(new EvalTool(session).supportsCodeModeTransport()).toBe(false);

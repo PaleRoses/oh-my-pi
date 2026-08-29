@@ -20,7 +20,7 @@ import {
 	type EffectiveSessionIdentity,
 	snapshotAgentIdentity,
 } from "@oh-my-pi/pi-coding-agent/session/identity";
-import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
 const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig => ({
 	hindsightApiUrl: "http://localhost:8888",
@@ -188,7 +188,9 @@ describe("Hindsight retention provenance", () => {
 	});
 
 	it("uses the bank project label once and performs no repository discovery per retained item", async () => {
-		const discovery = vi.spyOn(git.repo, "primaryRootSync").mockReturnValue("/workspace/aurora");
+		const discovery = vi.spyOn(vcs, "repo").mockReturnValue({
+			primaryRoot: () => "/workspace/aurora",
+		} as ReturnType<typeof vcs.repo>);
 		try {
 			const config = makeConfig({ scoping: "per-project-tagged" });
 			const cwd = "/workspace/aurora/worktree";

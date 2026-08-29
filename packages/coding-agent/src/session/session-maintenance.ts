@@ -86,7 +86,7 @@ import {
 	resolveRoleModelFull,
 } from "./role-models";
 import type { SessionContext } from "./session-context";
-import { getLatestCompactionEntry, getOpenAiRemoteCompactionPayload } from "./session-context";
+import { getLatestCompactionEntry, getRemoteCompactionProviderPayload } from "./session-context";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
@@ -263,6 +263,11 @@ export interface SessionMaintenanceHost {
 	sideStreamFn: StreamFn;
 	providerSessionState: Map<string, ProviderSessionState>;
 	preferWebsockets: boolean | undefined;
+	/**
+	 * Identity paragraph from the session's pinned prompt profile, appended to the
+	 * compaction summarizer's system prompt; undefined keeps the generic prompt.
+	 */
+	compactionIdentity: string | undefined;
 	model(): Model | undefined;
 	thinkingLevel(): ThinkingLevel | undefined;
 	isDisposed(): boolean;
@@ -402,6 +407,11 @@ export class SessionMaintenance {
 		const run = this.#speculation;
 		if (!run) return "idle";
 		return run.armed ? "armed" : "running";
+	}
+
+	/** Completion of the current speculative pass, used to resume maintenance skipped during its handoff. */
+	get speculationCompletion(): Promise<void> | undefined {
+		return this.#speculation?.promise;
 	}
 
 	/** Abort and discard any in-flight or armed speculative compaction. */
@@ -662,7 +672,7 @@ export class SessionMaintenance {
 		const artifactId = await this.#saveShakeArtifact(regions);
 		const replacements = regions.map((region, index) => this.#shakeElidePlaceholder(region, index, artifactId));
 
-		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
+		const hasRemoteReplacementHistory = getRemoteCompactionProviderPayload(latestCompaction) !== undefined;
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		let anchorIndex = -1;
 		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
@@ -2222,6 +2232,11 @@ export class SessionMaintenance {
 						metadata: this.#host.agent.metadataForProvider(candidate.provider),
 						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
 						telemetry,
+						// Name the participants for the summarizer: the pinned prompt
+						// profile's identity paragraph rides the summarization system
+						// prompt so handover notes use the session's own names instead
+						// of generic "the assistant"/"the user" wording.
+						identity: this.#host.compactionIdentity,
 						// Honor the user's /model thinking selection (incl. `off`) on
 						// the manual `/compact` path. Clamped per-model inside compact()
 						// via resolveCompactionEffort so unsupported-effort models
@@ -3017,9 +3032,11 @@ export class SessionMaintenance {
 					fromExtension: false,
 					codexCompaction: armedSpec.codexCompaction,
 					method: armedSpec.method,
-					providerReplayThroughEntryId: armedSpec.result.preserveData?.openaiRemoteCompaction
-						? armedSpec.snapshotLeafId
-						: undefined,
+					providerReplayThroughEntryId:
+						armedSpec.result.preserveData?.openaiRemoteCompaction ||
+						armedSpec.result.preserveData?.anthropicRemoteCompaction
+							? armedSpec.snapshotLeafId
+							: undefined,
 					action,
 					reason,
 					willRetry,
@@ -3470,6 +3487,7 @@ export class SessionMaintenance {
 									initiatorOverride: "agent",
 									convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
 									telemetry,
+									identity: this.#host.compactionIdentity,
 									// Honor the user's /model thinking selection on the
 									// auto-compaction path — the most-fired compaction
 									// site. Clamped per-model inside compact() via

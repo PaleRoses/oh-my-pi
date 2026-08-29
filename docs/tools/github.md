@@ -8,7 +8,9 @@
 - Key collaborators:
   - `packages/coding-agent/src/tools/gh-format.ts` — shorten commit SHAs for summaries.
   - `packages/coding-agent/src/tools/gh-renderer.ts` — TUI rendering, especially `run_watch` live/result views.
-  - `packages/coding-agent/src/utils/git.ts` — `gh`/`git` process wrappers, repo locking, branch config writes.
+  - `packages/coding-agent/src/utils/github.ts` — `gh` process execution and output decoding.
+  - `packages/coding-agent/src/utils/repo-lock.ts` — repository-scoped checkout locking.
+  - `@oh-my-pi/pi-natives/vcs` — native Git repository, worktree, config, and push operations.
   - `packages/utils/src/dirs.ts` — base directory for dedicated PR worktrees.
   - `packages/coding-agent/src/sdk.ts` — session artifact allocation hook.
   - `packages/coding-agent/src/session/artifacts.ts` — artifact filename format `<id>.<toolType>.log`.
@@ -62,10 +64,10 @@ The tool returns a single text result built by `buildTextResult()` in `packages/
 `run_watch` is the only streaming op. It emits `onUpdate` snapshots while polling, then returns one final text result.
 
 ## Flow
-1. `GithubTool.createIf()` exposes the tool only when `git.github.available()` finds `gh` on `PATH`.
+1. `GithubTool.createIf()` exposes the tool only when `github.available()` finds `gh` on `PATH`.
 2. `GithubTool.execute()` wraps dispatch in `untilAborted()` and switches on `params.op`.
 3. Each op normalizes optional strings, arrays, booleans, and numeric caps locally in `packages/coding-agent/src/tools/gh.ts`.
-4. CLI execution goes through `git.github.run/json/text()` in `packages/coding-agent/src/utils/git.ts`:
+4. CLI execution goes through `github.run/json/text()` in `packages/coding-agent/src/utils/github.ts`:
    - spawns `gh ...` with `Bun.spawn()`;
    - trims stdout/stderr unless `trimOutput: false`;
    - maps common auth/repo-context failures into tool-facing `ToolError` messages;
@@ -249,7 +251,7 @@ Watch flow:
   - `pr_push` uses git network transport to the configured remote.
 - Subprocesses / native bindings
   - All `gh` calls use `Bun.spawn(["gh", ...args])`.
-  - `pr_checkout` and `pr_push` also invoke git helpers from `packages/coding-agent/src/utils/git.ts`.
+  - `pr_checkout` and `pr_push` use `@oh-my-pi/pi-natives/vcs` for Git operations.
 - Session state (transcript, memory, jobs, checkpoints, registries)
   - `run_watch` consumes `session.allocateOutputArtifact()` when failed-job logs are persisted.
   - Returned `details` objects carry run/checkouts metadata for the renderer/UI.

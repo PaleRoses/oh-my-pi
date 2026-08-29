@@ -193,7 +193,7 @@ export function mapToolKind(toolName: string, args?: unknown): ToolKind {
 		case "bash":
 		case "shell":
 		case "exec":
-		case "kernel":
+		case "eval":
 			return "execute";
 		case "grep":
 		case "glob":
@@ -534,7 +534,7 @@ function buildToolStartText(toolName: string, args: unknown): string | undefined
 		const command = extractStringProperty<CommandContainer>(args, "command");
 		return command ? limitText(`$ ${command}`) : undefined;
 	}
-	if (toolName === "kernel") {
+	if (toolName === "eval") {
 		return buildEvalStartText(args);
 	}
 	return undefined;
@@ -596,7 +596,7 @@ function buildToolTitle(toolName: string, args: unknown, intent: string | undefi
 		const commandText = buildToolStartText(toolName, args);
 		if (commandText) return commandText;
 	}
-	if (toolName === "kernel") {
+	if (toolName === "eval") {
 		const evalText = buildEvalStartText(args);
 		if (evalText) return evalText;
 	}

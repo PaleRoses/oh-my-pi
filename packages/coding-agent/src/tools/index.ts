@@ -45,13 +45,13 @@ import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from ".
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { ComputerTool } from "./computer";
 import { DebugTool } from "./debug";
+import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
 import { GithubTool } from "./gh";
 import { GlobTool } from "./glob";
 import { GrepTool } from "./grep";
 import { HubTool, isIrcEnabled } from "./hub";
 import { InspectImageTool } from "./inspect-image";
-import { EvalTool } from "./kernel";
 import { LearnTool } from "./learn";
 import { ManageSkillTool } from "./manage-skill";
 import { MemoryEditTool } from "./memory-edit";
@@ -84,6 +84,7 @@ export * from "./computer";
 export * from "./computer/supervisor";
 export * from "./debug";
 export * from "./essential-tools";
+export * from "./eval";
 export * from "./eval-backends";
 export * from "./file-write-fallback";
 export * from "./gh";
@@ -92,7 +93,6 @@ export * from "./grep";
 export * from "./hub";
 export * from "./image-gen";
 export * from "./inspect-image";
-export * from "./kernel";
 export * from "./learn";
 export * from "./manage-skill";
 export * from "./memory-edit";
@@ -437,7 +437,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
-	kernel: s => new EvalTool(s),
+	eval: s => new EvalTool(s),
 	github: GithubTool.createIf,
 	glob: s => new GlobTool(s, { rootPathAlias: true }),
 	grep: s => new GrepTool(s),
@@ -496,13 +496,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const allowRuby = backends.ruby;
 	const allowJulia = backends.julia;
 	const skipEvalPreflight = session.skipPythonPreflight === true;
-	// Kernel tool is enabled if ANY backend is reachable. JS needs no preflight, so
+	// Eval tool is enabled if ANY backend is reachable. JS needs no preflight, so
 	// we only probe Python/Ruby/Julia when JS is disabled — otherwise allowEval is
 	// already true and per-backend availability is checked at first invocation.
 	let pythonAvailable = true;
 	let rubyAvailable = true;
 	let juliaAvailable = true;
-	const evalRequested = requestedTools === undefined || requestedTools.includes("kernel");
+	const evalRequested = requestedTools === undefined || requestedTools.includes("eval");
 	if (!skipEvalPreflight && !allowJs && evalRequested) {
 		if (allowPython) {
 			const availability = await logger.time(
@@ -618,7 +618,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
-		if (name === "kernel") return allowEval;
+		if (name === "eval") return allowEval;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");

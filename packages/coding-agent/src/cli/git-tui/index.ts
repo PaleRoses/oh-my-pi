@@ -13,6 +13,8 @@
  * stage/unstage (hunk-aware), `x` discards a hunk, `w` wraps, `b` toggles
  * whitespace-insensitive alignment.
  */
+
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import {
 	type Component,
 	matchesKey,
@@ -23,7 +25,6 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { theme } from "../../modes/theme/theme";
-import * as git from "../../utils/git";
 import { AvatarLoader } from "./avatar";
 import { pill, softPill, tintChip } from "./colors";
 import {
@@ -595,11 +596,12 @@ export interface GitTuiOptions {
  */
 export async function showGitOverlay(ui: TUI, options: GitTuiOptions = {}): Promise<void> {
 	const cwd = options.cwd ?? process.cwd();
-	const root = await git.repo.root(cwd);
+	const repo = vcs.git(cwd);
+	const root = repo?.info().repoRoot ?? null;
 	if (!root) throw new Error(`Not a git repository: ${cwd}`);
 	let pinnedSha: string | undefined;
 	if (options.revision) {
-		pinnedSha = (await git.ref.resolve(root, options.revision)) ?? undefined;
+		pinnedSha = (await repo?.resolveRef(options.revision)) ?? undefined;
 		if (!pinnedSha) throw new Error(`Cannot resolve revision: ${options.revision}`);
 	}
 	const component = new GitTuiComponent(ui, root, pinnedSha);

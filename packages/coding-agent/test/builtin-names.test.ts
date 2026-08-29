@@ -11,6 +11,6 @@ describe("normalizeToolName", () => {
 
 	it("does not remap eval to kernel", () => {
 		expect(normalizeToolName("eval")).toBe("eval");
-		expect(normalizeToolName("kernel")).toBe("kernel");
+		expect(normalizeToolName("eval")).toBe("eval");
 	});
 });

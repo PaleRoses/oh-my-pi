@@ -11,8 +11,8 @@ import type { CompactionSettings } from "../config/settings-schema";
 export const COMPACTION_METHOD_CHOICES = [
 	{
 		value: "remote",
-		label: "OpenAI server compaction",
-		description: "Use provider-native OpenAI-compatible server compaction when the active route supports it",
+		label: "Provider server compaction",
+		description: "Use provider-native server compaction when the active route supports it",
 	},
 	{
 		value: "snapcompact",

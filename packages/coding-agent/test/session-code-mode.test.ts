@@ -20,7 +20,7 @@ import { buildToolNamespacesInfo, resolveCodeMode } from "../src/session/code-mo
 import { SessionManager } from "../src/session/session-manager";
 import { generateCodeModeDeclarations } from "../src/tools/eval-format/code-mode-declarations";
 
-const ENABLED = ["kernel", "ask", "todo", "yield", "think", "read", "bash", "edit", "mcp__gmail__search"];
+const ENABLED = ["eval", "ask", "todo", "yield", "think", "read", "bash", "edit", "mcp__gmail__search"];
 
 describe("resolveCodeMode", () => {
 	test("off: inactive regardless of catalog flag", () => {
@@ -29,7 +29,7 @@ describe("resolveCodeMode", () => {
 			toolMode: "code_mode_only",
 			setting: "off",
 			enabledToolNames: ENABLED,
-			kernelTransportAvailable: true,
+			evalTransportAvailable: true,
 		});
 		expect(r.active).toBe(false);
 		expect(r.directToolNames).toEqual(new Set(ENABLED));
@@ -40,10 +40,10 @@ describe("resolveCodeMode", () => {
 			toolMode: "code_mode_only",
 			setting: "auto",
 			enabledToolNames: ENABLED,
-			kernelTransportAvailable: true,
+			evalTransportAvailable: true,
 		});
 		expect(r.active).toBe(true);
-		expect([...r.directToolNames].sort()).toEqual(["ask", "kernel", "think", "todo", "yield"]);
+		expect([...r.directToolNames].sort()).toEqual(["ask", "eval", "think", "todo", "yield"]);
 	});
 	test("auto without flag: inactive", () => {
 		expect(
@@ -51,7 +51,7 @@ describe("resolveCodeMode", () => {
 				provider: "openai-codex",
 				setting: "auto",
 				enabledToolNames: ENABLED,
-				kernelTransportAvailable: true,
+				evalTransportAvailable: true,
 			}).active,
 		).toBe(false);
 	});
@@ -61,7 +61,7 @@ describe("resolveCodeMode", () => {
 				provider: "openai-codex",
 				setting: "on",
 				enabledToolNames: ENABLED,
-				kernelTransportAvailable: true,
+				evalTransportAvailable: true,
 			}).active,
 		).toBe(true);
 	});
@@ -71,29 +71,29 @@ describe("resolveCodeMode", () => {
 				provider: "anthropic",
 				setting: "on",
 				enabledToolNames: ENABLED,
-				kernelTransportAvailable: true,
+				evalTransportAvailable: true,
 			}).active,
 		).toBe(false);
 	});
-	test("inactive when kernel is unavailable", () => {
+	test("inactive when eval is unavailable", () => {
 		expect(
 			resolveCodeMode({
 				provider: "openai-codex",
 				toolMode: "code_mode_only",
 				setting: "auto",
 				enabledToolNames: ["read", "bash"],
-				kernelTransportAvailable: true,
+				evalTransportAvailable: true,
 			}).active,
 		).toBe(false);
 	});
-	test("inactive when the kernel transport lacks JavaScript", () => {
+	test("inactive when the eval transport lacks JavaScript", () => {
 		expect(
 			resolveCodeMode({
 				provider: "openai-codex",
 				toolMode: "code_mode_only",
 				setting: "auto",
-				enabledToolNames: ["kernel", "read"],
-				kernelTransportAvailable: false,
+				enabledToolNames: ["eval", "read"],
+				evalTransportAvailable: false,
 			}).active,
 		).toBe(false);
 	});
@@ -104,7 +104,7 @@ describe("resolveCodeMode", () => {
 			setting: "auto",
 			extraDirectTools: ["read", "nonexistent"],
 			enabledToolNames: ENABLED,
-			kernelTransportAvailable: true,
+			evalTransportAvailable: true,
 		});
 		expect(r.directToolNames.has("read")).toBe(true);
 		expect(r.directToolNames.has("nonexistent")).toBe(false);
@@ -114,20 +114,20 @@ describe("resolveCodeMode", () => {
 			provider: "openai-codex",
 			toolMode: "code_mode_only",
 			setting: "auto",
-			enabledToolNames: ["kernel", "read"],
-			kernelTransportAvailable: true,
+			enabledToolNames: ["eval", "read"],
+			evalTransportAvailable: true,
 		});
-		expect([...r.directToolNames]).toEqual(["kernel"]);
+		expect([...r.directToolNames]).toEqual(["eval"]);
 	});
 	test("prototype-named tools do not bypass the keep-set", () => {
 		const r = resolveCodeMode({
 			provider: "openai-codex",
 			toolMode: "code_mode_only",
 			setting: "auto",
-			enabledToolNames: ["kernel", "toString", "__proto__"],
-			kernelTransportAvailable: true,
+			enabledToolNames: ["eval", "toString", "__proto__"],
+			evalTransportAvailable: true,
 		});
-		expect([...r.directToolNames]).toEqual(["kernel"]);
+		expect([...r.directToolNames]).toEqual(["eval"]);
 	});
 	test("reserved eval bridge names stay direct", () => {
 		// `callSessionTool` consumes these before the registry, so demoting a tool
@@ -142,10 +142,10 @@ describe("resolveCodeMode", () => {
 			provider: "openai-codex",
 			toolMode: "code_mode_only",
 			setting: "auto",
-			enabledToolNames: ["kernel", "read", ...reserved],
-			kernelTransportAvailable: true,
+			enabledToolNames: ["eval", "read", ...reserved],
+			evalTransportAvailable: true,
 		});
-		expect([...r.directToolNames]).toEqual(["kernel", ...reserved]);
+		expect([...r.directToolNames]).toEqual(["eval", ...reserved]);
 	});
 });
 
@@ -153,18 +153,18 @@ describe("buildToolNamespacesInfo", () => {
 	test("shape and flags", () => {
 		const info = buildToolNamespacesInfo({
 			tools: [
-				{ name: "kernel", loadMode: "essential" },
+				{ name: "eval", loadMode: "essential" },
 				{ name: "read", loadMode: "essential" },
 				{ name: "browser", loadMode: "discoverable" },
 				{ name: "mcp__gmail__search", mcpServerName: "gmail" },
 			],
-			directToolNames: new Set(["kernel"]),
+			directToolNames: new Set(["eval"]),
 		});
 		expect(info.functions.name).toBe("functions");
-		expect(info.functions.functions.kernel).toEqual({
-			name: "kernel",
+		expect(info.functions.functions.eval).toEqual({
+			name: "eval",
 			direct: true,
-			code_mode_name: "kernel",
+			code_mode_name: "eval",
 			deferred: false,
 			source: { kind: "harness" },
 		});
@@ -296,15 +296,15 @@ describe("Code Mode session reconciliation", () => {
 		}),
 		setActiveToolNames?: (names: Iterable<string>) => void,
 		extraTools: AgentTool[] = [],
-		kernelOverride?: AgentTool,
+		evalOverride?: AgentTool,
 	): { session: AgentSession; directModel: Model; codeModel: Model } {
 		const codeModel = model("openai-codex", "code_mode_only");
 		const directModel = model("openai");
-		const kernelTool = kernelOverride ?? {
-			...tool("kernel"),
+		const evalTool = evalOverride ?? {
+			...tool("eval"),
 			supportsCodeModeTransport: () => settings.get("eval.js"),
 		};
-		const tools = [kernelTool, tool("read"), ...extraTools];
+		const tools = [evalTool, tool("read"), ...extraTools];
 		const session = new AgentSession({
 			agent: new Agent({ initialState: { model: codeModel, systemPrompt: [], tools } }),
 			sessionManager: SessionManager.inMemory(),
@@ -332,8 +332,8 @@ describe("Code Mode session reconciliation", () => {
 				return { systemPrompt: [`tools:${names.join(",")}`] };
 			},
 		);
-		await session.setActiveToolsByName(["kernel", "read"]);
-		expect(directCalls.at(-1)).toEqual(["kernel"]);
+		await session.setActiveToolsByName(["eval", "read"]);
+		expect(directCalls.at(-1)).toEqual(["eval"]);
 
 		await session.setModel(directModel);
 		expect(directCalls.at(-1)).toBeUndefined();
@@ -343,28 +343,28 @@ describe("Code Mode session reconciliation", () => {
 		const { session, directModel, codeModel } = createSession(
 			Settings.isolated({ "providers.openai-codex.codeMode": "auto" }),
 		);
-		await session.setActiveToolsByName(["kernel", "read"]);
-		expect(session.agent.state.tools.map(value => value.name)).toEqual(["kernel"]);
-		expect(session.getEnabledToolNames()).toEqual(["kernel", "read"]);
+		await session.setActiveToolsByName(["eval", "read"]);
+		expect(session.agent.state.tools.map(value => value.name)).toEqual(["eval"]);
+		expect(session.getEnabledToolNames()).toEqual(["eval", "read"]);
 
 		await session.setModel(directModel);
-		expect(session.agent.state.tools.map(value => value.name)).toEqual(["kernel", "read"]);
+		expect(session.agent.state.tools.map(value => value.name)).toEqual(["eval", "read"]);
 
 		await session.setModel(codeModel);
-		expect(session.agent.state.tools.map(value => value.name)).toEqual(["kernel"]);
+		expect(session.agent.state.tools.map(value => value.name)).toEqual(["eval"]);
 	});
 
-	test("a kernel replacement that cannot state transport support keeps the direct surface", async () => {
+	test("an eval replacement that cannot state transport support keeps the direct surface", async () => {
 		const { session } = createSession(
 			Settings.isolated({ "providers.openai-codex.codeMode": "auto" }),
 			undefined,
 			undefined,
 			[],
-			tool("kernel"),
+			tool("eval"),
 		);
-		await session.setActiveToolsByName(["kernel", "read"]);
+		await session.setActiveToolsByName(["eval", "read"]);
 
-		expect(session.getActiveToolNames()).toEqual(["kernel", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["eval", "read"]);
 		expect(session.codeModeNamespacesInfo).toBeUndefined();
 	});
 
@@ -385,7 +385,7 @@ describe("Code Mode session reconciliation", () => {
 			undefined,
 			[edit],
 		);
-		await session.setActiveToolsByName(["kernel", "edit"]);
+		await session.setActiveToolsByName(["eval", "edit"]);
 		expect((session.codeModeNamespacesInfo as ToolNamespacesInfo).functions.functions.apply_patch).toBeDefined();
 
 		wireName = undefined;
@@ -400,12 +400,12 @@ describe("Code Mode session reconciliation", () => {
 		const settings = Settings.isolated();
 		settings.set("providers.openai-codex.codeMode", "auto");
 		const { session } = createSession(settings);
-		await session.setActiveToolsByName(["kernel", "read"]);
-		expect(session.agent.state.tools.map(value => value.name)).toEqual(["kernel"]);
+		await session.setActiveToolsByName(["eval", "read"]);
+		expect(session.agent.state.tools.map(value => value.name)).toEqual(["eval"]);
 
 		settings.set("providers.openai-codex.codeMode", "off");
 		await session.runToolRegistryMutation(async () => undefined);
-		expect(session.agent.state.tools.map(value => value.name)).toEqual(["kernel", "read"]);
+		expect(session.agent.state.tools.map(value => value.name)).toEqual(["eval", "read"]);
 	});
 
 	test("runtime eval.js changes reconcile Code Mode transport availability", async () => {
@@ -413,20 +413,20 @@ describe("Code Mode session reconciliation", () => {
 		settings.set("eval.js", true);
 		settings.set("providers.openai-codex.codeMode", "auto");
 		const { session } = createSession(settings);
-		await session.setActiveToolsByName(["kernel", "read"]);
-		expect(session.getActiveToolNames()).toEqual(["kernel"]);
+		await session.setActiveToolsByName(["eval", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["eval"]);
 
 		settings.set("eval.js", false);
 		await session.runToolRegistryMutation(async () => undefined);
-		expect(session.getActiveToolNames()).toEqual(["kernel", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["eval", "read"]);
 		expect(session.codeModeNamespacesInfo).toBeUndefined();
 
 		settings.set("eval.js", true);
 		await session.runToolRegistryMutation(async () => undefined);
-		expect(session.getActiveToolNames()).toEqual(["kernel"]);
+		expect(session.getActiveToolNames()).toEqual(["eval"]);
 	});
 
-	test("a caller slate without kernel keeps Code Mode inactive", async () => {
+	test("a caller slate without eval keeps Code Mode inactive", async () => {
 		const { session } = createSession(Settings.isolated({ "providers.openai-codex.codeMode": "auto" }));
 
 		await session.setActiveToolsByName(["read"]);
@@ -438,11 +438,11 @@ describe("Code Mode session reconciliation", () => {
 
 	test("Vibe teardown preserves bridge-enabled Code Mode tools", async () => {
 		const { session } = createSession(Settings.isolated({ "providers.openai-codex.codeMode": "auto" }));
-		await session.setActiveToolsByName(["kernel", "read"]);
+		await session.setActiveToolsByName(["eval", "read"]);
 
 		await session.removeVibeToolsPreservingActive();
 
-		expect(session.getEnabledToolNames()).toEqual(["kernel", "read"]);
+		expect(session.getEnabledToolNames()).toEqual(["eval", "read"]);
 		expect(session.getToolForEvalBridge("read")?.name).toBe("read");
 	});
 
@@ -458,13 +458,13 @@ describe("Code Mode session reconciliation", () => {
 			[tool("computer")],
 		);
 
-		await session.setActiveToolsByName(["kernel", "computer"]);
+		await session.setActiveToolsByName(["eval", "computer"]);
 
-		expect(session.agent.state.tools.map(value => value.name)).toEqual(["kernel"]);
-		expect(promptToolSets.at(-1)).toEqual(["kernel", "computer"]);
+		expect(session.agent.state.tools.map(value => value.name)).toEqual(["eval"]);
+		expect(promptToolSets.at(-1)).toEqual(["eval", "computer"]);
 
-		await session.setActiveToolsByName(["kernel"]);
-		expect(promptToolSets.at(-1)).toEqual(["kernel"]);
+		await session.setActiveToolsByName(["eval"]);
+		expect(promptToolSets.at(-1)).toEqual(["eval"]);
 	});
 
 	test("bridge-enabled task retains eager delegation", async () => {
@@ -474,13 +474,13 @@ describe("Code Mode session reconciliation", () => {
 			"todo.enabled": false,
 		});
 		const { session } = createSession(settings, undefined, undefined, [tool("task")]);
-		await session.setActiveToolsByName(["kernel", "task"]);
+		await session.setActiveToolsByName(["eval", "task"]);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
 		await session.prompt("implement the parser");
 
 		const messages = promptSpy.mock.calls[0]?.[0] as unknown as Array<{ customType?: string }>;
-		expect(session.getActiveToolNames()).toEqual(["kernel"]);
+		expect(session.getActiveToolNames()).toEqual(["eval"]);
 		expect(messages.some(message => message.customType === "eager-task-prelude")).toBe(true);
 	});
 
@@ -491,7 +491,7 @@ describe("Code Mode session reconciliation", () => {
 			undefined,
 			[tool("task")],
 		);
-		await session.setActiveToolsByName(["kernel", "task"]);
+		await session.setActiveToolsByName(["eval", "task"]);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
 		await session.prompt("please orchestrate and workflowz this");
@@ -510,12 +510,12 @@ describe("Code Mode session reconciliation", () => {
 			undefined,
 			names => predicateUpdates.push([...names]),
 		);
-		await session.setActiveToolsByName(["kernel", "read"]);
-		expect(predicateUpdates.at(-1)).toEqual(["kernel", "read"]);
+		await session.setActiveToolsByName(["eval", "read"]);
+		expect(predicateUpdates.at(-1)).toEqual(["eval", "read"]);
 
 		await session.refreshBaseSystemPrompt();
 
-		expect(predicateUpdates.at(-1)).toEqual(["kernel", "read"]);
+		expect(predicateUpdates.at(-1)).toEqual(["eval", "read"]);
 	});
 
 	test("failed tool application leaves Code Mode namespace metadata unchanged", async () => {
@@ -523,10 +523,10 @@ describe("Code Mode session reconciliation", () => {
 			throw new Error("rebuild failed");
 		});
 
-		await expect(session.setActiveToolsByName(["kernel", "read"])).rejects.toThrow("rebuild failed");
+		await expect(session.setActiveToolsByName(["eval", "read"])).rejects.toThrow("rebuild failed");
 
 		expect(session.codeModeNamespacesInfo).toBeUndefined();
-		expect(session.getActiveToolNames()).toEqual(["kernel", "read"]);
+		expect(session.getActiveToolNames()).toEqual(["eval", "read"]);
 	});
 
 	test("plan guidance keeps task delegation after Code Mode demotes the tool", async () => {
@@ -549,9 +549,9 @@ describe("Code Mode session reconciliation", () => {
 		// The contract is invariance: demoting `task` off the direct surface is a
 		// transport change, so the guidance must match a session where `task` is
 		// directly callable, and must differ from one that cannot delegate at all.
-		const demoted = await planPrompt("on", [tool("task")], ["kernel", "task"]);
-		const direct = await planPrompt("off", [tool("task")], ["kernel", "task"]);
-		const unavailable = await planPrompt("on", [], ["kernel"]);
+		const demoted = await planPrompt("on", [tool("task")], ["eval", "task"]);
+		const direct = await planPrompt("off", [tool("task")], ["eval", "task"]);
+		const unavailable = await planPrompt("on", [], ["eval"]);
 
 		expect(demoted).toBe(direct);
 		expect(demoted).not.toBe(unavailable);
@@ -605,7 +605,7 @@ describe("Code Mode session startup", () => {
 		sessions.push(session);
 
 		const active = session.getActiveToolNames();
-		expect(active).toContain("kernel");
+		expect(active).toContain("eval");
 		expect(active).not.toContain("read");
 		expect(active).not.toContain("bash");
 		// Demoted tools stay enabled and bridge-reachable instead of vanishing.
@@ -614,7 +614,7 @@ describe("Code Mode session startup", () => {
 		// The namespaces snapshot feeding `tool_namespaces_info` exists before
 		// any turn runs.
 		const info = session.codeModeNamespacesInfo as ToolNamespacesInfo;
-		expect(info.functions.functions.kernel.direct).toBe(true);
+		expect(info.functions.functions.eval.direct).toBe(true);
 		expect(info.functions.functions.read.direct).toBe(false);
 	});
 

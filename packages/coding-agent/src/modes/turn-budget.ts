@@ -2,7 +2,7 @@
  * "+Nk" turn token-budget directive.
  *
  * A standalone `+<number>[k|m]` token in the user's message sets a per-turn
- * output-token budget surfaced by the `kernel` `budget` helper. By default it is
+ * output-token budget surfaced by the `eval` `budget` helper. By default it is
  * ADVISORY — the model self-limits via `budget.remaining()`. Append `!`
  * (`+500k!`) to make it a HARD ceiling: kernel `agent()` refuses to spawn once the
  * turn's spend reaches it. Matching is anchored to token boundaries so it does

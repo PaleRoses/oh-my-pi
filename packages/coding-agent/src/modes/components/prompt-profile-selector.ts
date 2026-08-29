@@ -176,6 +176,8 @@ function describeProfileField(profile: SystemPromptProfileSetting, field: Prompt
 				: "none";
 		case "userTitle":
 			return typeof value === "string" ? value : "the user (default)";
+		case "compactionIdentity":
+			return typeof value === "string" ? `inline (${value.length} chars)` : "none";
 		case "tools":
 			return Array.isArray(value) && value.length > 0 ? value.map(String).join(", ") : "all (default)";
 	}

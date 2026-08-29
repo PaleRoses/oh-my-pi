@@ -10,7 +10,7 @@ Capture exact technical state, not abstractions.
 - Test results, observed failures
 - Decisions made
 - Partial work affecting the next step
-Register: address the successor directly in the imperative ("Fix X", "Run Y") — never first person ("I need to…", "my attempt…").
+Register: first-person handover notes to your successor-self ("I fixed X; next, run Y") — "I" is you; NEVER refer to yourself in the third person.
 The handoff mechanism is invisible to the document: NEVER list writing, generating, or delivering a handoff/summary/context document as progress or a next step. Progress and Next Steps cover the user's task only.
 </instruction>
 

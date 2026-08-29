@@ -20,7 +20,7 @@ const PROMPT_USAGE = [
 	"  /prompt unset <profile> <field>",
 	"  /prompt remove <profile>",
 	"",
-	"Fields: prompt, promptFile, instructions, instructionsFile, projectContextOnly, memory, mcpServerInstructions, contextImages, userTitle, tools",
+	"Fields: prompt, promptFile, instructions, instructionsFile, projectContextOnly, memory, mcpServerInstructions, contextImages, userTitle, compactionIdentity, tools",
 ].join("\n");
 
 export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
@@ -127,6 +127,9 @@ function normalizeField(raw: string): PromptProfileField {
 		case "usertitle":
 		case "user":
 			return "userTitle";
+		case "compactionidentity":
+		case "identity":
+			return "compactionIdentity";
 		case "tools":
 			return "tools";
 		default:
@@ -194,6 +197,8 @@ function setProfileField(
 			};
 		case "userTitle":
 			return { ...profile, userTitle: value };
+		case "compactionIdentity":
+			return { ...profile, compactionIdentity: value };
 		case "tools":
 			return {
 				...profile,
@@ -218,7 +223,7 @@ function describeProfile(profileId: string, profile: SystemPromptProfileSetting)
 	const appended = profile.instructionsFile
 		? `file ${profile.instructionsFile}`
 		: describeInline(profile.instructions);
-	return `${profileId}: base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
+	return `${profileId}: base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
 }
 
 function formatRoute(route: SystemPromptProfileRouteSetting, index: number): string {
@@ -258,6 +263,7 @@ function formatProfileDetails(profileId: string, profile: SystemPromptProfileSet
 		`mcpServerInstructions: ${profile.mcpServerInstructions === false ? "off" : "on (default)"}`,
 		`contextImages: ${profile.contextImages?.length ? profile.contextImages.join(", ") : "none"}`,
 		`userTitle: ${profile.userTitle ?? "the user (default)"}`,
+		`compactionIdentity: ${profile.compactionIdentity ?? "none (generic summarizer prompt)"}`,
 		`tools: ${profile.tools?.length ? profile.tools.join(", ") : "all (default)"}`,
 	].join("\n");
 }

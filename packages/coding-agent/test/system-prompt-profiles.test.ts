@@ -96,18 +96,18 @@ describe("system prompt profiles", () => {
 	it("compiles tools lowercased and deduplicated, rejecting blank entries", async () => {
 		const resolver = await createSystemPromptProfileResolver({
 			cwd: process.cwd(),
-			profiles: { rlm: { tools: ["Kernel", "write", "kernel", "read"] } },
+			profiles: { rlm: { tools: ["Eval", "write", "eval", "read"] } },
 			routes: [{ agentKind: "main", profile: "rlm" }],
 		});
 		const decision = resolver.resolveInitial({ agentKind: "main", model: "anthropic/claude-fable-5" });
 		expect(decision.type).toBe("profile");
 		if (decision.type !== "profile") throw new Error("Expected rlm profile");
-		expect(decision.profile.tools).toEqual(["kernel", "write", "read"]);
+		expect(decision.profile.tools).toEqual(["eval", "write", "read"]);
 
 		await expect(
 			createSystemPromptProfileResolver({
 				cwd: process.cwd(),
-				profiles: { rlm: { tools: ["kernel", "  "] } },
+				profiles: { rlm: { tools: ["eval", "  "] } },
 				routes: [{ agentKind: "main", profile: "rlm" }],
 			}),
 		).rejects.toThrow("systemPromptProfiles.rlm.tools[1]");

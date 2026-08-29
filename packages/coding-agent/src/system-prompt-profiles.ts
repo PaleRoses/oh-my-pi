@@ -14,6 +14,11 @@ export interface SystemPromptProfile {
 	readonly contextImages: readonly string[];
 	/** Phrase substituted for "the user" in the maintained system prompt; undefined keeps the generic wording. */
 	readonly userTitle?: string;
+	/**
+	 * Extra system-prompt paragraph appended to the compaction summarizer's system
+	 * prompt (identity/naming for handover notes); undefined keeps the generic wording.
+	 */
+	readonly compactionIdentity?: string;
 	/** Tool names forming the model-facing active set; empty keeps the full set. */
 	readonly tools: readonly string[];
 }
@@ -49,6 +54,7 @@ const systemPromptProfileSchema = type({
 	"mcpServerInstructions?": "boolean",
 	"contextImages?": "string[]",
 	"userTitle?": "string",
+	"compactionIdentity?": "string",
 	"tools?": "string[]",
 });
 const systemPromptProfilesSchema = type({ "[string]": systemPromptProfileSchema });
@@ -194,6 +200,10 @@ async function compileProfile(
 			raw.userTitle === undefined
 				? undefined
 				: requireNonEmptyString(raw.userTitle, `systemPromptProfiles.${profileId}.userTitle`),
+		compactionIdentity:
+			raw.compactionIdentity === undefined
+				? undefined
+				: requireNonEmptyString(raw.compactionIdentity, `systemPromptProfiles.${profileId}.compactionIdentity`),
 	};
 }
 

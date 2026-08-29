@@ -1,5 +1,5 @@
 /**
- * TUI rendering for the kernel tool.
+ * TUI rendering for the eval tool.
  *
  * Split out from `kernel.ts` so the renderer can be imported by `renderers.ts`
  * without dragging the eval *runtime* (JS/Python/Ruby/Julia backends ->

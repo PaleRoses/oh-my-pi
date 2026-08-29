@@ -399,13 +399,13 @@ describe("TanCommandController", () => {
 	});
 
 	it("copies and persists the full enabled Code Mode tool set", async () => {
-		const enabledToolNames = ["kernel", "read", "bash"];
-		const harness = createContext({ activeToolNames: ["kernel"], enabledToolNames });
+		const enabledToolNames = ["eval", "read", "bash"];
+		const harness = createContext({ activeToolNames: ["eval"], enabledToolNames });
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const appendSessionInit = vi.fn();
 		const { clone } = createCloneStub({
 			sessionManager: { appendSessionInit },
-			activeToolNames: ["kernel"],
+			activeToolNames: ["eval"],
 			enabledToolNames,
 		});
 		const createAgentSessionSpy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({

@@ -225,15 +225,15 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 
 	it("persists bridge-only tools in the enabled Code Mode set", async () => {
 		const session = yieldEmittingSession();
-		vi.spyOn(session, "getActiveToolNames").mockReturnValue(["kernel", "yield"]);
-		vi.spyOn(session, "getEnabledToolNames").mockReturnValue(["kernel", "read", "yield"]);
+		vi.spyOn(session, "getActiveToolNames").mockReturnValue(["eval", "yield"]);
+		vi.spyOn(session, "getEnabledToolNames").mockReturnValue(["eval", "read", "yield"]);
 		const appendSessionInit = vi.spyOn(session.sessionManager, "appendSessionInit");
 		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 
 		const result = await runSubprocess({ ...baseOptions, id: "code-mode-child" });
 
 		expect(result.exitCode).toBe(0);
-		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: ["kernel", "read", "yield"] }));
+		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: ["eval", "read", "yield"] }));
 	});
 
 	it("retains inherited MCP proxy tools for normal children", async () => {

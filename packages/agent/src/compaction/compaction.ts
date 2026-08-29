@@ -38,6 +38,13 @@ import { ThinkingLevel } from "../thinking";
 import { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import {
+	getAnthropicRemoteCompactionProviderPayload,
+	getPreservedAnthropicRemoteCompactionData,
+	requestAnthropicRemoteCompaction,
+	shouldUseAnthropicRemoteCompaction,
+	withAnthropicRemoteCompactionPreserveData,
+} from "./anthropic";
+import {
 	buildCompactionV2Request,
 	getCompactionV2PreserveData,
 	requestCompactionV2Streaming,
@@ -225,6 +232,7 @@ export function shouldUseProviderNativeCompaction(
 ): boolean {
 	if (settings.remoteEnabled === false) return false;
 	return (
+		shouldUseAnthropicRemoteCompaction(model) ||
 		shouldUseOpenAiRemoteCompaction(model) ||
 		(settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(model))
 	);
@@ -661,6 +669,15 @@ export interface SummaryOptions {
 	extraContext?: string[];
 	remoteEndpoint?: string;
 	remoteInstructions?: string;
+	/**
+	 * Optional identity paragraph appended to the summarizer's system prompt as
+	 * a second element. Supplied by the session's system-prompt profile
+	 * (`SystemPromptProfileSetting.compactionIdentity`), it names who the
+	 * assistant and the user are so the first-person summary is written by
+	 * someone instead of by a generic assistant. Absent or blank keeps the
+	 * historical single-element system prompt exactly as it was.
+	 */
+	identity?: string;
 	initiatorOverride?: MessageAttribution;
 	metadata?: Record<string, unknown>;
 	convertToLlm?: ConvertToLlm;
@@ -732,6 +749,17 @@ function summaryOneshotRetry(options: SummaryOptions | undefined): OneshotRetryO
 	const configured = options?.oneshotRetry;
 	if (configured === false) return undefined;
 	return configured ?? {};
+}
+
+/**
+ * System prompt for a local summarization call: the shared summarizer contract,
+ * plus the session's identity paragraph when the active profile supplies one
+ * (see `SummaryOptions.identity`). Blank/absent identity returns the historical
+ * single-element prompt, so the no-identity path is byte-identical.
+ */
+function summarizationSystemPrompt(options: SummaryOptions | undefined): string[] {
+	const identity = options?.identity?.trim();
+	return identity ? [SUMMARIZATION_SYSTEM_PROMPT, identity] : [SUMMARIZATION_SYSTEM_PROMPT];
 }
 
 function localCodexCompaction(options: SummaryOptions | undefined) {
@@ -970,7 +998,7 @@ async function summarizeConversationWindow(
 			key =>
 				requestRemoteCompaction(
 					endpoint,
-					{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, prompt: promptText, maxTokens },
+					{ systemPrompt: summarizationSystemPrompt(options).join("\n\n"), prompt: promptText, maxTokens },
 					signal,
 					{ fetch: options.fetch, model, apiKey: key },
 				),
@@ -981,7 +1009,7 @@ async function summarizeConversationWindow(
 
 	const response = await instrumentedCompleteSimple(
 		model,
-		{ systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT], messages: summarizationMessages },
+		{ systemPrompt: summarizationSystemPrompt(options), messages: summarizationMessages },
 		{
 			maxTokens,
 			signal,
@@ -1181,7 +1209,7 @@ async function generateShortSummary(
 			key =>
 				requestRemoteCompaction(
 					endpoint,
-					{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, prompt: promptText, maxTokens },
+					{ systemPrompt: summarizationSystemPrompt(options).join("\n\n"), prompt: promptText, maxTokens },
 					signal,
 					{ fetch: options?.fetch, model, apiKey: key },
 				),
@@ -1193,7 +1221,7 @@ async function generateShortSummary(
 	const response = await instrumentedCompleteSimple(
 		model,
 		{
-			systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT],
+			systemPrompt: summarizationSystemPrompt(options),
 			messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
 		},
 		{
@@ -1273,10 +1301,13 @@ export function remotePreserveReusable(
 	activeModel: Model,
 	settings: CompactionSettings,
 ): boolean {
-	const remote = getCompactionV2PreserveData(preserveData) ?? getPreservedOpenAiRemoteCompactionData(preserveData);
+	const openAiRemote =
+		getCompactionV2PreserveData(preserveData) ?? getPreservedOpenAiRemoteCompactionData(preserveData);
+	const anthropicRemote = getPreservedAnthropicRemoteCompactionData(preserveData);
+	const remote = openAiRemote ?? anthropicRemote;
 	if (!remote) return true;
-	if (settings.remoteEnabled === false) return false;
-	if (remote.provider !== activeModel.provider) return false;
+	if (settings.remoteEnabled === false || remote.provider !== activeModel.provider) return false;
+	if (anthropicRemote) return shouldUseAnthropicRemoteCompaction(activeModel);
 	const v2Ok = settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(activeModel);
 	return v2Ok || shouldUseOpenAiRemoteCompaction(activeModel);
 }
@@ -1498,6 +1529,21 @@ function selectNativeCompactionError(previousError: unknown, nextError: unknown)
 }
 
 /**
+ * User-facing placeholder summary for a provider-native remote compaction.
+ *
+ * `inputTokens` is the compaction request's provider-reported input usage
+ * (persisted as `openaiRemoteCompaction.usedTokens`), NOT the size of the
+ * retained replacement history — so the wording describes processed input, not
+ * retained context, to avoid implying the number is the post-compaction size.
+ */
+function formatRemoteCompactionSummary(inputTokens: number): string {
+	return (
+		"Remote compaction preserved provider-native history for this session." +
+		(inputTokens > 0 ? ` Compaction processed ${inputTokens} input tokens.` : "")
+	);
+}
+
+/**
  * Generate summaries for compaction using prepared data.
  * Returns CompactionResult - SessionManager adds id/parentId when saving.
  *
@@ -1550,6 +1596,7 @@ export async function compact(
 		tools: options?.tools,
 		fetch: options?.fetch,
 		completeImpl: options?.completeImpl,
+		identity: options?.identity,
 	};
 
 	const previousSnapcompactArchive = snapcompact.getPreservedArchive(previousPreserveData);
@@ -1564,7 +1611,10 @@ export async function compact(
 		? createSnapcompactArchiveMigrationMessage(previousSnapcompactArchiveText)
 		: undefined;
 
-	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
+	let preserveData = withAnthropicRemoteCompactionPreserveData(
+		withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined),
+		undefined,
+	);
 	const remoteMessages: AgentMessage[] = [
 		...(snapcompactArchiveMigrationMessage ? [snapcompactArchiveMigrationMessage] : []),
 		...messagesToSummarize,
@@ -1659,6 +1709,7 @@ export async function compact(
 			(summaryOptions.convertToLlm ?? defaultConvertToLlm)(remoteMessages),
 			model,
 			previousReplacementHistory,
+			openAiCompatSupportsImageDetailOriginal(model),
 		);
 		if (remoteHistory.length > 0) {
 			try {
@@ -1697,6 +1748,55 @@ export async function compact(
 		}
 	}
 
+	if (!usedRemoteCompaction && settings.remoteEnabled !== false && shouldUseAnthropicRemoteCompaction(model)) {
+		const previousProviderPayload = getAnthropicRemoteCompactionProviderPayload(previousPreserveData);
+		const previousNativeHistory: Message[] =
+			previousProviderPayload?.type === "anthropicCompactionHistory" &&
+			previousProviderPayload.provider === model.provider
+				? [
+						{
+							role: "user",
+							content: "Remote compaction preserved provider-native history for this session.",
+							providerPayload: previousProviderPayload,
+							timestamp: 0,
+						},
+					]
+				: [];
+		const remoteHistory = [
+			...previousNativeHistory,
+			...(summaryOptions.convertToLlm ?? defaultConvertToLlm)(remoteMessages),
+		];
+		if (remoteHistory.length > 0) {
+			try {
+				const remote = await withAuth(
+					apiKey,
+					key =>
+						requestAnthropicRemoteCompaction(model, key, remoteHistory, [SUMMARIZATION_SYSTEM_PROMPT], {
+							signal,
+							fetch: summaryOptions.fetch,
+							sessionId: summaryOptions.sessionId,
+							providerSessionState: summaryOptions.providerSessionState,
+							metadata: summaryOptions.metadata,
+							instructions: summaryOptions.remoteInstructions,
+							telemetry: summaryOptions.telemetry,
+							completeImpl: summaryOptions.completeImpl,
+						}),
+					{ signal },
+				);
+				preserveData = withAnthropicRemoteCompactionPreserveData(preserveData, remote);
+				usedRemoteCompaction = true;
+			} catch (err) {
+				if (signal?.aborted) throw err;
+				nativeCompactionError = selectNativeCompactionError(nativeCompactionError, err);
+				logger.warn("Anthropic remote compaction failed", {
+					error: err instanceof Error ? err.message : String(err),
+					model: model.id,
+					provider: model.provider,
+				});
+			}
+		}
+	}
+
 	if (!usedRemoteCompaction && nativeCompactionError !== undefined && !summaryOptions.remoteEndpoint) {
 		throw new NativeCompactionError(nativeCompactionError);
 	}
@@ -1711,10 +1811,8 @@ export async function compact(
 		// redundant LLM round. If a LATER compaction cannot reuse this payload,
 		// prepareCompaction re-expands the original messages and summarizes them
 		// locally then (see remotePreserveReusable).
-		const usedTokens = getCompactionV2PreserveData(preserveData)?.usedTokens ?? 0;
-		summary =
-			"Remote compaction preserved provider-native history for this session." +
-			(usedTokens > 0 ? ` Retained ${usedTokens} tokens in the provider replay payload.` : "");
+		const inputTokens = getCompactionV2PreserveData(preserveData)?.usedTokens ?? 0;
+		summary = formatRemoteCompactionSummary(inputTokens);
 	} else if (isSplitTurn && turnPrefixMessages.length > 0) {
 		// Generate both summaries in parallel
 		const [historyResult, turnPrefixResult] = await Promise.all([
@@ -1814,7 +1912,7 @@ async function generateTurnPrefixSummary(
 
 	const response = await instrumentedCompleteSimple(
 		model,
-		{ systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT], messages: summarizationMessages },
+		{ systemPrompt: summarizationSystemPrompt(options), messages: summarizationMessages },
 		{
 			maxTokens,
 			signal,

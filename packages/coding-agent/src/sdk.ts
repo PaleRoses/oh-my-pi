@@ -3289,7 +3289,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 			// Task and hub are a pair: spawning subagents without `hub` leaves the
 			// orchestrator unable to steer, wait on, or cancel what it started — and
-			// the kernel bridge refusing `tool.hub` while the prompt documents it.
+			// the eval bridge refusing `tool.hub` while the prompt documents it.
 			// Same safety pairing as checkpoint/rewind above.
 			if (profileToolNames.has("task")) profileToolNames.add("hub");
 			if (settings.get("ask.enabled")) profileToolNames.add("ask");
@@ -3785,6 +3785,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					model: targetModel ? formatModelString(targetModel) : undefined,
 				}),
 			profileContextImages: selectedSystemPromptProfile?.contextImages,
+			profileCompactionIdentity: selectedSystemPromptProfile?.compactionIdentity,
 			providerSessionId: options.providerSessionId,
 			providerPromptCacheKeySource,
 			parentEvalSessionId: options.parentEvalSessionId,

@@ -344,7 +344,7 @@ export class SessionTools {
 		return tool ? this.#wrapToolForAcpPermission(tool) : undefined;
 	}
 
-	/** Canonical allowlist advertised by and enforced for the kernel bridge. */
+	/** Canonical allowlist advertised by and enforced for the eval bridge. */
 	getEvalBridgeToolNames(): string[] {
 		return this.getEnabledToolNames();
 	}
@@ -354,15 +354,15 @@ export class SessionTools {
 		return this.#codeModeDirectToolNames;
 	}
 
-	#hasCodeModeKernelTransport(): boolean {
-		const kernelTool = this.#toolRegistry.get("kernel") as
+	#hasCodeModeEvalTransport(): boolean {
+		const evalTool = this.#toolRegistry.get("eval") as
 			| (AgentTool & { supportsCodeModeTransport?: () => boolean })
 			| undefined;
-		if (!kernelTool) return false;
+		if (!evalTool) return false;
 		// A replacement `eval` that cannot state the capability cannot be assumed
 		// to run `tool.<name>()`; demoting the direct surface behind it would
 		// leave every other tool unreachable.
-		return kernelTool.supportsCodeModeTransport?.() ?? false;
+		return evalTool.supportsCodeModeTransport?.() ?? false;
 	}
 
 	/**
@@ -662,7 +662,7 @@ export class SessionTools {
 				setting,
 				extraDirectTools,
 				enabledToolNames,
-				kernelTransportAvailable: this.#hasCodeModeKernelTransport(),
+				evalTransportAvailable: this.#hasCodeModeEvalTransport(),
 			});
 		const previous = resolve(previousModel);
 		const next = resolve(nextModel);
@@ -837,7 +837,7 @@ export class SessionTools {
 			setting: this.#host.settings.get("providers.openai-codex.codeMode"),
 			extraDirectTools: this.#host.settings.get("providers.openai-codex.codeModeDirectTools"),
 			enabledToolNames: toolNames,
-			kernelTransportAvailable: this.#hasCodeModeKernelTransport(),
+			evalTransportAvailable: this.#hasCodeModeEvalTransport(),
 		});
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		if (toolNames.includes("write") && !builtInWriteAvailable) {
@@ -870,7 +870,7 @@ export class SessionTools {
 				isMountableUnderXdev(tool),
 		);
 		const mountNames = new Set(mountCandidates.map(({ name }) => name));
-		// Demoted tools stay reachable through the kernel bridge, so nothing is
+		// Demoted tools stay reachable through the eval bridge, so nothing is
 		// mounted under xd:// while code mode restricts the direct surface.
 		if (codeMode.active) mountNames.clear();
 		const tools: AgentTool[] = [];
@@ -954,7 +954,7 @@ export class SessionTools {
 			if (this.#rebuildSystemPrompt) {
 				// The provider receives only `appliedNames`, but prompt capability and
 				// safety gates must see every enabled tool that remains callable via
-				// the Code Mode kernel bridge. The rendered tool inventory is restricted
+				// the Code Mode eval bridge. The rendered tool inventory is restricted
 				// to the direct names so the prompt never advertises bridge-only tools
 				// as provider-callable functions.
 				const promptToolNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;

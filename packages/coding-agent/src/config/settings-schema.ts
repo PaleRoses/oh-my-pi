@@ -404,7 +404,9 @@ export interface SystemPromptProfileSetting {
 	readonly contextImages?: readonly string[];
 	/** Phrase substituted for "the user" in the maintained system prompt (e.g. a name). */
 	readonly userTitle?: string;
-	/** Tool names forming the model-facing active set; session contracts (ask, yield, checkpoint/rewind pairing, memory tools) are preserved. Empty/omitted keeps the full set. */
+	/** Extra system-prompt paragraph handed to the compaction summarizer (identity/naming for handover notes). */
+	readonly compactionIdentity?: string;
+	/** Tool names forming the model-facing active set; session contracts (ask, yield, checkpoint/rewind pairing, task/hub pairing, memory tools) are preserved. Empty/omitted keeps the full set. */
 	readonly tools?: readonly string[];
 }
 
@@ -3956,7 +3958,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "Python Eval Backend",
-			description: "Allow the kernel tool to dispatch Python cells to the IPython kernel",
+			description: "Allow the eval tool to dispatch Python cells to the IPython kernel",
 		},
 	},
 
@@ -3967,7 +3969,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "JavaScript Eval Backend",
-			description: "Allow the kernel tool to dispatch JavaScript cells to the in-process runtime",
+			description: "Allow the eval tool to dispatch JavaScript cells to the in-process runtime",
 		},
 	},
 
@@ -3978,7 +3980,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "Ruby Eval Backend",
-			description: "Allow the kernel tool to dispatch Ruby cells to the persistent Ruby kernel",
+			description: "Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel",
 		},
 	},
 
@@ -3989,7 +3991,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "shell",
 			group: "Eval & Runtimes",
 			label: "Julia Eval Backend",
-			description: "Allow the kernel tool to dispatch Julia cells to the persistent Julia kernel",
+			description: "Allow the eval tool to dispatch Julia cells to the persistent Julia kernel",
 		},
 	},
 
@@ -5933,13 +5935,13 @@ export const SETTINGS_SCHEMA = {
 
 	"commit.mapReduceEnabled": { type: "boolean", default: true },
 
-	"commit.mapReduceMinFiles": { type: "number", default: 4 },
+	"commit.mapReduceThreshold": { type: "number", default: 5000 },
 
-	"commit.mapReduceMaxFileTokens": { type: "number", default: 50000 },
+	"commit.mapBatchTokenBudget": { type: "number", default: 16000 },
 
-	"commit.mapReduceTimeoutMs": { type: "number", default: 120000 },
+	"commit.cacheEnabled": { type: "boolean", default: true },
 
-	"commit.mapReduceMaxConcurrency": { type: "number", default: 5 },
+	"commit.cacheTtlDays": { type: "number", default: 14 },
 
 	"commit.changelogMaxDiffChars": { type: "number", default: 120000 },
 
@@ -6215,12 +6217,19 @@ export interface SkillsSettings {
 	disabledExtensions?: string[];
 }
 
+/** Conventional commit generation and changelog limits. */
 export interface CommitSettings {
+	/** Enable per-file map-reduce analysis above the token threshold. */
 	mapReduceEnabled: boolean;
-	mapReduceMinFiles: number;
-	mapReduceMaxFileTokens: number;
-	mapReduceTimeoutMs: number;
-	mapReduceMaxConcurrency: number;
+	/** Included diff tokens that trigger map-reduce. */
+	mapReduceThreshold: number;
+	/** Maximum prompt tokens assigned to one map batch. */
+	mapBatchTokenBudget: number;
+	/** Cache successfully parsed inference responses. */
+	cacheEnabled: boolean;
+	/** Days before cached inference responses expire; zero disables expiry. */
+	cacheTtlDays: number;
+	/** Maximum diff characters supplied to one changelog request. */
 	changelogMaxDiffChars: number;
 }
 

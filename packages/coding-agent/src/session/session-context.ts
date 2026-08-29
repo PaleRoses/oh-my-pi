@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, getAnthropicRemoteCompactionProviderPayload } from "@oh-my-pi/pi-agent-core";
 import { coerceServiceTierByFamily, type ProviderPayload, type ServiceTierByFamily } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import {
@@ -156,19 +156,25 @@ function snapcompactHistoryBlocksForContext(
 	return snapcompact.historyBlocks(archive, snapcompactHistoryBlockOptions(archive, options));
 }
 
-export function getOpenAiRemoteCompactionPayload(
+export function getRemoteCompactionProviderPayload(
 	compaction: CompactionEntry | null | undefined,
 ): ProviderPayload | undefined {
 	const candidate = compaction?.preserveData?.openaiRemoteCompaction;
-	if (!candidate || typeof candidate !== "object") return undefined;
-	const remote = candidate as { provider?: unknown; replacementHistory?: unknown };
-	if (typeof remote.provider !== "string" || remote.provider.length === 0) return undefined;
-	if (!Array.isArray(remote.replacementHistory)) return undefined;
-	return {
-		type: "openaiResponsesHistory",
-		provider: remote.provider,
-		items: remote.replacementHistory as Array<Record<string, unknown>>,
-	};
+	if (candidate && typeof candidate === "object") {
+		const remote = candidate as { provider?: unknown; replacementHistory?: unknown };
+		if (
+			typeof remote.provider === "string" &&
+			remote.provider.length > 0 &&
+			Array.isArray(remote.replacementHistory)
+		) {
+			return {
+				type: "openaiResponsesHistory",
+				provider: remote.provider,
+				items: remote.replacementHistory as Array<Record<string, unknown>>,
+			};
+		}
+	}
+	return getAnthropicRemoteCompactionProviderPayload(compaction?.preserveData);
 }
 
 function resolveSessionPath(
@@ -398,8 +404,8 @@ export function buildSessionContext(
 			appendMessage(path[i]);
 		}
 	} else if (compaction) {
-		const providerPayload = getOpenAiRemoteCompactionPayload(compaction);
-		const remoteReplacementHistory = providerPayload?.items;
+		const providerPayload = getRemoteCompactionProviderPayload(compaction);
+		const hasRemoteReplacementHistory = providerPayload !== undefined;
 
 		// Re-attach any archived snapcompact frames so the model can keep
 		// reading the archived history after every context rebuild.
@@ -426,12 +432,12 @@ export function buildSessionContext(
 		// Find compaction index in path
 		const compactionIdx = path.findIndex(e => e.type === "compaction" && e.id === compaction.id);
 
-		// The remote replacement payload (OpenAI remote compaction) carries the
-		// kept turns for the LLM context only; it is not rendered as visible
+		// A provider-native remote replacement payload carries the kept turns for
+		// the LLM context only; it is not rendered as visible
 		// messages. The collapsed display transcript must still emit the kept
 		// SessionEntry rows so a remotely-compacted session keeps its recent
 		// turns visible instead of showing only the summary and post-compaction.
-		if (!remoteReplacementHistory || options?.transcript) {
+		if (!hasRemoteReplacementHistory || options?.transcript) {
 			// Emit kept messages (before compaction, starting from firstKeptEntryId)
 			let foundFirstKept = false;
 			for (let i = 0; i < compactionIdx; i++) {

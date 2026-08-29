@@ -5,9 +5,12 @@ import {
 	compact,
 	createFileOps,
 	DEFAULT_COMPACTION_SETTINGS,
+	getPreservedAnthropicRemoteCompactionData,
 	NativeCompactionError,
 	prepareCompaction,
+	remotePreserveReusable,
 	type SessionEntry,
+	shouldUseAnthropicRemoteCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	buildCompactionV2Request,
@@ -374,6 +377,42 @@ function toolResultFor(callId: string, custom = false): ToolResultMessage {
 	};
 }
 
+describe("buildOpenAiNativeHistory multimodal tool results", () => {
+	test("encodes ReadTool images inside the native function output", () => {
+		const imageData = Buffer.from("read image").toString("base64");
+		const result: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_image|fc_call_image",
+			toolName: "read",
+			content: [
+				{ type: "text", text: "Read image file [image/png]" },
+				{ type: "image", data: imageData, mimeType: "image/png", detail: "original" },
+			],
+			isError: false,
+			timestamp: Date.now(),
+		};
+		const model = makeOpenAiModel({ provider: "openai-codex", input: ["text", "image"] });
+
+		const items = buildOpenAiNativeHistory(
+			[codexAssistant([{ callId: "call_image" }], true), result],
+			model,
+			undefined,
+			true,
+		);
+
+		const output = items.find(item => item.type === "function_call_output");
+		expect(output?.output).toEqual([
+			{ type: "input_text", text: "Read image file [image/png]" },
+			{
+				type: "input_image",
+				detail: "original",
+				image_url: `data:image/png;base64,${imageData}`,
+			},
+		]);
+		expect(items.some(item => item.type === "message" && item.role === "user")).toBe(false);
+	});
+});
+
 describe("buildOpenAiNativeHistory interleaved assistant message (#8789)", () => {
 	test("hoists a trailing text block before its tool-call batch", () => {
 		// deepseek-v4-flash on opencode-go streamed [thinking, 2 tool calls,
@@ -734,6 +773,25 @@ describe("remote compaction input forwarding", () => {
 		expect(result.rewrittenOutputs).toBe(1);
 		expect(result.input[0].output).toBe(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE);
 		expect(result.input[1]).toEqual(attachment);
+		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(15_000);
+	});
+
+	test("rewrites a native multimodal tool output atomically", () => {
+		const input = [
+			{
+				type: "function_call_output",
+				call_id: "call_1",
+				output: [
+					{ type: "input_text", text: "large tool output".repeat(1_000) },
+					{ type: "input_image", detail: "auto", image_url: "data:image/png;base64,AAAA" },
+				],
+			},
+		];
+
+		const result = trimRemoteCompactionInputToContextWindow(input, new Tokenizer(), 15_000, "compact");
+
+		expect(result.rewrittenOutputs).toBe(1);
+		expect(result.input[0].output).toBe(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE);
 		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(15_000);
 	});
 
@@ -1828,6 +1886,75 @@ describe("compact() remote compaction failure handling", () => {
 		};
 	}
 
+	function makeAnthropicModel(provider = "anthropic"): Model<"anthropic-messages"> {
+		return buildModel({
+			id: "claude-fable-5",
+			name: "Claude Fable 5",
+			api: "anthropic-messages",
+			provider,
+			baseUrl: provider === "anthropic" ? "https://api.anthropic.com" : "https://anthropic.example.test",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 32_000,
+		});
+	}
+
+	test("uses official Anthropic server compaction and preserves its replay block", async () => {
+		const model = makeAnthropicModel();
+		let requestMessages = 0;
+		const preparation = makePreparation();
+		preparation.previousPreserveData = {
+			anthropicRemoteCompaction: { provider: "anthropic", content: "previous native summary" },
+		};
+		const result = await compact(preparation, model, "test-key", undefined, undefined, {
+			completeImpl: async (_model, ctx, options) => {
+				requestMessages = ctx.messages.length;
+				const previous = ctx.messages[0];
+				expect(previous?.role === "user" ? previous.providerPayload : undefined).toEqual({
+					type: "anthropicCompactionHistory",
+					provider: "anthropic",
+					content: "previous native summary",
+				});
+				expect(options.anthropicServerCompaction).toEqual({
+					triggerTokens: 50_000,
+					pauseAfterCompaction: true,
+				});
+				return {
+					role: "assistant",
+					content: [{ type: "anthropicCompaction", content: "native compacted history" }],
+					provider: "anthropic",
+					model: model.id,
+					api: "anthropic-messages",
+					timestamp: 3,
+					stopReason: "stop",
+					usage: { ...ZERO_USAGE, orchestration: { input: 100, output: 20 } },
+				};
+			},
+		});
+
+		expect(requestMessages).toBe(3);
+		expect(getPreservedAnthropicRemoteCompactionData(result.preserveData)).toEqual({
+			provider: "anthropic",
+			content: "native compacted history",
+		});
+		expect(result.shortSummary).toBe("Remote compaction");
+		expect(remotePreserveReusable(result.preserveData, model, makePreparation().settings)).toBe(true);
+		expect(remotePreserveReusable(result.preserveData, makeOpenAiModel(), makePreparation().settings)).toBe(false);
+	});
+
+	test("rejects compatible gateways and surfaces a missing compaction block for ordered fallback", async () => {
+		const compatible = makeAnthropicModel("umans");
+		expect(shouldUseAnthropicRemoteCompaction(compatible)).toBe(false);
+
+		const error = await compact(makePreparation(), makeAnthropicModel(), "test-key", undefined, undefined, {
+			completeImpl: async (_model, _ctx, _options) => localSummaryMessage("not a compaction block"),
+		}).catch(cause => cause);
+		expect(error).toBeInstanceOf(NativeCompactionError);
+		expect(String(error)).toContain("returned 0 non-empty compaction blocks");
+	});
+
 	test("streams V2 compaction before V1 when both settings and model opt in", async () => {
 		const completeSpy = vi.spyOn(ai, "completeSimple").mockResolvedValue(localSummaryMessage("local summary"));
 		const compactionItem = { type: "compaction", encrypted_content: "enc_v2" };
@@ -1927,7 +2054,9 @@ describe("compact() remote compaction failure handling", () => {
 		const remote = getCompactionV2PreserveData(result.preserveData);
 		expect(remote?.usedTokens).toBe(55);
 		expect(remote?.replacementHistory.at(-1)).toEqual(compactionItem);
-		expect(result.summary).toContain("Remote compaction preserved provider-native history");
+		expect(result.summary).toBe(
+			"Remote compaction preserved provider-native history for this session. Compaction processed 55 input tokens.",
+		);
 		expect(completeSpy).not.toHaveBeenCalled();
 	});
 

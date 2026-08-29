@@ -17,7 +17,7 @@ const STREAMING_STRING_KEYS_BY_TOOL: Record<string, readonly string[]> = {
 	// incremental decode feeds the delegated tool renderer live inner args.
 	write: ["content"],
 	edit: ["input", "_input"],
-	kernel: ["code"],
+	eval: ["code"],
 };
 
 /** String fields the streamed-args decode reads incrementally for `toolName`. */

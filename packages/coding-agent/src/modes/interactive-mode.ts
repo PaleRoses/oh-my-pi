@@ -513,7 +513,7 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
  * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Only detached background spawns are listed: a sync task call blocks the
  * parent turn and its inline tool block already renders progress live, and
- * kernel `agent()` spawns are rendered by their own kernel cell tree.
+ * eval `agent()` spawns are rendered by their own eval cell tree.
  * Returns an empty array when nothing is running so the container can clear.
  */
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {

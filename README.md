@@ -271,7 +271,7 @@ Stealth's on by default, so pages see a normal user instead of a headless bot. T
 **Runtime**
 
 - `bash` — workspace shell with 46 in-process coreutils, optional PTY, and background-job dispatch.
-- `kernel` — persistent Python and JavaScript cells with shared prelude and tool re-entry.
+- `eval` — persistent Python and JavaScript cells with shared prelude and tool re-entry.
 
 **Code intelligence**
 

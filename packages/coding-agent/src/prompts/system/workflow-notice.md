@@ -1,8 +1,8 @@
 <system-notice>
-User message contains **workflowz** → deterministic multi-subagent workflow. Orchestrate in `kernel`; fan out when it improves thoroughness: parallel decomposition/coverage, independent or adversarial pre-commit checks, or work beyond one context (audits, migrations, broad sweeps). Overrides doing work inline when fan-out is more thorough.
+User message contains **workflowz** → deterministic multi-subagent workflow. Orchestrate in `eval`; fan out when it improves thoroughness: parallel decomposition/coverage, independent or adversarial pre-commit checks, or work beyond one context (audits, migrations, broad sweeps). Overrides doing work inline when fan-out is more thorough.
 
 <when>
-Use for decomposition + parallel coverage or independent/adversarial pre-commit cross-checks. Quick lookup/single edit: direct; no agents. {{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} — list files, scope diff, find call sites — to discover work-list; know its shape before fan-out, not task start. Chain well-scoped `kernel` calls across turns:
+Use for decomposition + parallel coverage or independent/adversarial pre-commit cross-checks. Quick lookup/single edit: direct; no agents. {{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} — list files, scope diff, find call sites — to discover work-list; know its shape before fan-out, not task start. Chain well-scoped `eval` calls across turns:
 - **Understand**: parallel subsystem readers → structured map
 - **Design**: N independent approaches, judge panel → scored synthesis
 - **Review**: dimensions → findings per dimension → adversarial verification
@@ -11,7 +11,7 @@ Use for decomposition + parallel coverage or independent/adversarial pre-commit 
 </when>
 
 <helpers>
-State persists across `kernel` calls;{{#if scoutAvailable}} scout one call, fan out next.{{else}} explore one call, fan out next.{{/if}} Every call provides:
+State persists across `eval` calls;{{#if scoutAvailable}} scout one call, fan out next.{{else}} explore one call, fan out next.{{/if}} Every call provides:
 
 - `agent(prompt, *, agent="task", label=None, schema=None, isolated=None, apply=None, merge=None, handle=False)`: run ONE subagent; return final text, or validated object with `schema` (JSON Schema dict). `schema` forces validated structured output: branch on object, not parsed prose. `agent` selects discovered agent{{#if scoutAvailable}} (`"scout"`, `"reviewer"`, …){{/if}}; `label`: artifact name. Put shared background in `local://` file referenced by each prompt, not a parameter. Subagents' final text is return value: raw data. `agent()` blocks. Recursion: `task.maxRecursionDepth`, default 2; negative disables cap.
 - `parallel(thunks)`: concurrently run zero-arg callables in bounded pool; preserve input order; return after all finish. Pool: session `task` concurrency — do not hand-tune; fan out as work divides. Raised thunk propagates; risky thunk: `try/except` for partial results. Loop closures: bind default arg (`lambda d=d: …`), else all capture final value.
@@ -20,13 +20,13 @@ State persists across `kernel` calls;{{#if scoutAvailable}} scout one call, fan 
 - `log(message)`: progress line above status tree. `phase(title)`: phase; following status lines group under it.
 - `budget`: `budget.total` output-token ceiling/`None` if unset; `budget.spent()` tokens spent this turn (main loop + kernel subagents); `budget.remaining()`/`math.inf` if total `None`; `budget.hard` enforcement. User `+Nk`: advisory, self-limit via `budget.remaining()`; `+Nk!`/Goal Mode: hard, `agent()` refuses spawn at spent ceiling. Gate loops on `budget.total` first: no user budget → `None`.
 
-All execution INLINE, synchronous within `kernel`: no background mode, resume, separate progress app. One call: one well-scoped fan-out. Chain calls/turns for phases; read each result before next-phase decision.
+All execution INLINE, synchronous within `eval`: no background mode, resume, separate progress app. One call: one well-scoped fan-out. Chain calls/turns for phases; read each result before next-phase decision.
 </helpers>
 
 <structure>
 Independent per-item chains (review → verify, fetch → extract → score): wrap WHOLE chain in one function; `parallel()` functions so items proceed independently.
 
-**Python (`kernel`, Python backend):**
+**Python (`eval`, Python backend):**
 
 ```python
 DIMENSIONS = [{"key": "bugs", "prompt": "…"}, {"key": "perf", "prompt": "…"}]
@@ -40,7 +40,7 @@ results = parallel([lambda d=d: review_and_verify(d) for d in DIMENSIONS])
 confirmed = [f for group in results for f in group if f["verdict"]["is_real"]]
 ```
 
-**JavaScript (`kernel`, JavaScript backend):**
+**JavaScript (`eval`, JavaScript backend):**
 
 ```js
 const DIMENSIONS = [{ key: "bugs", prompt: "…" }, { key: "perf", prompt: "…" }];
@@ -64,7 +64,7 @@ const confirmed = results.flat().filter((f) => f.verdict.is_real);
 
 `pipeline()` only if a stage needs ALL prior-stage results: whole-set dedup/merge, zero early exit, or comparison with other findings. Its barrier waits for slowest peer.
 
-**Python (`kernel`, Python backend):**
+**Python (`eval`, Python backend):**
 
 ```python
 phase("Find")
@@ -74,7 +74,7 @@ phase("Verify")
 verdicts = parallel([lambda f=f: agent(verify_prompt(f), schema=VERDICT_SCHEMA) for f in findings])
 ```
 
-**JavaScript (`kernel`, JavaScript backend):**
+**JavaScript (`eval`, JavaScript backend):**
 
 ```js
 phase("Find");

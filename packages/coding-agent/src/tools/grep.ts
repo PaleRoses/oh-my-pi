@@ -43,10 +43,10 @@ import {
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
 import { CAPTURE_PARAM_DESCRIPTION } from "./capture-schema";
+import { applyEvalCapture } from "./eval-capture";
 import { materializeReadUrlToFile, parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
-import { applyKernelCapture } from "./kernel-capture";
 import { formatMatchLine } from "./match-line-format";
 import type { OutputMeta } from "./output-meta";
 import {
@@ -1596,7 +1596,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				if (linesTruncated) details.linesTruncated = true;
 				const resultText = params.capture
 					? (
-							await applyKernelCapture(this.session, {
+							await applyEvalCapture(this.session, {
 								toolLabel: "grep",
 								captureName: params.capture,
 								text: output,

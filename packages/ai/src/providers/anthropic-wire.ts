@@ -149,6 +149,13 @@ export type FallbackBlockParam = {
 	to: { model: string };
 };
 
+/** Replayable provider-native boundary emitted by compact-2026-01-12. */
+export type CompactionBlockParam = {
+	type: "compaction";
+	content: string;
+	cache_control?: CacheControlEphemeral | null;
+};
+
 export type ContentBlockParam =
 	| TextBlockParam
 	| ImageBlockParam
@@ -159,7 +166,8 @@ export type ContentBlockParam =
 	| ToolSearchToolResultBlockParam
 	| ThinkingBlockParam
 	| RedactedThinkingBlockParam
-	| FallbackBlockParam;
+	| FallbackBlockParam
+	| CompactionBlockParam;
 
 /**
  * A single conversation turn.
@@ -241,9 +249,18 @@ export type FallbackParam = {
 	speed?: "fast";
 };
 
-/** Claude Code context-management beta payload. */
+export type ContextManagementEdit =
+	| { type: "clear_thinking_20251015"; keep: "all" }
+	| {
+			type: "compact_20260112";
+			trigger: { type: "input_tokens"; value: number };
+			pause_after_compaction: boolean;
+			instructions?: string;
+	  };
+
+/** Ordered Anthropic context-management edits applied before generation. */
 export type ContextManagement = {
-	edits: Array<{ type: "clear_thinking_20251015"; keep: "all" }>;
+	edits: ContextManagementEdit[];
 };
 
 export type MessageCreateParams = {
@@ -285,6 +302,7 @@ export type StopReason =
 	| "pause_turn"
 	| "refusal"
 	| "sensitive"
+	| "compaction"
 	| "model_context_window_exceeded";
 
 export type CacheCreation = {
@@ -345,13 +363,15 @@ export type ResponseContentBlock =
 	| ServerToolUseBlockParam
 	| WebSearchToolResultBlockParam
 	| ToolSearchToolResultBlockParam
-	| { type: "fallback"; from: { model: string }; to: { model: string } };
+	| { type: "fallback"; from: { model: string }; to: { model: string } }
+	| CompactionBlockParam;
 
 export type ContentBlockDelta =
 	| { type: "text_delta"; text: string }
 	| { type: "input_json_delta"; partial_json: string }
 	| { type: "thinking_delta"; thinking: string }
-	| { type: "signature_delta"; signature: string };
+	| { type: "signature_delta"; signature: string }
+	| { type: "compaction_delta"; content: string };
 
 export type StopDetails = {
 	type: string;

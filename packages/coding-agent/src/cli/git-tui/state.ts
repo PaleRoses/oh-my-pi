@@ -6,13 +6,22 @@
  * the split diff pane, and the staging/commit actions the sidebar triggers.
  */
 import * as path from "node:path";
-import { parseNumstat } from "../../commit/git/diff";
-import * as git from "../../utils/git";
+import type { VcsGitRepo, VcsNumstatEntry } from "@oh-my-pi/pi-natives";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import type { NumstatEntry } from "../../commit/types";
 
 /** SHA of git's canonical empty tree: diff base for a root commit. */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /** Files larger than this render as a placeholder instead of a diff. */
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
+
+function mapNumstat(entries: VcsNumstatEntry[]): NumstatEntry[] {
+	return entries.map(entry => ({
+		path: entry.path,
+		additions: entry.added ?? 0,
+		deletions: entry.removed ?? 0,
+	}));
+}
 
 export type ChangeKind = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
 export type ChangeArea = "unstaged" | "staged" | "commit";
@@ -75,6 +84,7 @@ export class GitModel {
 	readonly cwd: string;
 	/** Resolved SHA when the TUI is pinned to one commit (`omp git <rev>`). */
 	readonly pinnedSha: string | null;
+	readonly #repo: VcsGitRepo;
 	branch: string | null = null;
 	unstaged: ChangedFile[] = [];
 	staged: ChangedFile[] = [];
@@ -84,6 +94,7 @@ export class GitModel {
 	constructor(cwd: string, options: { pinnedSha?: string } = {}) {
 		this.cwd = cwd;
 		this.pinnedSha = options.pinnedSha ?? null;
+		this.#repo = vcs.requireGit(cwd);
 	}
 
 	/** True when the working tree and index carry no changes. */
@@ -100,22 +111,28 @@ export class GitModel {
 			return true;
 		}
 		const [statusText, branchName, headSha] = await Promise.all([
-			git.status(this.cwd, { porcelainV1: true, z: true, untrackedFiles: "all" }).catch(() => null),
-			git.branch.current(this.cwd).catch(() => null),
-			git.head.sha(this.cwd).catch(() => null),
+			this.#repo.statusPorcelain({ nulTerminated: true, untracked: "all" }).catch(() => null),
+			this.#repo.currentBranch().catch(() => null),
+			this.#repo.headSha().catch(() => null),
 		]);
 		if (statusText === null) throw new Error("Not a git repository");
 		const fingerprint = `${headSha ?? ""}\u0000${statusText}`;
 		if (fingerprint === this.#fingerprint) {
-			this.branch = branchName;
+			this.branch = branchName ?? null;
 			return false;
 		}
 		this.#fingerprint = fingerprint;
-		this.branch = branchName;
+		this.branch = branchName ?? null;
 
 		const [unstagedStat, stagedStat] = await Promise.all([
-			git.diff(this.cwd, { numstat: true, allowFailure: true }).then(parseNumstat),
-			git.diff(this.cwd, { numstat: true, cached: true, allowFailure: true }).then(parseNumstat),
+			this.#repo
+				.numstat({})
+				.then(mapNumstat)
+				.catch(() => []),
+			this.#repo
+				.numstat({ cached: true })
+				.then(mapNumstat)
+				.catch(() => []),
 		]);
 		const unstagedCounts = new Map(unstagedStat.map(entry => [entry.path, entry]));
 		const stagedCounts = new Map(stagedStat.map(entry => [entry.path, entry]));
@@ -171,9 +188,12 @@ export class GitModel {
 
 	async #loadHeadCommit(sha: string): Promise<HeadCommit | null> {
 		try {
-			const details = await git.commitDetails(this.cwd, sha);
+			const details = await this.#repo.commitDetails(sha);
 			const base = details.parents[0] ?? EMPTY_TREE;
-			const numstat = parseNumstat(await git.diff(this.cwd, { numstat: true, base, head: sha, allowFailure: true }));
+			const numstat = await this.#repo
+				.numstat({ base, head: sha })
+				.then(mapNumstat)
+				.catch(() => []);
 			const [subject = "", ...bodyLines] = details.message.split("\n");
 			return {
 				sha,
@@ -231,7 +251,8 @@ export class GitModel {
 
 	async #showFile(spec: string): Promise<string> {
 		try {
-			return await git.show(this.cwd, spec);
+			const result = await this.#repo.showBlob(spec, MAX_FILE_BYTES);
+			return result.truncated ? "" : result.data.toString("utf8");
 		} catch {
 			return "";
 		}
@@ -249,20 +270,20 @@ export class GitModel {
 
 	/** Stage one file (or everything when `file` is omitted). */
 	async stage(file?: ChangedFile): Promise<void> {
-		await git.stage.files(this.cwd, file ? [file.path] : []);
+		await this.#repo.stageFiles(file ? [file.path] : []);
 	}
 
 	/** Unstage one file (or everything when `file` is omitted). */
 	async unstage(file?: ChangedFile): Promise<void> {
-		await git.stage.reset(this.cwd, file ? [file.path] : []);
+		await this.#repo.unstage(file ? [file.path] : []);
 	}
 
 	/** Create (or amend) a commit from the staged changes. */
 	async commit(message: string, options: { amend?: boolean } = {}): Promise<void> {
-		await git.commit(this.cwd, message, { amend: options.amend });
+		await this.#repo.commitCreate(message, { amend: options.amend });
 	}
 	/** Apply a patch to the index (`cached`) and/or worktree; `reverse` undoes it. */
 	async applyPatch(patchText: string, options: { cached?: boolean; reverse?: boolean } = {}): Promise<void> {
-		await git.patch.applyText(this.cwd, patchText, options);
+		await this.#repo.applyPatch(patchText, options);
 	}
 }

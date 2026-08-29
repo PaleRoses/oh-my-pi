@@ -483,8 +483,8 @@ describe("system prompt tool inventory", () => {
 
 	it("keeps bridge-only Code Mode tools out of the inventory while safety gates see them", async () => {
 		const tools = new Map(TOOLS);
-		tools.set("kernel", {
-			label: "Kernel",
+		tools.set("eval", {
+			label: "Eval",
 			description: "Runs code cells.",
 			parameters: { type: "object", properties: {} },
 		});
@@ -493,8 +493,8 @@ describe("system prompt tool inventory", () => {
 			contextFiles: [],
 			skills: [],
 			rules: [],
-			toolNames: ["kernel", "read", "computer"],
-			directToolNames: ["kernel"],
+			toolNames: ["eval", "read", "computer"],
+			directToolNames: ["eval"],
 			tools,
 			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
 			nativeTools: true,
@@ -522,7 +522,7 @@ describe("system prompt tool inventory", () => {
 		}
 		expect(inventory).not.toContain("- `browser`");
 		expect(inventory).not.toContain("- `task`");
-		expect(inventory).not.toContain("- `kernel`");
+		expect(inventory).not.toContain("- `eval`");
 	});
 
 	it("omits kernel prompt guidance when every eval backend is disabled", async () => {
@@ -533,16 +533,16 @@ describe("system prompt tool inventory", () => {
 			"eval.jl": false,
 		});
 		const session = makeToolSession(settings);
-		const tools = await createTools(session, ["bash", "kernel"]);
+		const tools = await createTools(session, ["bash", "eval"]);
 		const toolNames = tools.map(tool => tool.name);
 		const bash = tools.find(tool => tool.name === "bash");
 
 		expect(toolNames).toContain("bash");
-		expect(toolNames).not.toContain("kernel");
+		expect(toolNames).not.toContain("eval");
 		expect(bash?.description).toContain("purpose-built tool");
 		expect(bash?.description).not.toContain("kernel` cell");
-		expect(bash?.description).not.toContain("use `kernel` cells");
-		expect(bash?.description).not.toContain("Prefer `kernel`");
+		expect(bash?.description).not.toContain("use `eval` cells");
+		expect(bash?.description).not.toContain("Prefer `eval`");
 		expect(bash?.description).not.toContain("`grep` tool");
 		expect(bash?.description).not.toContain("`ls` → `read`");
 		expect(bash?.description).not.toContain("`find` → the `glob` tool");
@@ -561,7 +561,7 @@ describe("system prompt tool inventory", () => {
 		const text = systemPrompt.join("\n\n");
 
 		expect(text).not.toContain("Default for any compute");
-		expect(text).not.toContain("use `kernel` cells");
+		expect(text).not.toContain("use `eval` cells");
 	});
 
 	it("SDK wrapper renders provided tools instead of the fallback inventory", async () => {

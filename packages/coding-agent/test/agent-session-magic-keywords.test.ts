@@ -24,9 +24,9 @@ const mockTaskTool: AgentTool = {
 };
 
 const mockEvalTool: AgentTool = {
-	name: "kernel",
-	label: "Kernel",
-	description: "Mock kernel tool",
+	name: "eval",
+	label: "Eval",
+	description: "Mock eval tool",
 	parameters: type({}),
 	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
 };
@@ -136,10 +136,10 @@ describe("AgentSession magic keyword settings", () => {
 		}>;
 		const notice = promptMessages.find(message => message.customType === "workflow-notice");
 		expect(notice?.customType).toBe("workflow-notice");
-		expect(notice?.content).toContain("`kernel`");
+		expect(notice?.content).toContain("`eval`");
 		expect(notice?.content).toContain("`parallel(thunks)`");
-		expect(notice?.content).toContain("**Python (`kernel`, Python backend):**");
-		expect(notice?.content).toContain("**JavaScript (`kernel`, JavaScript backend):**");
+		expect(notice?.content).toContain("**Python (`eval`, Python backend):**");
+		expect(notice?.content).toContain("**JavaScript (`eval`, JavaScript backend):**");
 	});
 
 	it("updates the workflowz notice when scout is disabled during the session", async () => {

@@ -1,7 +1,8 @@
-Update existing handoff summary in <previous-summary> tags from new messages above for another LLM to resume.
+Update the existing handover notes in <previous-summary> tags from new messages above, keeping the assistant's first-person voice ("I" = the assistant), for the assistant's next instance to resume.
 
 MUST:
 - preserve all previous-summary information; add new progress, decisions, context.
+- write in first person; convert any third-person references to the assistant into first person, and refer to the user by name where known.
 - Progress: move completed "In Progress" items to "Done".
 - update "Next Steps" for completed work.
 - preserve exact file paths, function names, error messages.

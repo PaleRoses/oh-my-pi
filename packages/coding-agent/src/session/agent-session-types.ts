@@ -246,6 +246,8 @@ export interface AgentSessionConfig {
 	assertSystemPromptProfileCompatible?: (model: Model | undefined) => void;
 	/** Absolute image paths from the routed prompt profile, injected as standing context at conversation start. */
 	profileContextImages?: readonly string[];
+	/** Identity paragraph from the routed prompt profile, appended to the compaction summarizer's system prompt. */
+	profileCompactionIdentity?: string;
 	/** Provider-facing session ID override. */
 	providerSessionId?: string;
 	/** Whether the provider prompt-cache key was explicit or fork-inherited. */

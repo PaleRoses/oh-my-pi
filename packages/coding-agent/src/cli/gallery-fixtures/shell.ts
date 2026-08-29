@@ -1,4 +1,4 @@
-/** Gallery fixtures for the shell tools (bash, kernel, launch). */
+/** Gallery fixtures for the shell tools (bash, eval, launch). */
 import type { GalleryFixture } from "./types";
 
 export const shellFixtures: Record<string, GalleryFixture> = {
@@ -138,8 +138,8 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	kernel: {
-		label: "Kernel",
+	eval: {
+		label: "Eval",
 		streamingArgs: {
 			language: "py",
 			code: 'import json\nfrom pathlib import Path\n\ndata = json.loads(Path("package.js',
