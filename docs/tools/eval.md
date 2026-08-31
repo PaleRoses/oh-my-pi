@@ -9,7 +9,6 @@
 - Backend enablement: `packages/coding-agent/src/tools/eval-backends.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/eval.md`
 - Code Mode transport (Codex `code_mode_only` sessions demote non-essential tools into an eval bridge): `packages/coding-agent/src/tools/eval-format/code-mode-declarations.ts`, prompt `packages/coding-agent/src/prompts/tools/eval-code-mode.md`
-- Result capture for `bash`, `grep`, and `read`: `packages/coding-agent/src/tools/eval-capture.ts`, schema `packages/coding-agent/src/tools/capture-schema.ts`.
 - Shared contracts: `packages/coding-agent/src/eval/backend.ts`, `types.ts`, `executor-base.ts`, `kernel-base.ts`
 - Host bridges: `packages/coding-agent/src/eval/agent-bridge.ts`, `completion-bridge.ts`, `concurrency-bridge.ts`, `budget-bridge.ts`
 - JavaScript: `packages/coding-agent/src/eval/js/`
@@ -45,11 +44,9 @@ Example across three calls:
 {"language":"py","title":"reuse state","code":"display(sorted(data['dependencies']))"}
 ```
 
-## xdev manual and result capture
+## xdev manual
 
 In an xdev-transport session, the eval tool advertises a short contract and its complete per-language reference manual is available through `read xd://eval`; without that transport, the full manual stays inline. Before a first cell uses prelude helpers beyond `read`/`write`/`display`, read `xd://eval`: call shapes differ by language.
-
-`capture` is an explicit companion parameter of `bash`, `grep`, and `read`, not an `eval` input. It binds full output to a valid, non-reserved Python variable in the persistent session kernel, stores the full text in an artifact, and replaces visible text with an artifact-backed stub whose preview has at most five lines. Capture requires an available Python backend. An invalid name or artifact/kernel failure retains the originating tool output with a warning instead of failing that tool.
 
 ## Backend availability
 
