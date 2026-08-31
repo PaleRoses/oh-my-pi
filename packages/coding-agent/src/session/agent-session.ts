@@ -152,7 +152,7 @@ import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState } from "../goals/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
-import type { DaemonCompletionNotification, ScheduleFireNotification } from "../launch/protocol";
+import type { DaemonCompletionNotification } from "../launch/protocol";
 import type { MemoryBackendIdentity, MemoryBackendStartOptions } from "../memory-backend/types";
 import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
@@ -6595,28 +6595,6 @@ export class AgentSession {
 		);
 		this.yieldQueue.requestIdleFlush();
 		return delivered;
-	}
-
-	/**
-	 * Deliver a broker-owned schedule fire into this session through the IRC
-	 * path with a synthetic `schedule:<name>` sender: streaming → injected as a
-	 * non-interrupting aside at the next step boundary, idle → wake turn. The
-	 * promise resolves only after this still-current session accepts the fire.
-	 */
-	queueScheduleFire(notification: ScheduleFireNotification): Promise<"injected" | "woken"> {
-		if (this.#isDisposed) return Promise.reject(new Error("Session disposed before schedule fire delivery"));
-		const { fireId, schedule, firedAt } = notification;
-		const sessionId = this.sessionManager.getSessionId();
-		if (schedule.sessionId !== sessionId) {
-			return Promise.reject(new Error("Schedule fire belongs to a different session"));
-		}
-		return this.#irc.deliver({
-			id: fireId,
-			from: `schedule:${schedule.name}`,
-			to: sessionId,
-			body: schedule.message,
-			ts: firedAt,
-		});
 	}
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {

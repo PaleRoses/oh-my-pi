@@ -33,8 +33,6 @@ describe("launch broker protocol compatibility", () => {
 			projectDir,
 			request: async () => legacyResult,
 			close() {},
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
@@ -63,8 +61,6 @@ describe("launch broker protocol compatibility", () => {
 		const client = {
 			projectDir,
 			request: async () => legacyResult,
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => () => {},
 			close() {},
 		} satisfies DaemonBrokerClient;
@@ -98,8 +94,6 @@ describe("launch broker protocol compatibility", () => {
 		const registered: string[] = [];
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: (registeredOwner: string) => {
 				registered.push(registeredOwner);
 				return () => {};
@@ -148,8 +142,6 @@ describe("launch broker protocol compatibility", () => {
 		const registered: string[] = [];
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: (registeredOwner: string) => {
 				registered.push(registeredOwner);
 				return () => {};
@@ -187,8 +179,6 @@ describe("launch broker protocol compatibility", () => {
 		const registered: string[] = [];
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: (registeredOwner: string) => {
 				registered.push(registeredOwner);
 				return () => {};
@@ -247,8 +237,6 @@ describe("launch broker protocol compatibility", () => {
 		} as const;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: (registeredOwner: string) => {
 				registered.push(registeredOwner);
 				return () => {};
@@ -279,8 +267,6 @@ describe("launch broker protocol compatibility", () => {
 		let preservedPending = false;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => options => {
 				preservedPending = options?.preservePending === true;
 			},
@@ -330,8 +316,6 @@ describe("launch broker protocol compatibility", () => {
 		} satisfies DaemonCompletionNotification;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: (_owner: string, sink: (notification: DaemonCompletionNotification) => void) => {
 				deliver = sink;
 				return options => {
@@ -370,8 +354,6 @@ describe("launch broker protocol compatibility", () => {
 		let unregisters = 0;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => () => {
 				unregisters++;
 			},
@@ -402,8 +384,6 @@ describe("launch broker protocol compatibility", () => {
 		let disposeRemovals = 0;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => options => {
 				unregisters++;
 				preservedPending = options?.preservePending === true;
@@ -439,8 +419,6 @@ describe("launch broker protocol compatibility", () => {
 		let unregisters = 0;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => () => {
 				unregisters++;
 			},
@@ -486,8 +464,6 @@ describe("launch broker protocol compatibility", () => {
 		let unregisters = 0;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => () => {
 				unregisters++;
 			},
@@ -521,8 +497,6 @@ describe("launch broker protocol compatibility", () => {
 		let requests = 0;
 		const client = {
 			projectDir,
-			onScheduleFire: () => () => {},
-
 			onCompletion: () => () => {
 				unregisters++;
 			},

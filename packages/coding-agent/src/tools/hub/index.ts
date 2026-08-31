@@ -64,7 +64,6 @@ import {
 	messagingRenderResult,
 	normalizeIrcTimeoutMs,
 } from "./messaging";
-import { executeSchedule, type ScheduleParams } from "./schedule";
 import {
 	DEFAULT_HUB_LIST_LIMIT,
 	type HubDetails,
@@ -80,10 +79,10 @@ export * from "./types";
 
 const hubSchema = type({
 	op: type(
-		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe' | 'schedule'",
+		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
 	).describe("hub operation"),
 	"to?": type("string").describe('send: recipient agent id or "all"'),
-	"message?": type("string").describe("send: message body; schedule: message delivered when the schedule fires"),
+	"message?": type("string").describe("send: message body"),
 	"replyTo?": type("string").describe("send: message id being answered"),
 	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
 	"from?": type("string").describe("wait: only accept a message from this agent id"),
@@ -94,16 +93,7 @@ const hubSchema = type({
 	"limit?": type("number > 0").describe(
 		`list: max peer rows; default ${DEFAULT_HUB_LIST_LIMIT}, max ${MAX_HUB_LIST_LIMIT}`,
 	),
-	"name?": type("string <= 48").describe(
-		"process ops: stable project-scoped launch name; schedule: schedule name (upsert/clear key)",
-	),
-	"list?": type("boolean").describe("schedule: list schedules instead of setting/clearing"),
-	"clear?": type("boolean").describe("schedule: clear the schedule named by `name`"),
-	"at?": type("string > 0").describe("schedule: ISO-8601 datetime for a one-shot fire"),
-	"every?": type("string > 0").describe("schedule: repeat interval duration like '20m' or '2h'"),
-	"while?": type("string <= 48").describe(
-		"schedule: cancel the schedule (instead of firing) while this daemon is not live",
-	),
+	"name?": type("string <= 48").describe("process ops: stable project-scoped launch name"),
 	"application?": type("string > 0").describe("start: executable or application path"),
 	"args?": type("string[]").describe("start: argv passed directly to the application"),
 	"env?": type({ "[string]": "string" }).describe("start: extra environment variables"),
@@ -162,9 +152,6 @@ function hubApproval(params: unknown): ToolApprovalDecision {
 		case "logs":
 		case "describe":
 			return "read";
-		case "schedule":
-			// Listing is read-tier; set/clear mutate broker state.
-			return "list" in params && params.list === true ? "read" : "exec";
 		case "send": {
 			// Peer DMs are read-tier; writing to a process stdin is exec-tier.
 			const name = "name" in params ? params.name : undefined;
@@ -259,29 +246,6 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			caption: "Block until a process is ready",
 			call: { op: "wait", name: "web", for: "ready", timeout: 30 },
 		},
-		{
-			caption: "Re-enter this session at 9am",
-			call: {
-				op: "schedule",
-				name: "morning",
-				message: "It's 9am — re-enter and pick up today's plan.",
-				at: "2026-08-06T09:00:00",
-			},
-		},
-		{
-			caption: "Poke this session every 2h while a daemon runs",
-			call: {
-				op: "schedule",
-				name: "checkin",
-				message: "2h check-in while the build daemon runs.",
-				every: "2h",
-				while: "web",
-			},
-		},
-		{
-			caption: "List schedules",
-			call: { op: "schedule", list: true },
-		},
 	];
 
 	constructor(private readonly session: ToolSession) {
@@ -363,8 +327,6 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			case "restart":
 			case "describe":
 				return this.#launch(params, params.op === "ps" ? "list" : params.op, signal);
-			case "schedule":
-				return this.#schedule(params, signal);
 			default:
 				return hubErrorResult("Unknown hub op.", { op: params.op });
 		}
@@ -393,15 +355,6 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		}
 		const { op: _hubOp, ...rest } = params;
 		return executeLaunch(this.session, { ...rest, op }, signal);
-	}
-
-	/** Route a schedule op to the broker-owned schedules store, honoring `launch.enabled`. */
-	async #schedule(params: HubParams, signal?: AbortSignal): Promise<AgentToolResult<HubDetails>> {
-		if (!this.session.settings.get("launch.enabled")) {
-			return hubErrorResult("Process supervision is disabled (launch.enabled=false).", { op: params.op });
-		}
-		const { op: _hubOp, ...rest } = params;
-		return executeSchedule(this.session, { ...rest, op: "schedule" } satisfies ScheduleParams, signal);
 	}
 
 	/**

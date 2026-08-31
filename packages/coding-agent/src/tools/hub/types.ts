@@ -7,14 +7,12 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { AsyncJobType } from "../../async";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
-import type { ScheduleSnapshot } from "../../launch/protocol";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
 /**
  * Hub operations: messaging (`send`/`wait`/`inbox`/`list`), jobs
- * (`wait`/`cancel`/`jobs`), process supervision (`start`/`ps`/`logs`/
- * `stop`/`restart`/`describe`, plus `send`/`wait` when they carry `name`),
- * and broker-owned schedules (`schedule`).
+ * (`wait`/`cancel`/`jobs`), and process supervision (`start`/`ps`/`logs`/
+ * `stop`/`restart`/`describe`, plus `send`/`wait` when they carry `name`).
  */
 export type HubOp =
 	| "send"
@@ -28,8 +26,7 @@ export type HubOp =
 	| "logs"
 	| "stop"
 	| "restart"
-	| "describe"
-	| "schedule";
+	| "describe";
 
 /** Peer row surfaced by `op:"list"`. */
 export interface HubPeerInfo {
@@ -114,8 +111,6 @@ export interface CoordinationDetails {
 	/** Present on `op:"list"`: addressable running/idle/parked plus page size. */
 	counts?: HubRosterCounts;
 	jobs?: JobSnapshot[];
-	/** schedule list: current broker-owned schedules. */
-	schedules?: ScheduleSnapshot[];
 	cancelled?: { id: string; status: CancelStatus }[];
 	/** Running subagents not represented by a job row in this result. */
 	agents?: AgentActivitySnapshot[];

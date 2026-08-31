@@ -17,7 +17,7 @@ import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
 import type { LocalProtocolOptions } from "../internal-urls";
-import type { DaemonCompletionNotification, ScheduleFireNotification } from "../launch/protocol";
+import type { DaemonCompletionNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
@@ -435,8 +435,6 @@ export interface ToolSession {
 	queueDeferredMessage?(message: CustomMessage): void;
 	/** Queue a broker supervised-process completion for the owning session. */
 	queueLaunchCompletion?(notification: DaemonCompletionNotification): Promise<void>;
-	/** Deliver a broker-owned schedule fire into this session through the IRC path. */
-	queueScheduleFire?(notification: ScheduleFireNotification): Promise<"injected" | "woken">;
 	/** Register cleanup that runs when this session is disposed; returns a handle that removes the cleanup. */
 	registerDisposeCallback?(callback: () => void): (() => void) | void;
 	/** Register cleanup that runs when this ToolSession adopts a different session ID. */

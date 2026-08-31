@@ -27,10 +27,6 @@ import {
 	parseDaemonSpec,
 	parseDaemonWireMessage,
 	parseDaemonWireRequest,
-	parseScheduleSnapshot,
-	type ScheduleFireNotification,
-	type ScheduleSnapshot,
-	type ScheduleSpec,
 } from "./protocol";
 import { resolveDaemonSpawnOptions } from "./spawn-options";
 import { renderTerminalOutput } from "./terminal-output";
@@ -53,15 +49,6 @@ const PID_FILE = "broker.pid";
 const META_FILE = "meta.json";
 const LOG_FILE = "output.log";
 const PREVIOUS_LOG_FILE = "output.previous.log";
-const SCHEDULES_FILE = "schedules.json";
-/**
- * Cap on a single schedule timer. `setTimeout` delays beyond 2^31-1 ms overflow
- * and fire immediately (with a Node warning), so long-future schedules re-arm
- * through the cap instead.
- */
-const MAX_SCHEDULE_TIMER_DELAY_MS = 0x7fffffff;
-/** Minimum spacing between automatic retries of an uncommitted due transition. */
-const SCHEDULE_PERSIST_RETRY_BACKOFF_MS = 5_000;
 const DAEMON_SPAWN_OPTIONS = resolveDaemonSpawnOptions({
 	platform: process.platform,
 	hostHasInheritableConsole: hostHasInheritableConsole(),
@@ -109,43 +96,6 @@ interface BrokerLease {
 	instanceId: string;
 }
 
-/** One broker-owned schedule with its next due time and fire counter. */
-interface BrokerSchedule {
-	spec: ScheduleSpec;
-	nextDueAt: number;
-	firedCount: number;
-}
-
-/** Durable schedule state persisted in `runtimeDir/schedules.json`. */
-interface PersistedSchedules {
-	schedules: ScheduleSnapshot[];
-	pendingFires: ScheduleFireNotification[];
-}
-/** A private candidate snapshot held only while a due transition retries persistence. */
-interface FailedDueScheduleTransaction {
-	state: ScheduleState;
-	fires: ScheduleFireNotification[];
-}
-
-/** A complete schedule snapshot whose authority transfers only after rename. */
-interface ScheduleState {
-	schedules: Map<string, BrokerSchedule>;
-	pendingFires: Map<string, Map<string, ScheduleFireNotification>>;
-}
-
-interface ScheduleTransaction<T> {
-	changed: boolean;
-	result: T;
-}
-
-function scheduleKey(schedule: Pick<ScheduleSpec, "sessionId" | "name">): string {
-	return `${String(schedule.sessionId.length)}:${schedule.sessionId}${schedule.name}`;
-}
-
-function scheduleSnapshot(schedule: BrokerSchedule): ScheduleSnapshot {
-	return { ...schedule.spec, nextDueAt: schedule.nextDueAt, firedCount: schedule.firedCount };
-}
-
 interface DaemonLogRead {
 	text: string;
 	terminalOutput: string;
@@ -164,12 +114,8 @@ function settledState(state: DaemonSnapshot["state"]): boolean {
 	return terminalState(state) || state === "restarting";
 }
 
-function publishesOwnerSubscriptions(request: DaemonWireRequest): boolean {
-	return (
-		request.completionEvents === true &&
-		(request.completionAcks?.length ?? 0) === 0 &&
-		(request.scheduleFireAcks?.length ?? 0) === 0
-	);
+function publishesCompletionOwners(request: DaemonWireRequest): boolean {
+	return request.completionEvents === true && (request.completionAcks?.length ?? 0) === 0;
 }
 
 /**
@@ -423,16 +369,6 @@ class DaemonBroker {
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<net.Socket>();
-	/** Broker-owned schedules keyed by (`sessionId`, `name`); committed only after persistence. */
-	#schedules = new Map<string, BrokerSchedule>();
-	/** Durable unacknowledged fires keyed by (`sessionId`, `name`), then fire id. */
-	#pendingScheduleFires = new Map<string, Map<string, ScheduleFireNotification>>();
-	#scheduleTimer: NodeJS.Timeout | undefined;
-	#schedulePersistQueue: Promise<void> = Promise.resolve();
-	/** A failed due transition remains private here so its fire id is retried exactly. */
-	#failedDueScheduleTransaction: FailedDueScheduleTransaction | undefined;
-	/** Next automatic retry of a private due transition; cleared only by a durable write. */
-	#schedulePersistRetryAt: number | undefined;
 	#server: net.Server | undefined;
 	#idleTimer: NodeJS.Timeout | undefined;
 	#shuttingDown = false;
@@ -454,7 +390,6 @@ class DaemonBroker {
 
 	async run(): Promise<void> {
 		await this.#recoverRecords();
-		await this.#recoverSchedules();
 		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
 		const server = net.createServer(socket => this.#accept(socket));
 		this.#server = server;
@@ -473,9 +408,6 @@ class DaemonBroker {
 		this.#shuttingDown = true;
 		clearTimeout(this.#idleTimer);
 		this.#idleTimer = undefined;
-		// A pending schedule timer would keep the event loop alive after shutdown.
-		clearTimeout(this.#scheduleTimer);
-		this.#scheduleTimer = undefined;
 		for (const record of this.#records.values()) {
 			const detached = record.spec.detached && !record.stopRequested && record.snapshot.pid !== undefined;
 			if (!detached && !terminalState(record.snapshot.state)) await this.#stopRecord(record, 2_000);
@@ -484,7 +416,6 @@ class DaemonBroker {
 			await record.persistQueue;
 		}
 		this.#ownerSockets.clear();
-		await this.#schedulePersistQueue;
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
 		this.#clients.clear();
@@ -581,8 +512,7 @@ class DaemonBroker {
 					}
 				}
 			}
-			await this.#ackScheduleFires(socket, request.completionSubscriptionId, request.scheduleFireAcks ?? []);
-			if (publishesOwnerSubscriptions(request)) {
+			if (publishesCompletionOwners(request)) {
 				const replayOwners = new Set(request.completionReplays ?? []);
 				const activeOwners = new Set(request.owners ?? []);
 				const detachedOwners = new Set(request.detachedOwners ?? []);
@@ -605,14 +535,6 @@ class DaemonBroker {
 					if (previous?.socket === socket && !replayOwners.has(owner)) continue;
 					for (const completion of this.#pendingCompletions.get(owner)?.values() ?? []) {
 						socket.write(`${JSON.stringify(completion)}\n`);
-					}
-					// Replay every unacknowledged schedule fire for this session on a
-					// fresh subscription (reconnect or broker restart). Replays stay
-					// pending until the receiving client acknowledges acceptance.
-					for (const pending of this.#pendingScheduleFires.values()) {
-						for (const fire of pending.values()) {
-							if (fire.schedule.sessionId === owner) socket.write(`${JSON.stringify(fire)}\n`);
-						}
 					}
 				}
 				for (const owner of detachedOwners) {
@@ -666,372 +588,9 @@ class DaemonBroker {
 				await this.#refreshDetached(record);
 				return { op: "describe", daemon: record.snapshot, spec: record.spec };
 			}
-			case "schedule-set":
-				return this.#scheduleSet(operation.spec);
-			case "schedule-list":
-				return { op: "schedule-list", schedules: this.#scheduleSnapshots() };
-			case "schedule-clear":
-				return this.#scheduleClear(operation.name, operation.sessionId);
 			case "shutdown":
 				return { op: "shutdown" };
 		}
-	}
-
-	async #ackScheduleFires(socket: net.Socket, subscriptionId: string | undefined, fireIds: string[]): Promise<void> {
-		const changed = await this.#scheduleTransaction(state => {
-			let changed = false;
-			for (const fireId of fireIds) {
-				for (const [key, pending] of state.pendingFires) {
-					const fire = pending.get(fireId);
-					if (!fire) continue;
-					const registration = this.#ownerSockets.get(fire.schedule.sessionId);
-					if (!registration || registration.socket !== socket || registration.subscriptionId !== subscriptionId) {
-						continue;
-					}
-					pending.delete(fireId);
-					if (pending.size === 0) state.pendingFires.delete(key);
-					changed = true;
-					break;
-				}
-			}
-			return { changed, result: changed };
-		});
-		if (changed) this.#scheduleIdleShutdown();
-	}
-
-	async #scheduleSet(spec: ScheduleSpec): Promise<DaemonRpcResult> {
-		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(spec.name)) {
-			throw new Error("Schedule name must be 1-48 letters, numbers, dots, underscores, or hyphens");
-		}
-		const schedule = await this.#scheduleTransaction(state => {
-			const schedule: BrokerSchedule = {
-				spec,
-				nextDueAt: spec.at ?? Date.now() + (spec.everyMs ?? 0),
-				firedCount: 0,
-			};
-			const key = scheduleKey(spec);
-			// An upsert replaces the whole schedule and every unacknowledged fire
-			// for that same session/name pair, never a same-named sibling session.
-			state.schedules.set(key, schedule);
-			state.pendingFires.delete(key);
-			return { changed: true, result: schedule };
-		});
-		this.#armScheduleTimer();
-		return { op: "schedule-set", schedule: scheduleSnapshot(schedule) };
-	}
-
-	async #scheduleClear(name: string, sessionId: string): Promise<DaemonRpcResult> {
-		const key = scheduleKey({ name, sessionId });
-		await this.#scheduleTransaction(state => {
-			const deletedSchedule = state.schedules.delete(key);
-			const deletedPendingFires = state.pendingFires.delete(key);
-			if (!deletedSchedule && !deletedPendingFires) {
-				const names = [...state.schedules.values()]
-					.filter(schedule => schedule.spec.sessionId === sessionId)
-					.map(schedule => schedule.spec.name);
-				const available = names.length > 0 ? `. Available: ${names.join(", ")}` : "";
-				throw new Error(`Unknown schedule ${name}${available}`);
-			}
-			return { changed: true, result: undefined };
-		});
-		this.#armScheduleTimer();
-		this.#scheduleIdleShutdown();
-		return { op: "schedule-clear", name, sessionId };
-	}
-
-	#scheduleSnapshots(): ScheduleSnapshot[] {
-		return [...this.#schedules.values()]
-			.map(scheduleSnapshot)
-			.sort(
-				(left, right) =>
-					left.nextDueAt - right.nextDueAt ||
-					left.sessionId.localeCompare(right.sessionId) ||
-					left.name.localeCompare(right.name),
-			);
-	}
-
-	/**
-	 * Single re-armed timer for the next due schedule. A pending timer keeps the
-	 * broker alive only until a future schedule fires; durable pending fires can
-	 * replay from a later broker after idle shutdown.
-	 */
-	#armScheduleTimer(): void {
-		if (this.#scheduleTimer) {
-			clearTimeout(this.#scheduleTimer);
-			this.#scheduleTimer = undefined;
-		}
-		let nextDueAt: number | undefined;
-		for (const schedule of this.#schedules.values()) {
-			if (nextDueAt === undefined || schedule.nextDueAt < nextDueAt) nextDueAt = schedule.nextDueAt;
-		}
-		if (nextDueAt === undefined || this.#shuttingDown) return;
-		const wakeAt =
-			this.#failedDueScheduleTransaction === undefined || this.#schedulePersistRetryAt === undefined
-				? nextDueAt
-				: Math.max(nextDueAt, this.#schedulePersistRetryAt);
-		const delay = Math.min(Math.max(0, wakeAt - Date.now()), MAX_SCHEDULE_TIMER_DELAY_MS);
-		this.#scheduleTimer = setTimeout(() => {
-			this.#scheduleTimer = undefined;
-			void this.#processDueSchedules(Date.now()).catch(error => {
-				logger.warn("Failed to persist due schedules", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-			});
-		}, delay);
-	}
-
-	async #processDueSchedules(now: number): Promise<void> {
-		if (this.#shuttingDown) return;
-		let changed = false;
-		try {
-			changed = await this.#enqueueScheduleTransaction(async () => {
-				let transactionChanged = await this.#flushFailedDueScheduleTransaction();
-				if (this.#failedDueScheduleTransaction !== undefined) return false;
-				const state = this.#cloneScheduleState();
-				const fires: ScheduleFireNotification[] = [];
-				for (const [key, schedule] of [...state.schedules]) {
-					if (schedule.nextDueAt > now) continue;
-					if (schedule.spec.whileDaemon !== undefined && !this.#scheduleGuardAlive(schedule.spec.whileDaemon)) {
-						state.schedules.delete(key);
-						state.pendingFires.delete(key);
-						transactionChanged = true;
-						continue;
-					}
-					fires.push(this.#fireSchedule(state, key, schedule, now));
-					transactionChanged = true;
-				}
-				if (fires.length === 0 && !transactionChanged) return false;
-				try {
-					await this.#writeSchedules(state);
-				} catch (error) {
-					this.#failedDueScheduleTransaction = { state, fires };
-					this.#schedulePersistRetryAt = Date.now() + SCHEDULE_PERSIST_RETRY_BACKOFF_MS;
-					throw error;
-				}
-				this.#commitScheduleState(state);
-				this.#schedulePersistRetryAt = undefined;
-				this.#notifyPendingFires(fires);
-				return true;
-			});
-		} finally {
-			this.#armScheduleTimer();
-			if (changed) this.#scheduleIdleShutdown();
-		}
-	}
-
-	#fireSchedule(state: ScheduleState, key: string, schedule: BrokerSchedule, now: number): ScheduleFireNotification {
-		schedule.firedCount++;
-		if (schedule.spec.everyMs !== undefined) {
-			// Re-arm from the due time. When the loop ran very late (recovery after
-			// downtime), skip whole missed beats so a long outage never produces a
-			// fire storm; the phase is preserved. Past-due recovery fires once.
-			do {
-				schedule.nextDueAt += schedule.spec.everyMs;
-			} while (schedule.nextDueAt <= now);
-		} else {
-			state.schedules.delete(key);
-		}
-		const fire: ScheduleFireNotification = {
-			event: "schedule-fire",
-			fireId: crypto.randomUUID(),
-			schedule: scheduleSnapshot(schedule),
-			firedAt: now,
-		};
-		const pending = state.pendingFires.get(key) ?? new Map<string, ScheduleFireNotification>();
-		pending.set(fire.fireId, fire);
-		state.pendingFires.set(key, pending);
-		return fire;
-	}
-
-	#notifyPendingFires(fires: Iterable<ScheduleFireNotification>): void {
-		for (const fire of fires) {
-			const pending = this.#pendingScheduleFires.get(scheduleKey(fire.schedule));
-			if (pending?.has(fire.fireId)) this.#notifyScheduleFire(fire);
-		}
-	}
-
-	#notifyScheduleFire(fire: ScheduleFireNotification): void {
-		const registration = this.#ownerSockets.get(fire.schedule.sessionId);
-		if (!registration || registration.socket.destroyed) return;
-		registration.socket.write(`${JSON.stringify(fire)}\n`);
-	}
-
-	#scheduleGuardAlive(daemonName: string): boolean {
-		const record = this.#records.get(daemonName);
-		if (!record) return false;
-		return (
-			record.snapshot.state === "starting" ||
-			record.snapshot.state === "running" ||
-			record.snapshot.state === "ready"
-		);
-	}
-
-	/** Cancel every schedule guarded by `daemonName` once that daemon is no longer live. */
-	async #cancelSchedulesForDaemon(daemonName: string): Promise<void> {
-		const changed = await this.#scheduleTransaction(state => {
-			let changed = false;
-			for (const [key, schedule] of state.schedules) {
-				if (schedule.spec.whileDaemon !== daemonName) continue;
-				state.schedules.delete(key);
-				state.pendingFires.delete(key);
-				changed = true;
-			}
-			return { changed, result: changed };
-		});
-		if (changed) {
-			this.#armScheduleTimer();
-			this.#scheduleIdleShutdown();
-		}
-	}
-
-	#cloneScheduleState(): ScheduleState {
-		return {
-			schedules: new Map([...this.#schedules].map(([key, schedule]) => [key, { ...schedule }])),
-			pendingFires: new Map([...this.#pendingScheduleFires].map(([key, pending]) => [key, new Map(pending)])),
-		};
-	}
-
-	#enqueueScheduleTransaction<T>(operation: () => Promise<T>): Promise<T> {
-		const transaction = this.#schedulePersistQueue.then(operation);
-		// Preserve failure for the originating operation while keeping the serial
-		// transaction owner available to retry the next durable transition.
-		this.#schedulePersistQueue = transaction.then(
-			() => undefined,
-			() => undefined,
-		);
-		return transaction;
-	}
-
-	#scheduleTransaction<T>(mutate: (state: ScheduleState) => ScheduleTransaction<T>): Promise<T> {
-		return this.#enqueueScheduleTransaction(async () => {
-			await this.#flushFailedDueScheduleTransaction();
-			if (this.#failedDueScheduleTransaction !== undefined) {
-				throw new Error("Schedule durability retry is pending");
-			}
-			const state = this.#cloneScheduleState();
-			const update = mutate(state);
-			if (!update.changed) return update.result;
-			await this.#writeSchedules(state);
-			this.#commitScheduleState(state);
-			this.#schedulePersistRetryAt = undefined;
-			return update.result;
-		});
-	}
-
-	async #flushFailedDueScheduleTransaction(): Promise<boolean> {
-		const failed = this.#failedDueScheduleTransaction;
-		if (!failed) return false;
-		if (this.#schedulePersistRetryAt !== undefined && Date.now() < this.#schedulePersistRetryAt) return false;
-		try {
-			await this.#writeSchedules(failed.state);
-		} catch (error) {
-			this.#schedulePersistRetryAt = Date.now() + SCHEDULE_PERSIST_RETRY_BACKOFF_MS;
-			throw error;
-		}
-		this.#commitScheduleState(failed.state);
-		this.#failedDueScheduleTransaction = undefined;
-		this.#schedulePersistRetryAt = undefined;
-		this.#notifyPendingFires(failed.fires);
-		return true;
-	}
-
-	#commitScheduleState(state: ScheduleState): void {
-		this.#schedules = state.schedules;
-		this.#pendingScheduleFires = state.pendingFires;
-	}
-
-	async #writeSchedules(state: ScheduleState): Promise<void> {
-		const schedulesPath = path.join(this.#runtimeDir, SCHEDULES_FILE);
-		const tempPath = `${schedulesPath}.${process.pid}.tmp`;
-		const persisted: PersistedSchedules = {
-			schedules: [...state.schedules.values()]
-				.map(scheduleSnapshot)
-				.sort(
-					(left, right) =>
-						left.nextDueAt - right.nextDueAt ||
-						left.sessionId.localeCompare(right.sessionId) ||
-						left.name.localeCompare(right.name),
-				),
-			pendingFires: [...state.pendingFires.values()].flatMap(pending => [...pending.values()]),
-		};
-		try {
-			await Bun.write(tempPath, JSON.stringify(persisted));
-			await fs.rename(tempPath, schedulesPath);
-		} catch (error) {
-			logger.warn("Failed to persist schedules", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-			throw error;
-		}
-	}
-
-	async #recoverSchedules(): Promise<void> {
-		const schedulesPath = path.join(this.#runtimeDir, SCHEDULES_FILE);
-		let decoded: unknown;
-		try {
-			decoded = await Bun.file(schedulesPath).json();
-		} catch (error) {
-			if (isEnoent(error)) return;
-			logger.warn("Failed to read schedules", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return;
-		}
-		const recovered = (() => {
-			if (Array.isArray(decoded)) return { schedules: decoded, pendingFires: [] };
-			if (typeof decoded !== "object" || decoded === null || !("schedules" in decoded)) return undefined;
-			const schedules = decoded.schedules;
-			const pendingFires = "pendingFires" in decoded ? decoded.pendingFires : [];
-			if (!Array.isArray(schedules) || !Array.isArray(pendingFires)) return undefined;
-			return { schedules, pendingFires };
-		})();
-		if (!recovered) return;
-		for (const entry of recovered.schedules) {
-			try {
-				const snapshot = parseScheduleSnapshot(entry);
-				const { nextDueAt, firedCount, ...spec } = snapshot;
-				this.#schedules.set(scheduleKey(spec), { spec, nextDueAt, firedCount });
-			} catch (error) {
-				logger.warn("Failed to recover schedule", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
-		for (const entry of recovered.pendingFires) {
-			try {
-				const message = parseDaemonWireMessage(entry);
-				if (!("event" in message) || message.event !== "schedule-fire") {
-					throw new Error("Pending schedule delivery is not a schedule fire");
-				}
-				const key = scheduleKey(message.schedule);
-				const pending = this.#pendingScheduleFires.get(key) ?? new Map<string, ScheduleFireNotification>();
-				pending.set(message.fireId, message);
-				this.#pendingScheduleFires.set(key, pending);
-			} catch (error) {
-				logger.warn("Failed to recover pending schedule fire", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
-		// A schedule whose while-daemon was already settled when the previous
-		// broker exited never fires again: cancel it alongside the settle path
-		// and persist the cancellation so it is not re-recovered on the next
-		// restart.
-		const cancelled = await this.#scheduleTransaction(state => {
-			let changed = false;
-			for (const [key, schedule] of [...state.schedules]) {
-				if (schedule.spec.whileDaemon !== undefined && !this.#scheduleGuardAlive(schedule.spec.whileDaemon)) {
-					state.schedules.delete(key);
-					state.pendingFires.delete(key);
-					changed = true;
-				}
-			}
-			return { changed, result: changed };
-		});
-		if (cancelled) this.#scheduleIdleShutdown();
-		// Past-due schedules fire immediately once (re-arming everyMs schedules
-		// forward past the missed beats); future ones are armed normally.
-		await this.#processDueSchedules(Date.now());
 	}
 
 	async #start(spec: DaemonSpec, owner?: string): Promise<DaemonRpcResult> {
@@ -1417,11 +976,9 @@ class DaemonBroker {
 				record.restartTimer = undefined;
 				void this.#launch(record);
 			}, delay);
-			await this.#cancelSchedulesForDaemon(record.snapshot.name);
 			return;
 		}
 		record.snapshot.state = failed && !record.stopRequested ? "failed" : "exited";
-		await this.#cancelSchedulesForDaemon(record.snapshot.name);
 		const completion =
 			record.snapshot.owner !== undefined &&
 			!record.stopRequested &&
@@ -1591,8 +1148,6 @@ class DaemonBroker {
 			this.#persist(record);
 			await record.log?.close();
 			record.log = undefined;
-			// This stop path settles the record directly without #settle.
-			await this.#cancelSchedulesForDaemon(record.snapshot.name);
 			return;
 		}
 		record.snapshot.state = "stopping";
@@ -1739,9 +1294,7 @@ class DaemonBroker {
 						if ("pendingCompletions" in decoded && Array.isArray(decoded.pendingCompletions)) {
 							return decoded.pendingCompletions.map(value => {
 								const message = parseDaemonWireMessage(value);
-								if (!("event" in message) || message.event !== "daemon-completed") {
-									throw new Error("Pending daemon completion is not an event");
-								}
+								if (!("event" in message)) throw new Error("Pending daemon completion is not an event");
 								return message;
 							});
 						}
@@ -1809,13 +1362,7 @@ class DaemonBroker {
 				const livePersistent = [...this.#records.values()].some(
 					record => record.spec.persist && !terminalState(record.snapshot.state),
 				);
-				// A future-due schedule or a private failed due transition pins the broker
-				// across TUI exit. Durable pending fires can replay after idle shutdown;
-				// a private candidate must instead survive through its retry and commit.
-				const schedulePending =
-					this.#failedDueScheduleTransaction !== undefined ||
-					[...this.#schedules.values()].some(schedule => schedule.nextDueAt > Date.now());
-				if (this.#clients.size > 0 || livePersistent || schedulePending) return;
+				if (this.#clients.size > 0 || livePersistent) return;
 				if (await hasLiveDaemonProjectPresence(this.#runtimeDir)) {
 					this.#scheduleIdleShutdown();
 					return;
