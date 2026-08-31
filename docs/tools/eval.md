@@ -8,6 +8,8 @@
 - Entry and dynamic schema: `packages/coding-agent/src/tools/eval.ts`
 - Backend enablement: `packages/coding-agent/src/tools/eval-backends.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/eval.md`
+- Code Mode transport (Codex `code_mode_only` sessions demote non-essential tools into an eval bridge): `packages/coding-agent/src/tools/eval-format/code-mode-declarations.ts`, prompt `packages/coding-agent/src/prompts/tools/eval-code-mode.md`
+- Result capture for `bash`, `grep`, and `read`: `packages/coding-agent/src/tools/eval-capture.ts`, schema `packages/coding-agent/src/tools/capture-schema.ts`.
 - Shared contracts: `packages/coding-agent/src/eval/backend.ts`, `types.ts`, `executor-base.ts`, `kernel-base.ts`
 - Host bridges: `packages/coding-agent/src/eval/agent-bridge.ts`, `completion-bridge.ts`, `concurrency-bridge.ts`, `budget-bridge.ts`
 - JavaScript: `packages/coding-agent/src/eval/js/`
@@ -26,7 +28,7 @@ The params object is one cell. There is no `cells` array, header parser, languag
 | `language` | `"py" \| "js" \| "rb" \| "jl"` | Yes | Explicit backend token. Normally the live schema includes only enabled runtimes; see the all-disabled edge case below. |
 | `code` | `string` | Yes | Cell body, verbatim. |
 | `title` | `string` | No | Short transcript label. |
-| `timeout` | `number` | No | Runtime-work timeout in seconds. Default 30; `0` disables the cell timeout. Nonzero values are clamped by the tool timeout policy and `tools.maxTimeout`. |
+| `timeout` | `number` | No | Runtime-work timeout in seconds. Default 30; `0` disables the cell timeout. Nonzero values are clamped by the tool timeout policy (`TOOL_TIMEOUTS.eval`: 1–3600 s) and `tools.maxTimeout`. |
 | `reset` | `boolean` | No | Recreate this language's retained runtime before execution. Other language runtimes are untouched. Default `false`. |
 
 Example across three calls:
@@ -42,6 +44,12 @@ Example across three calls:
 ```json
 {"language":"py","title":"reuse state","code":"display(sorted(data['dependencies']))"}
 ```
+
+## xdev manual and result capture
+
+In an xdev-transport session, the eval tool advertises a short contract and its complete per-language reference manual is available through `read xd://eval`; without that transport, the full manual stays inline. Before a first cell uses prelude helpers beyond `read`/`write`/`display`, read `xd://eval`: call shapes differ by language.
+
+`capture` is an explicit companion parameter of `bash`, `grep`, and `read`, not an `eval` input. It binds full output to a valid, non-reserved Python variable in the persistent session kernel, stores the full text in an artifact, and replaces visible text with an artifact-backed stub whose preview has at most five lines. Capture requires an available Python backend. An invalid name or artifact/kernel failure retains the originating tool output with a warning instead of failing that tool.
 
 ## Backend availability
 
@@ -74,6 +82,7 @@ Ruby and Julia are opt-in. When at least one runtime is enabled, disabled runtim
 - `statusEvents`: deduplicated helper/tool status events.
 - `notice`: optional backend notice.
 - `meta`: output truncation/artifact metadata supplied by `toolResult(...)`.
+- `async`: present when the cell was auto-backgrounded as an async job (`{ state, jobId, type: "eval" }`).
 - `isError`: set for backend failure or cancellation.
 
 The renderer merges call and result inline, syntax-highlights from the declared language, renders markdown and JSON trees specially, and shows timeout/truncation metadata. `session.allocateOutputArtifact?.("eval")` backs spilled output; `artifact://...` in `meta` reaches the full capture.
@@ -88,6 +97,16 @@ The renderer merges call and result inline, syntax-highlights from the declared 
 6. The selected backend receives cwd, retained session id, session file, kernel owner, reset flag, callbacks, and cancellation signal.
 7. Output chunks stream into an artifact-aware `OutputSink` and live tail. Rich displays are separated into JSON, image, markdown, and status channels.
 8. Success, nonzero exit, and cancellation are assembled into the result shapes above. The output sink is finalized even when execution fails.
+
+## Auto-backgrounding
+
+With `eval.autoBackground.enabled` (default `false`), a cell that outlives `eval.autoBackground.thresholdMs` (default 60000 ms) is converted into a managed async job instead of blocking the turn:
+
+- The tool foreground-waits for `resolveAutoBackgroundWaitMs(thresholdMs, clampedCellTimeoutMs)`: the threshold, clamped down to the cell's own clamped timeout minus a 1 s buffer so a deadline expiry resolves inline rather than backgrounding moments before it fires. Raising `timeout` therefore does not extend foreground execution beyond the threshold. A threshold of `0` backgrounds immediately.
+- On backgrounding, the tool returns the live output tail plus `Backgrounded as job <id>; result will be delivered automatically.`, with `details.async = { state: "running", jobId, type: "eval" }`. The job's completion is delivered later like a backgrounded bash command.
+- A queued user/peer message (steer) arriving mid-wait backgrounds the cell immediately ("Backgrounded early to handle an incoming message; the cell keeps running.").
+- At the async-job manager's running-job capacity the tool falls through to ordinary foreground execution instead of failing.
+- A failed, cancelled, or timed-out cell is reported as a failed background job (an errored execution is re-entered into the job manager's failure path), never as a silent success.
 
 ## Runtime behavior
 
@@ -154,7 +173,7 @@ Runs one subagent through `runStructuredSubagent(...)`:
 - `agent` defaults from the current spawn policy; the selected agent's frontmatter model and settings always apply (there is no per-call model override — `model` is not accepted). `schema` overrides agent/session schemas; `schemaMode`/`schema_mode` chooses `permissive` or `strict`.
 - `isolated` requests isolation. `apply` controls whether captured changes are integrated; `merge=false` selects patch mode while the normal setting controls branch mode.
 - `handle=true` returns `{ text, output, handle, id, agent }`, optional parsed `data`, and isolation metadata instead of only output/data.
-- Kernel subagents are one-shot (`keepAlive=false`), are unregistered/disposed after completion, and **do not share the caller's eval executor** (`shareEvalSession=false`). Their code mutations therefore do not appear in the caller's retained VM/kernel.
+- Eval subagents are one-shot (`keepAlive=false`), are unregistered/disposed after completion, and **do not share the caller's eval executor** (`shareEvalSession=false`). Their code mutations therefore do not appear in the caller's retained VM/kernel.
 - Spawn policy, discovered-agent availability, the `task.maxRecursionDepth` gate (default `2`; negative values disable the cap), hard turn budget, subagent failure, strict schema failure, and isolation-apply failure are enforced as cell errors.
 
 `parallel(thunks)` runs zero-argument callables in a bounded pool and preserves input order. `pipeline(items, ...stages)` applies each stage as a barriered wave. Pool width is read live from `task.maxConcurrency`; `0` means all items at once. The lowest-index failure is propagated.
@@ -163,7 +182,7 @@ Runs one subagent through `runStructuredSubagent(...)`:
 
 - Prelude helpers may read/write files and call arbitrary registered tools; JS exposes network-capable `fetch`.
 - Python, Ruby, and Julia use retained subprocess kernels speaking framed local IPC. JavaScript uses a worker VM.
-- Retained runtimes survive calls until reset, owner cleanup, or process exit.
+- Retained runtimes have no heartbeat or idle timer; they survive calls until reset, owner disposal (`EvalRunner.disposeKernels()` calls the `disposeKernelSessionsByOwner` / `disposeRubyKernelSessionsByOwner` / `disposeJuliaKernelSessionsByOwner` / `disposeVmContextsByOwner` family keyed by `kernelOwnerId`, in `packages/coding-agent/src/session/eval-runner.ts`), or process exit.
 - Cancellation is destructive when needed: JS terminates its worker; managed kernels interrupt and may escalate to shutdown. A reset is likewise destructive to concurrent work sharing that backend session.
 - Eval-driven `agent()` may run tools and isolated workspaces, but its child is disposed rather than retained for hub follow-up.
 
@@ -173,7 +192,7 @@ Runs one subagent through `runStructuredSubagent(...)`:
 - Output sink default window: 50 KiB (`DEFAULT_MAX_BYTES`); live tail: 100 KiB; truncation helpers cap at 3000 lines.
 - Each JSON display value included in model-visible text is capped at 8000 characters; the full structured value remains in `jsonOutputs`.
 - Transcript preview defaults to 10 lines.
-- Kernel subagent spawning obeys `task.maxRecursionDepth` (default `2`; negative values allow unlimited depth). Helper fan-out uses `task.maxConcurrency` (default 32, `0` unbounded).
+- Eval subagent spawning obeys `task.maxRecursionDepth` (default `2`; negative values allow unlimited depth). Helper fan-out uses `task.maxConcurrency` (default 32, `0` unbounded).
 - Malformed params are schema errors; unavailable/disabled backends and missing session are `ToolError`s.
 - Runtime exceptions become backend output with nonzero exit. Interactive stdin is an error. Output truncation does not fail the call.
 - A dead retained managed kernel may be replaced and the invocation retried once by its executor.

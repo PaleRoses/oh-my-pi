@@ -76,7 +76,7 @@ export interface ScheduleSpec {
 	sessionId: string;
 	/** Epoch milliseconds for a one-shot fire; exactly one of `at`/`everyMs` is required. */
 	at?: number;
-	/** Interval milliseconds for repeating fires; exactly one of `at`/`everyMs` is required. */
+	/** Positive interval milliseconds for repeating fires; exactly one of `at`/`everyMs` is required. */
 	everyMs?: number;
 	/** Daemon name guarding fires: at fire time a schedule whose daemon is not live is cancelled instead of firing. */
 	whileDaemon?: string;
@@ -302,6 +302,9 @@ export function parseScheduleSpec(value: unknown): ScheduleSpec {
 	const everyMs = optionalNumber(source.everyMs, "schedule.everyMs");
 	if ((at === undefined) === (everyMs === undefined)) {
 		throw new Error("schedule requires exactly one of at or everyMs");
+	}
+	if (everyMs !== undefined && everyMs <= 0) {
+		throw new Error("schedule.everyMs must be a positive number");
 	}
 	return {
 		name: stringValue(source.name, "schedule.name"),

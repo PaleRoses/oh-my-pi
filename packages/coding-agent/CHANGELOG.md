@@ -4,6 +4,11 @@
 
 ### Added
 
+- Added provider-reported credits and concrete routed-model counts to `/session` statistics ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Added `CLINE_API_KEY` to the CLI environment help for native ClinePass subscription inference ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
+- Devin model selectors now accept the native CLI's short aliases (`devin/opus`, `devin/swe`), dotted upstream spellings (`devin/gemini-3.7-flash`), and raw effort-route wire uids for dynamically collapsed families ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Added provider-supplied model metadata to the `/models` detail line: `new`, `beta`, and `recommended` badges beside the model name, and the upstream description after the context, cost, and perf facts ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Standalone `CLAUDE.md` files in the project root (and ancestor directories) are now loaded as context, mirroring `AGENTS.md` discovery; config-directory context files still take precedence per scope.
 - Eval-completion status receipts now carry provider usage for subcall accounting.
 - Added provider-native Anthropic context compaction to the existing `remote` maintenance method. Official `anthropic` Messages routes opt into `compact-2026-01-12`, persist the returned compaction block as same-provider replay history, account compaction iterations as orchestration usage, and advance to the configured local fallback when the provider rejects or omits the block. OpenAI remote compaction is unchanged.
 - Added `tools` to system-prompt profiles: a lowercased, deduplicated tool-name list that owns the model-facing active set at session creation. The cut intersects the assembled set (built-ins, custom, and extension tools) while preserving session contracts — `ask` while enabled, a required `yield`, the `checkpoint`/`rewind` pairing, and memory tools while profile memory is enabled; the registry keeps every constructed tool so `/tools` can re-activate outside the default set. Configurable via `/prompt set <profile> tools <comma-separated names>`.
@@ -11,11 +16,12 @@
 
 - Added immutable `systemPromptProfiles` / `systemPromptProfileRoutes` configuration for routing main and subagent sessions by agent kind and model glob. Profiles may replace the maintained prompt, append trailing instructions, exclude user-global context files, and disable memory or MCP server instructions; the selected ID is persisted in the transcript and provider cache identity, model changes that would select another profile are rejected before mutation, and incompatible live session switches leave the current session intact.
 - Added `/identity` to report the session role, prompt principal/profile/source, model, session ID, memory permission/backend, and active Hindsight bank, project, scope, and tags. The provider-facing system prompt carries the same derived prompt/model/memory identity, and the footer shows the prompt principal, Hindsight bank/project, and provider/model route.
+- Added optional `display.modelLabel` as a shared presentation override for the welcome screen and status line; it changes neither the selected model nor provider routing.
 - Added richer Hindsight memory provenance: explicit retains capture bounded session, agent, prompt-profile, prompt-principal, prompt-source, model, project, working-directory, and source metadata when queued, automatic transcript retains identify their distinct source, and recall bullets expose only a bounded deterministic whitelist of fact/document IDs, tags, and origin fields.
-- Added `/prompt` as a compact, validated system-prompt profile form: inspect profiles and ordered routes, set or unset individual prompt elements, assign or remove unconditional main/sub routes, and refuse invalid files, fields, values, or referenced-profile deletion before persisting. Bare `/prompt` and `/prompts` open a keyboard-driven profile editor in the interactive TUI. The menu presents semantic base-prompt and appended-instructions documents instead of separate inline/file storage rows; configured files open at their resolved paths, and the default base prompt opens the authoritative maintained Markdown source when package source is available. `$VISUAL` or `$EDITOR` wins, with the macOS desktop application as the direct-file fallback. Explicit subcommands and ACP retain their textual behavior.
+- Added `/prompt` as a compact, validated system-prompt profile form: inspect profiles and ordered routes, set or unset individual prompt elements, assign or remove unconditional main/sub routes, and refuse invalid files, fields, values, or referenced-profile deletion before persisting. Bare `/prompt` opens a keyboard-driven profile editor in the interactive TUI. The menu presents semantic base-prompt and appended-instructions documents instead of separate inline/file storage rows; configured files open at their resolved paths, and the default base prompt opens the authoritative maintained Markdown source when package source is available. `$VISUAL` or `$EDITOR` wins, with the macOS desktop application as the direct-file fallback. Explicit subcommands and ACP retain their textual behavior.
 - Added guarded source-checkout updates for the development launcher. `omp update` now fetches a repository-configured upstream, validates and commits a detached-HEAD merge, and publishes the configured fork branch without force; `omp update --check` reports upstream availability without replacing the launcher with an official release.
 - Added an optional `manual` channel to tool definitions: `read xd://<tool>` and help dispatches serve the full manual while the wire `description` stays a short always-on contract; system-prompt device inlining keeps the contract and appends a `Full manual: read xd://<tool>` pointer when a manual exists but the contract does not self-reference it.
-- Added `contextImages` to system-prompt profiles: image file paths (absolute, `~/`, or cwd-relative; validated at profile compile) injected once per conversation as a hidden `profile-context-images` custom message at the front of the first turn. The stateless guard scans live agent context for the marker type, so resume reuses the persisted copy while `/new`, `/reset`, and compaction re-inject on the next turn; system-role content stays text-only since no provider accepts image blocks there. Configurable via `/prompt set <profile> contextImages <comma-separated paths>` (alias `images`) and visible in the profile editor.
+- Added `contextImages` to system-prompt profiles: image file paths (absolute, `~/`, or cwd-relative; validated at profile compile) injected once per conversation as a hidden `profile-context-images` custom message at the front of the first turn. The stateless guard scans live agent context for the marker type, so resume reuses the persisted copy while `/new`, `/reset`, and compaction re-inject on the next turn; system-role content stays text-only since no provider accepts image blocks there. Configurable via `/prompt set <profile> contextImages <comma-separated paths>` (alias `images`).
 - Mental-model bootstrap seeds now use `mode: full` refreshes (bounded re-synthesis over the full fact history) instead of `delta` (which was structurally append-only: `based_on` accumulates every fact ever used, so documents re-bloated without bound and outgrew the render budget). `max_tokens` raised to 1500 (user preferences) / 1200 (project conventions, decisions) so refresh output keeps density.
 - Added `userTitle` to system-prompt profiles: a name or phrase substituted for "the user" throughout the maintained prompt and personality blocks (`{{userTitle}}`/`{{userTitleCap}}` template data, default "the user"/"The user"). Configurable via `/prompt set <profile> userTitle <value>` (alias `user`) and the profile editor; profiles without the field keep the generic wording, so subagent workers are unaffected.
 - Added broker-owned schedules/heartbeats: the hub `schedule` op upserts one-shot (`at`) or repeating (`every`) schedules that persist across broker restarts in `runtimeDir/schedules.json` and re-arm from the persisted due time. Fires deliver to the owning session through the existing IRC path with a synthetic `schedule:<name>` sender; with no live client socket the broker retains only the LATEST undelivered fire per schedule name and replays it on reconnect. An optional `while` daemon name cancels the schedule instead of firing while that daemon is not live (checked at fire time, at daemon settle, and at recovery); any schedule with a future due time pins the broker alive across TUI exit.
@@ -24,6 +30,7 @@
 
 ### Changed
 
+- Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability
 - Restored the built-in `eval` tool name while retaining persistent runtimes, tool re-entry, capture, and artifact-backed output.
 - Code Mode no longer injects `eval` when the caller omitted it. A restricted tool set without `eval` stays without `eval`, and Code Mode stays inactive.
 - Hindsight recall rendering now consumes the canonical `fact_type` field exclusively; the legacy `type` compatibility field is no longer interpreted.
@@ -34,11 +41,47 @@
 
 ### Fixed
 
+- Fixed an issue where custom model overrides were lost during configuration updates
+- Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration
+- Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
 - Fixed source-checkout updates leaving ignored native addons stale after upstream N-API changes. The guarded update now rebuilds the host addon, runs its file-lock contract, includes a regenerated `MODULE.bazel.lock` in the merge, and ignores checkout-named Bazel convenience links before committing and publishing the runtime.
 - Fixed Hindsight auto-recall freezing the first prompt's memories into every later turn. Root prompts now retrieve against their own bounded context, replace the previous recall projection, and remove stale recalled context when retrieval returns nothing or fails; subagents still reuse the parent's bank without issuing duplicate automatic recalls.
 - Fixed Hindsight mental-model seeding minting bare, untagged `project-conventions`/`project-decisions` models in a shared `per-project-tagged` bank when the scope resolved without retain tags. Untagged models render in every scope, so each project's prompt carried a duplicate cross-project pair next to its own tagged models; such seeds are now skipped entirely.
 - Fixed automatic fallback, resume, and manual model transitions leaving the provider-facing system prompt or hidden task policy built for the previous model. Model mutation now owns prompt/tool reconciliation and rolls back when synchronization fails.
 - Fixed live Hindsight bank and scoping changes leaving active subagents pinned to the parent's replaced client, config, tags, and bank cache. Child operations now resolve through the parent's current state while queued retains preserve the route captured at enqueue time.
+
+## [18.0.11] - 2026-08-29
+
+### Added
+
+- Added gallery previews for composer and status-line components, with CLI filters for browsing by surface, composer, or segment.
+
+### Changed
+
+- The status line now displays the thinking level as a compact icon alongside the model name by default; set `statusLine.compactThinkingLevel` to `false` to restore the previous display.
+
+### Fixed
+
+- Fixed MCP OAuth discovery for shared API gateways and authorization servers with nested paths, including Keycloak realms, so authentication targets the correct resource issuer and supports endpoint and dynamic client-registration discovery.
+- Fixed credential rotation for HTTP 402 payment-required responses so sibling credentials are tried before model fallback without misclassifying informative non-quota errors.
+- Transport errors after a complete, non-executed tool call can now retry through configured retry budgets and fallback chains when it is safe to do so, instead of ending the turn prematurely.
+- Improved handling of truncated or otherwise undecodable images so they produce an actionable error and no longer permanently block subsequent requests or resumed sessions.
+- Fixed Sharpshooter consolidation preserving memory files and queued changes when an empty replacement is returned.
+- Fixed `omp plugin features` so it discovers marketplace-installed plugins.
+- Fixed Escape handling when closing the `/session` information panel; the panel now retains focus until dismissed.
+- Fixed the thinking-block visibility toggle so streamed reasoning is correctly hidden when thinking blocks are set to hidden.
+- Reduced high idle CPU usage while the agent is working.
+- Fixed resumed advisor subscription usage being displayed as a dollar amount instead of as a subscription.
+- Fixed relative API addresses whose names end in image extensions being pasted as text instead of incorrectly treated as missing local image files.
+- Fixed chat Markdown links and bare URLs so they become clickable OSC 8 hyperlinks when `tui.hyperlinks=always` is enabled.
+- Fixed unreadable composer text on light terminal backgrounds when using transparent composer styles.
+- Fixed `retry.fallbackChains` warnings for valid selectors from providers whose model discovery is still pending; validation now updates after discovery completes.
+- Fixed visible browser windows launched by OMP so page content resizes with the operating-system window.
+- Fixed Python evaluation hanging on Windows when importing native-extension modules such as NumPy.
+- Fixed subagent extension context helpers so `ctx.getContextUsage()` and `ctx.compact()` operate on the child session.
+- Fixed `lsp diagnostics` incorrectly reporting success for project-aware pull-diagnostic servers when diagnostics time out or fail.
+- Corrected labels under `Settings > Context > Compaction Token Limit`.
+- Fixed orphaned pages, iframes, and workers accumulating in the shared headless browser after abnormal OMP session termination.
 
 ## [18.0.10] - 2026-08-28
 
@@ -97,7 +140,6 @@
 - Transcript usage rows now show the total prompt-to-yield time (Δ + clock, including tool calls) after the turn timestamp, opt-in via `display.showTurnTime` (off by default).
 - `omp usage` now shows Z.AI GLM Coding Plan credit quotas (5h + weekly) with the subscribed plan tier.
 - The usage status line now labels untiered quota windows with the report's plan tier, surfacing Z.AI Coding Plan (`pro`) and Codex plan names next to the 5h/7d percentages.
-
 ### Fixed
 
 - Fixed corrupt session headers silently overwriting recoverable transcripts during resume ([#9915](https://github.com/can1357/oh-my-pi/issues/9915)).

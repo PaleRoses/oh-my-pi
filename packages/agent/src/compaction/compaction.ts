@@ -1303,13 +1303,16 @@ export function remotePreserveReusable(
 ): boolean {
 	const openAiRemote =
 		getCompactionV2PreserveData(preserveData) ?? getPreservedOpenAiRemoteCompactionData(preserveData);
+	if (openAiRemote) {
+		if (settings.remoteEnabled === false || openAiRemote.provider !== activeModel.provider) return false;
+		const v2Ok = settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(activeModel);
+		return v2Ok || shouldUseOpenAiRemoteCompaction(activeModel);
+	}
+
 	const anthropicRemote = getPreservedAnthropicRemoteCompactionData(preserveData);
-	const remote = openAiRemote ?? anthropicRemote;
-	if (!remote) return true;
-	if (settings.remoteEnabled === false || remote.provider !== activeModel.provider) return false;
-	if (anthropicRemote) return shouldUseAnthropicRemoteCompaction(activeModel);
-	const v2Ok = settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(activeModel);
-	return v2Ok || shouldUseOpenAiRemoteCompaction(activeModel);
+	if (!anthropicRemote) return true;
+	if (settings.remoteEnabled === false || anthropicRemote.provider !== activeModel.provider) return false;
+	return shouldUseAnthropicRemoteCompaction(activeModel);
 }
 
 /**
@@ -1731,7 +1734,7 @@ export async function compact(
 						),
 					{ signal },
 				);
-				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
+				preserveData = withOpenAiRemoteCompactionPreserveData(preserveData, remote);
 				usedRemoteCompaction = true;
 			} catch (err) {
 				// A user/session abort is a cancellation, not a remote failure —
@@ -1771,7 +1774,7 @@ export async function compact(
 				const remote = await withAuth(
 					apiKey,
 					key =>
-						requestAnthropicRemoteCompaction(model, key, remoteHistory, [SUMMARIZATION_SYSTEM_PROMPT], {
+						requestAnthropicRemoteCompaction(model, key, remoteHistory, summarizationSystemPrompt(summaryOptions), {
 							signal,
 							fetch: summaryOptions.fetch,
 							sessionId: summaryOptions.sessionId,

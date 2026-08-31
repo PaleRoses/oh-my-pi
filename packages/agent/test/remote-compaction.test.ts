@@ -17,6 +17,7 @@ import {
 	buildOpenAiNativeHistory,
 	CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
 	getCompactionV2PreserveData,
+	getPreservedOpenAiRemoteCompactionData,
 	requestCompactionV2Streaming,
 	requestOpenAiRemoteCompaction,
 	requestRemoteCompaction,
@@ -1903,14 +1904,17 @@ describe("compact() remote compaction failure handling", () => {
 
 	test("uses official Anthropic server compaction and preserves its replay block", async () => {
 		const model = makeAnthropicModel();
+		const identity = "Anthropic profile compaction identity";
 		let requestMessages = 0;
 		const preparation = makePreparation();
 		preparation.previousPreserveData = {
 			anthropicRemoteCompaction: { provider: "anthropic", content: "previous native summary" },
 		};
 		const result = await compact(preparation, model, "test-key", undefined, undefined, {
+			identity,
 			completeImpl: async (_model, ctx, options) => {
 				requestMessages = ctx.messages.length;
+				expect(ctx.systemPrompt).toContain(identity);
 				const previous = ctx.messages[0];
 				expect(previous?.role === "user" ? previous.providerPayload : undefined).toEqual({
 					type: "anthropicCompactionHistory",
@@ -1942,6 +1946,40 @@ describe("compact() remote compaction failure handling", () => {
 		expect(result.shortSummary).toBe("Remote compaction");
 		expect(remotePreserveReusable(result.preserveData, model, makePreparation().settings)).toBe(true);
 		expect(remotePreserveReusable(result.preserveData, makeOpenAiModel(), makePreparation().settings)).toBe(false);
+	});
+
+	test("replaces Anthropic preserve data with an OpenAI V1 replay payload", async () => {
+		const preparation = makePreparation();
+		preparation.previousPreserveData = {
+			anthropicRemoteCompaction: { provider: "anthropic", content: "previous native summary" },
+		};
+
+		const result = await compact(preparation, makeOpenAiModel(), "test-key", undefined, undefined, {
+			fetch: async () =>
+				Response.json({ output: [{ type: "compaction", encrypted_content: "openai-native-summary" }] }),
+		});
+
+		expect(getPreservedOpenAiRemoteCompactionData(result.preserveData)).toMatchObject({
+			provider: "openai",
+			compactionItem: { type: "compaction", encrypted_content: "openai-native-summary" },
+		});
+		expect(getPreservedAnthropicRemoteCompactionData(result.preserveData)).toBeUndefined();
+		expect(result.preserveData).not.toHaveProperty("anthropicRemoteCompaction");
+	});
+
+	test("uses OpenAI replay precedence for legacy dual-provider preserve data", () => {
+		const preserveData = {
+			openaiRemoteCompaction: {
+				provider: "openai",
+				replacementHistory: [],
+				compactionItem: { type: "compaction", encrypted_content: "openai-native-summary" },
+			},
+			anthropicRemoteCompaction: { provider: "anthropic", content: "legacy native summary" },
+		};
+		const settings = makePreparation().settings;
+
+		expect(remotePreserveReusable(preserveData, makeOpenAiModel(), settings)).toBe(true);
+		expect(remotePreserveReusable(preserveData, makeAnthropicModel(), settings)).toBe(false);
 	});
 
 	test("rejects compatible gateways and surfaces a missing compaction block for ordered fallback", async () => {

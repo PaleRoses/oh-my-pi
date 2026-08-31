@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
 import type { ScheduleFireNotification } from "../../src/launch/protocol";
-import { parseDaemonWireRequest } from "../../src/launch/protocol";
+import { parseDaemonWireRequest, parseScheduleSnapshot } from "../../src/launch/protocol";
 import { buildScheduleSpec } from "../../src/tools/hub/schedule";
 
 const OWNER = "session-1";
@@ -320,5 +320,43 @@ describe("hub schedule op validation", () => {
 				},
 			}),
 		).toThrow(/exactly one of at or everyMs/);
+	});
+
+	it("rejects zero and negative repeat intervals at the broker wire and persistence boundaries", () => {
+		for (const everyMs of [0, -1]) {
+			const spec = { name: "x", message: "m", sessionId: OWNER, everyMs };
+			expect(() =>
+				parseDaemonWireRequest({
+					id: `r-${everyMs}`,
+					token: "t",
+					operation: { op: "schedule-set", spec },
+				}),
+			).toThrow("schedule.everyMs must be a positive number");
+			expect(() => parseScheduleSnapshot({ ...spec, nextDueAt: 1, firedCount: 0 })).toThrow(
+				"schedule.everyMs must be a positive number",
+			);
+		}
+	});
+
+	it("accepts one-shot schedules without everyMs at the broker wire boundary", () => {
+		const request = parseDaemonWireRequest({
+			id: "r-once",
+			token: "t",
+			operation: {
+				op: "schedule-set",
+				spec: { name: "once", message: "m", sessionId: OWNER, at: 1 },
+			},
+		});
+		expect(request.operation).toEqual({
+			op: "schedule-set",
+			spec: {
+				name: "once",
+				message: "m",
+				sessionId: OWNER,
+				at: 1,
+				everyMs: undefined,
+				whileDaemon: undefined,
+			},
+		});
 	});
 });
