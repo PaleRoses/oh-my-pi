@@ -1,5 +1,6 @@
 import type {
 	SystemPromptProfileAgentKind,
+	SystemPromptProfileConstitution,
 	SystemPromptProfileRouteSetting,
 	SystemPromptProfileSetting,
 } from "../../config/settings-schema";
@@ -20,7 +21,7 @@ const PROMPT_USAGE = [
 	"  /prompt unset <profile> <field>",
 	"  /prompt remove <profile>",
 	"",
-	"Fields: prompt, promptFile, instructions, instructionsFile, projectContextOnly, memory, mcpServerInstructions, contextImages, userTitle, compactionIdentity, tools",
+	"Fields: constitution, prompt, promptFile, instructions, instructionsFile, projectContextOnly, memory, mcpServerInstructions, contextImages, userTitle, compactionIdentity, tools",
 ].join("\n");
 
 export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
@@ -41,6 +42,11 @@ export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
 export type PromptProfileField = keyof SystemPromptProfileSetting;
 
 export type PromptProfileFieldDefinition =
+	| {
+			readonly field: "constitution";
+			readonly label: string;
+			readonly input: "constitution";
+	  }
 	| {
 			readonly field: "prompt" | "instructions" | "userTitle";
 			readonly label: string;
@@ -66,6 +72,7 @@ export const PROMPT_PROFILE_FIELD_DEFINITIONS: readonly PromptProfileSelectorFie
 	{ field: "memory", label: "Memory", input: "toggle" },
 	{ field: "mcpServerInstructions", label: "MCP server instructions", input: "toggle" },
 	{ field: "userTitle", label: "User title", input: "markdown" },
+	{ field: "constitution", label: "Constitution", input: "constitution" },
 ];
 
 export type PromptProfileOperation =
@@ -105,6 +112,8 @@ function normalizeField(raw: string): PromptProfileField {
 	switch (normalized) {
 		case "prompt":
 			return "prompt";
+		case "constitution":
+			return "constitution";
 		case "promptfile":
 			return "promptFile";
 		case "instructions":
@@ -161,6 +170,15 @@ function parseToggle(raw: string, field: PromptProfileField): boolean {
 	}
 }
 
+function parseConstitution(raw: string): SystemPromptProfileConstitution {
+	switch (raw.toLowerCase()) {
+		case "fable":
+			return "fable";
+		default:
+			throw new Error(`constitution expects fable, received "${raw}".`);
+	}
+}
+
 function omitProfileField(profile: SystemPromptProfileSetting, field: PromptProfileField): SystemPromptProfileSetting {
 	return Object.fromEntries(Object.entries(profile).filter(([key]) => key !== field)) as SystemPromptProfileSetting;
 }
@@ -173,6 +191,8 @@ function setProfileField(
 	const value = rawValue.trim();
 	if (value.length === 0) throw new Error(`${field} requires a non-empty value.`);
 	switch (field) {
+		case "constitution":
+			return { ...profile, constitution: parseConstitution(value) };
 		case "prompt":
 			return { ...omitProfileField(profile, "promptFile"), prompt: value };
 		case "promptFile":
@@ -207,6 +227,8 @@ function setProfileField(
 					.map(entry => entry.trim())
 					.filter(entry => entry.length > 0),
 			};
+		default:
+			return field satisfies never;
 	}
 }
 
@@ -223,7 +245,7 @@ function describeProfile(profileId: string, profile: SystemPromptProfileSetting)
 	const appended = profile.instructionsFile
 		? `file ${profile.instructionsFile}`
 		: describeInline(profile.instructions);
-	return `${profileId}: base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
+	return `${profileId}: constitution=${profile.constitution ?? "none"}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
 }
 
 function formatRoute(route: SystemPromptProfileRouteSetting, index: number): string {
@@ -254,6 +276,7 @@ function formatPromptStatus(runtime: PromptProfileCommandRuntime): string {
 function formatProfileDetails(profileId: string, profile: SystemPromptProfileSetting): string {
 	return [
 		`System prompt profile: ${profileId}`,
+		`constitution: ${profile.constitution ?? "none (default)"}`,
 		`prompt: ${describeInline(profile.prompt)}`,
 		`promptFile: ${profile.promptFile ?? "none"}`,
 		`instructions: ${describeInline(profile.instructions)}`,

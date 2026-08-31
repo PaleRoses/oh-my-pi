@@ -16,15 +16,17 @@ import type { PreparedExtension } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
-import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification, ScheduleFireNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
-import type { MnemopiSessionState } from "../mnemopi/state";
+import { resolveMemoryBackend } from "../memory-backend/resolve";
+import { memoryBackendToolNames } from "../memory-backend/tool-names";
+import type { MemoryRuntimeContext } from "../memory-backend/types";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
+import type { AgentSession } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
@@ -267,10 +269,10 @@ export interface ToolSession {
 	trackEvalExecution?<T>(execution: Promise<T>, abortController: AbortController): Promise<T>;
 	/** Get session ID */
 	getSessionId?: () => string | null;
-	/** Get Hindsight runtime state for this agent session. */
-	getHindsightSessionState?: () => HindsightSessionState | undefined;
-	/** Get Mnemopi runtime state for this agent session. */
-	getMnemopiSessionState?: () => MnemopiSessionState | undefined;
+	/** Live owning session for task/vibe child memory inheritance. */
+	getAgentSession?(): AgentSession | undefined;
+	/** Typed runtime for the selected memory backend. */
+	getMemoryRuntime?(): MemoryRuntimeContext | undefined;
 	/** Agent identity used for IRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
 	getAgentId?: () => string | null;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
@@ -485,10 +487,10 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
-	memory_edit: MemoryEditTool.createIf,
-	retain: MemoryRetainTool.createIf,
-	recall: MemoryRecallTool.createIf,
-	reflect: MemoryReflectTool.createIf,
+	memory_edit: s => new MemoryEditTool(s),
+	retain: s => new MemoryRetainTool(s),
+	recall: s => new MemoryRecallTool(s),
+	reflect: s => new MemoryReflectTool(s),
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
 };
@@ -516,6 +518,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	if (requestedTools && !restrictToolNames && session.settings.get("ask.enabled") && !requestedTools.includes("ask")) {
 		requestedTools.push("ask");
 	}
+	const memoryToolNames = new Set(memoryBackendToolNames((await resolveMemoryBackend(session.settings)).capabilities));
 	// createTools may be called more than once for the same ToolSession. A later
 	// explicit (or full-set) write request is a real grant and must upgrade any
 	// device-only transport left by an earlier read-only call.
@@ -617,13 +620,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		) {
 			requestedTools.push("ast_edit");
 		}
-		if (["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "")) {
-			for (const name of ["recall", "retain", "reflect"]) {
-				if (!requestedTools.includes(name)) requestedTools.push(name);
-			}
-		}
-		if (session.settings.get("memory.backend") === "mnemopi" && !requestedTools.includes("memory_edit")) {
-			requestedTools.push("memory_edit");
+		for (const name of memoryToolNames) {
+			if (name !== "learn" && !requestedTools.includes(name)) requestedTools.push(name);
 		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
 			requestedTools.push("think");
@@ -636,10 +634,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		// tool whitelist must never be silently widened with write-capable tools.
 		if (session.settings.get("autolearn.enabled") && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
-			if (
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "") &&
-				!requestedTools.includes("learn")
-			) {
+			if (memoryToolNames.has("learn") && !requestedTools.includes("learn")) {
 				requestedTools.push("learn");
 			}
 		}
@@ -684,10 +679,10 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)
 			);
 		}
-		if (name === "retain" || name === "recall" || name === "reflect") {
-			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
-		}
-		if (name === "memory_edit") return session.settings.get("memory.backend") === "mnemopi";
+		if (name === "retain") return memoryToolNames.has("retain");
+		if (name === "recall") return memoryToolNames.has("recall");
+		if (name === "reflect") return memoryToolNames.has("reflect");
+		if (name === "memory_edit") return memoryToolNames.has("memory_edit");
 		if (name === "manage_skill")
 			return (
 				session.settings.get("autolearn.enabled") &&
@@ -697,7 +692,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return (
 				session.settings.get("autolearn.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined) &&
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "")
+				memoryToolNames.has("learn")
 			);
 		}
 		if (name === "task") {

@@ -179,14 +179,6 @@ async function requireGit(checkout: string, args: readonly string[]): Promise<st
 	throw new Error(`git ${args[0] ?? "command"} failed: ${detail}`);
 }
 
-async function gitIsAncestor(checkout: string, ancestor: string, descendant: string): Promise<boolean> {
-	const result = await runGit(checkout, ["merge-base", "--is-ancestor", ancestor, descendant]);
-	if (result.exitCode === 0) return true;
-	if (result.exitCode === 1) return false;
-	const detail = result.stderr || result.stdout || `exit ${result.exitCode}`;
-	throw new Error(`git merge-base failed: ${detail}`);
-}
-
 async function gitRevListCount(checkout: string, range: string): Promise<number> {
 	const raw = await requireGit(checkout, ["rev-list", "--count", range]);
 	if (!/^\d+$/.test(raw)) throw new Error(`git rev-list returned an invalid count: ${raw}`);
@@ -291,14 +283,14 @@ export async function runSourceCheckoutUpdate(
 	logSource(log, checkout, config);
 
 	const publishedHead = await fetchBranch(checkout, config.publishRemote, config.publishBranch);
-	if (!(await gitIsAncestor(checkout, publishedHead, originalHead))) {
+	if ((await vcs.requireGit(checkout).mergeBase(publishedHead, originalHead)) !== publishedHead) {
 		throw new Error(
 			`${config.publishRemote}/${config.publishBranch} contains commits absent from local HEAD. ` +
 				"Refusing a non-fast-forward publication; integrate that branch first.",
 		);
 	}
 	const upstreamHead = await fetchBranch(checkout, config.upstreamRemote, config.upstreamBranch);
-	const upstreamContained = await gitIsAncestor(checkout, upstreamHead, originalHead);
+	const upstreamContained = (await vcs.requireGit(checkout).mergeBase(upstreamHead, originalHead)) === upstreamHead;
 	const unpublished = publishedHead !== originalHead;
 
 	if (options.check) {

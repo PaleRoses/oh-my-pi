@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { getHindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import { RpcSubagentRegistry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
@@ -11,6 +13,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
@@ -25,9 +28,9 @@ function makeTempDir(prefix: string): string {
 	return dir.path();
 }
 
-function createRef(sessionFile: string): AgentRef {
+function createRef(sessionFile: string, id = "persisted-restricted"): AgentRef {
 	return {
-		id: "persisted-restricted",
+		id,
 		displayName: "Persisted Restricted",
 		kind: "sub",
 		parentId: "Main",
@@ -70,10 +73,12 @@ async function createPersistedSession(
 	modelRole?: string,
 	advisor?: string,
 	contract?: { tools?: string[]; readOnly?: boolean },
+	systemPromptProfile?: string,
 ): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) throw new Error("Expected a persisted session file");
+	manager.pinSystemPromptProfile(systemPromptProfile);
 	manager.appendSessionInit({
 		systemPrompt: "persisted prompt",
 		task: "persisted task",
@@ -105,21 +110,28 @@ async function createPersistedSession(
 	return sessionFile;
 }
 
-function createFactory(cwd: string, eventBus?: EventBus) {
-	const parentSession = {
-		sessionManager: {
-			getCwd: () => cwd,
-			getArtifactManager: () => undefined,
-		},
-		get sessionFile() {
-			return path.join(cwd, "parent.jsonl");
-		},
-	} as unknown as AgentSession;
+function createFactory(
+	cwd: string,
+	eventBus?: EventBus,
+	suppliedParentSession?: AgentSession,
+	overrides?: { settings?: Settings; authStorage?: AuthStorage; modelRegistry?: ModelRegistry },
+) {
+	const parentSession =
+		suppliedParentSession ??
+		({
+			sessionManager: {
+				getCwd: () => cwd,
+				getArtifactManager: () => undefined,
+			},
+			get sessionFile() {
+				return path.join(cwd, "parent.jsonl");
+			},
+		} as unknown as AgentSession);
 	return createPersistedSubagentReviverFactory({
 		session: parentSession,
-		authStorage: {} as never,
-		modelRegistry: { authStorage: {} } as ModelRegistry,
-		settings: Settings.isolated(),
+		authStorage: overrides?.authStorage ?? ({} as never),
+		modelRegistry: overrides?.modelRegistry ?? ({ authStorage: {} } as ModelRegistry),
+		settings: overrides?.settings ?? Settings.isolated(),
 		enableLsp: true,
 		eventBus,
 	});
@@ -189,6 +201,82 @@ describe("persisted subagent revival", () => {
 		expect(activeToolNames).toEqual([["read", "yield"]]);
 	});
 
+	it("cold-revives a restricted Hindsight recall grant as the parent's runtime alias", async () => {
+		const cwd = makeTempDir("@pi-restricted-memory-revive-");
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.bankId": "memory-bank",
+			"hindsight.mentalModelsEnabled": false,
+			"hindsight.autoRecall": false,
+			systemPromptProfiles: { driver: { memory: true }, worker: { memory: true } },
+			systemPromptProfileRoutes: [
+				{ agentKind: "main", profile: "driver" },
+				{ agentKind: "sub", profile: "worker" },
+			],
+		});
+		const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+		let parent: AgentSession | undefined;
+		let revived: AgentSession | undefined;
+		try {
+			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!model) throw new Error("Expected bundled Anthropic model");
+			({ session: parent } = await sdkModule.createAgentSession({
+				cwd,
+				agentDir: cwd,
+				authStorage,
+				modelRegistry,
+				model,
+				settings,
+				sessionManager: SessionManager.inMemory(cwd),
+				disableExtensionDiscovery: true,
+				enableMCP: false,
+				enableLsp: false,
+				skills: [],
+				rules: [],
+				contextFiles: [],
+				workspaceTree: {
+					rootPath: cwd,
+					rendered: "",
+					truncated: false,
+					totalLines: 0,
+					agentsMdFiles: [],
+				},
+			}));
+			const sessionFile = await createPersistedSession(
+				cwd,
+				true,
+				"default",
+				undefined,
+				{ tools: ["recall", "yield"] },
+				"worker",
+			);
+			const ref = AgentRegistry.global().register(createRef(sessionFile, "persisted-memory-alias"));
+			const reviver = await createFactory(cwd, undefined, parent, {
+				settings,
+				authStorage,
+				modelRegistry,
+			})(ref);
+			if (!reviver) throw new Error("Expected a persisted reviver");
+			revived = await reviver(ref);
+
+			const parentState = getHindsightSessionState(parent);
+			expect(parentState).toBeDefined();
+			expect(getHindsightSessionState(revived)?.aliasOf).toBe(parentState);
+			expect(revived.agent.state.tools.map(tool => tool.name)).toEqual(["recall", "yield"]);
+		} finally {
+			await revived?.dispose();
+			await parent?.dispose();
+			AgentRegistry.global().unregister("persisted-memory-alias");
+			authStorage.close();
+		}
+	});
+
 	it("strips synthetic write from legacy read-only cold revival", async () => {
 		const cwd = makeTempDir("@pi-read-only-revive-");
 		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, {
@@ -256,6 +344,30 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.mcpManager).toBe(hostileMcp);
 		expect(capturedOptions?.customTools?.map(tool => tool.name)).toEqual(["mcp__server_read"]);
 	});
+
+	it("hands the owning live parent session to the revived runtime", async () => {
+		const cwd = makeTempDir("@pi-parent-session-revive-");
+		const sessionFile = await createPersistedSession(cwd);
+		const parentSession = {
+			sessionManager: {
+				getCwd: () => cwd,
+				getArtifactManager: () => undefined,
+			},
+		} as unknown as AgentSession;
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd, undefined, parentSession)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.parentSession).toBe(parentSession);
+	});
+
 	it("restores the persisted per-agent advisor opt-in on cold revival", async () => {
 		const cwd = makeTempDir("@pi-advisor-revive-");
 		const advisedFile = await createPersistedSession(cwd, undefined, undefined, "moonshot/k3");

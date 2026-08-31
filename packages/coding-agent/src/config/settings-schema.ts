@@ -396,8 +396,13 @@ export interface ModelTagsSettings {
 }
 
 export type SystemPromptProfileAgentKind = "main" | "sub";
+/** Closed constitution selections for system-prompt profiles. */
+export const SYSTEM_PROMPT_PROFILE_CONSTITUTION_VALUES = ["fable"] as const;
+export type SystemPromptProfileConstitution = (typeof SYSTEM_PROMPT_PROFILE_CONSTITUTION_VALUES)[number];
 
 export interface SystemPromptProfileSetting {
+	/** Closed constitution selected by this prompt profile. */
+	readonly constitution?: SystemPromptProfileConstitution;
 	readonly prompt?: string;
 	readonly promptFile?: string;
 	readonly instructions?: string;

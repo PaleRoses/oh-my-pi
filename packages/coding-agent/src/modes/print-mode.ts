@@ -8,7 +8,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
-import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
+import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { isSilentAbort } from "../session/messages";
 import { flushTelemetryExport } from "../telemetry-export";
 import { initializeExtensions } from "./runtime-init";
@@ -197,22 +197,21 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				!isSilentAbort(assistantMsg)
 			) {
 				const errorLine = sanitizeText(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
-				// This branch hard-exits, bypassing the `await session.dispose()` at
-				// the end of runPrintMode. Flush telemetry and dispose the session
+				// This branch hard-exits, so flush telemetry and dispose the session
 				// HERE so error spans reach the exporter (the postmortem `exit`
 				// handler can't await) and the browser reaper installed in
 				// `dispose()` (releaseTabsForOwner) actually runs — otherwise an
-				// OMP-owned Chromium survives this exit (issue #5643). `dispose()`
-				// is idempotent, so the unreachable call below is a harmless no-op.
+				// OMP-owned Chromium survives this exit (issue #5643).
 				await session.waitForAdvisorCatchup(PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS);
 				await flushTelemetryExport();
-				await session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+				await session.dispose();
 				const flushed = process.stderr.write(`${errorLine}\n`);
 				if (flushed) {
 					process.exit(1);
 				} else {
 					process.stderr.once("drain", () => process.exit(1));
 				}
+				return;
 			}
 
 			if (
@@ -241,5 +240,5 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	// agent_end and late JSON advisor events) has drained; process.exit would
 	// otherwise discard the buffered tail and truncate the last record.
 	await stdoutTail;
-	await session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+	await session.dispose();
 }

@@ -146,6 +146,15 @@ function defaultToggleValue(field: PromptProfileField): boolean {
 function describeProfileField(profile: SystemPromptProfileSetting, field: PromptProfileField): string {
 	const value = profileFieldValue(profile, field);
 	switch (field) {
+		case "constitution":
+			switch (profile.constitution) {
+				case undefined:
+					return "none (default)";
+				case "fable":
+					return "Fable";
+				default:
+					return profile.constitution satisfies never;
+			}
 		case "prompt":
 			return profile.promptFile !== undefined
 				? shortenPath(profile.promptFile)
@@ -180,6 +189,8 @@ function describeProfileField(profile: SystemPromptProfileSetting, field: Prompt
 			return typeof value === "string" ? `inline (${value.length} chars)` : "none";
 		case "tools":
 			return Array.isArray(value) && value.length > 0 ? value.map(String).join(", ") : "all (default)";
+		default:
+			return field satisfies never;
 	}
 }
 
@@ -455,6 +466,25 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 			},
 		});
 		switch (definition.input) {
+			case "constitution":
+				return this.#actionSelector(
+					[
+						{
+							id: "constitution:fable",
+							label: "Fable",
+							description: "Use the Fable worker constitution",
+							run: () => {
+								void this.#apply(
+									{ type: "setField", profileId, field: definition.field, value: "fable" },
+									{ type: "profile", profileId },
+								);
+							},
+						},
+						restore(definition.field),
+						{ id: "back", label: "Back", run: back },
+					],
+					back,
+				);
 			case "markdown": {
 				const fileDefinition =
 					definition.field === "userTitle" ? undefined : PROMPT_PROFILE_FILE_DEFINITIONS[definition.field];

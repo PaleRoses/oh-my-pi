@@ -5,12 +5,13 @@
 ## Source
 - Entry: `packages/coding-agent/src/tools/memory-reflect.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/reflect.md`
+- Runtime owner: `packages/coding-agent/src/memory-backend/types.ts` — `ToolSession.getMemoryRuntime()` exposes `MemoryRuntimeContext`, which resolves the selected `MemoryBackendRuntime`.
 - Hindsight collaborators:
   - `packages/coding-agent/src/hindsight/bank.ts` — best-effort first-use bank/mission setup (`ensureBankExists`).
-  - `packages/coding-agent/src/hindsight/state.ts` — session state, shared bank scope, recall/reflect config.
+  - packages/coding-agent/src/hindsight/state.ts — provider-owned state, shared bank scope, recall/reflect config.
   - `packages/coding-agent/src/hindsight/client.ts` — HTTP `reflect` call and error mapping.
 - Mnemopi collaborators:
-  - `packages/coding-agent/src/mnemopi/state.ts` — scoped local recall and context formatting.
+  - packages/coding-agent/src/mnemopi/state.ts — provider-owned scoped local recall and context formatting.
   - `docs/tools/retain.md` — shared backend, storage, scoping, and mental-model behavior.
 
 ## Registration / Visibility
@@ -43,21 +44,12 @@ Mnemopi:
 - The local path performs recall plus formatting; it does not call a synthesis model or separate synthesis endpoint. Its result can therefore be raw recalled context rather than a blended answer.
 
 ## Flow
-1. `MemoryReflectTool.createIf(...)` exposes the tool when `memory.backend` is either `"hindsight"` or `"mnemopi"`.
-2. `execute(...)` runs under `untilAborted(...)`.
-3. If the backend is `mnemopi`:
-   - it reads `session.getMnemopiSessionState()` and throws if the backend was not started;
-   - if `context` has non-whitespace content, it recalls with `<query>\n\nAdditional context:\n<context>`; otherwise it recalls with `query`;
-   - it calls `state.recallResultsScoped(...)` using the same local scoping and merge behavior as `recall`;
-   - if results exist, it renders them through `state.formatContextScoped(...)` and prefixes `Based on recalled memories:`.
-4. If the backend is `hindsight`:
-   - it reads `session.getHindsightSessionState()` and throws if the backend was not started;
-   - it calls `ensureBankExists(...)` with the current `bankId`, config, and the session state's `banksSet`;
-   - `ensureBankExists(...)` best-effort `PUT`s `/v1/default/banks/{bank_id}` (`createBank`) with optional `reflect_mission` / `retain_mission` once per bank per session state; failures are swallowed;
-   - it calls `state.client.reflect(...)` with `query`, optional `context`, configured recall budget, and bank-scope tag filters;
-   - `HindsightApi.reflect(...)` POSTs `/v1/default/banks/{bank_id}/reflect` and defaults its own budget to `"low"` when callers omit one; this tool always passes the configured budget;
-   - blank or whitespace-only responses are replaced with `No relevant information found to reflect on.`
-5. Backend failures are logged with `logger.warn("reflect failed", ...)` and rethrown as `Error` instances when needed.
+
+1. MemoryReflectTool.createIf(...) exposes the tool when memory.backend is either "hindsight" or "mnemopi".
+2. execute(...) runs under untilAborted(...), obtains MemoryRuntimeContext from ToolSession.getMemoryRuntime(), and calls reflect(...) on the selected MemoryBackendRuntime.
+3. For mnemopi, that runtime resolves its provider-owned state; if context has non-whitespace content it recalls with <query>\n\nAdditional context:\n<context>, otherwise it recalls with query, then formats any results through state.formatContextScoped(...) with the Based on recalled memories: prefix.
+4. For hindsight, that runtime resolves its provider-owned state, best-effort calls ensureBankExists(...) for the current bank/config, then calls state.client.reflect(...) with query, optional context, configured recall budget, and bank-scope tag filters. Blank responses become No relevant information found to reflect on.
+5. Backend failures are logged with logger.warn("reflect failed", ...) and rethrown as Error instances when needed.
 
 ## Modes / Variants
 - Hindsight tool path: one remote reflect request, optionally focused by `context`.

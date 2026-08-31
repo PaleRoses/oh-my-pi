@@ -37,12 +37,17 @@ For a single-line value, OMP first tries to read that value as a file path. If r
 
 ### Session-scoped prompt profiles
 
-`systemPromptProfiles` and `systemPromptProfileRoutes` parameterize prompt identity without changing CLI model selection. Routes are ordered and may match `agentKind` (`main` or `sub`) plus an optional `provider/model` glob:
+`systemPromptProfiles` and `systemPromptProfileRoutes` parameterize prompt identity without changing CLI model selection. Each profile can declare the closed `constitution` selection independently of a route's model glob; `fable` is the only accepted value. Routes are ordered and may match `agentKind` (`main` or `sub`) plus an optional `provider/model` glob.
+
+Routes are first-match. A model-qualified `main` route that selects a constitutional profile must precede generic `main`, or the generic route catches the model first. A model name does not select a constitution; only the selected profile does.
+
 Task sessions derive `sub` from their task metadata. Internal SDK callers without task metadata set `agentKind` explicitly, so commit, security, and agent-creation workers do not inherit the main-session profile.
 
 ```yaml
 systemPromptProfiles:
   driver: {}
+  fable-driver:
+    constitution: fable
   worker:
     instructionsFile: ~/.omp/agent/prompts/worker-constitution.md
     memory: false
@@ -51,6 +56,9 @@ systemPromptProfiles:
 
 systemPromptProfileRoutes:
   - agentKind: main
+    model: anthropic/claude-opus-*
+    profile: fable-driver
+  - agentKind: main
     profile: driver
   - agentKind: sub
     profile: worker
@@ -58,6 +66,7 @@ systemPromptProfileRoutes:
 
 Profiles support these prompt fields:
 
+- `constitution: fable` is the only allowed constitution selection. It is profile-owned and compiled with the profile; a route's model glob only selects that profile. Omit it to leave the constitution unspecified. Configure this closed field directly in YAML.
 - `prompt` or `promptFile` replaces ambient discovered `SYSTEM.md` while retaining normal generated prompt assembly. An explicit `--system-prompt` or SDK override still wins.
 - Omitting both keeps the maintained OMP prompt.
 - `instructions` or `instructionsFile` appends one profile-owned system block after the assembled prompt.
@@ -69,8 +78,8 @@ Profiles support these prompt fields:
 - `compactionIdentity` adds one paragraph to the compaction summarizer's system prompt, e.g. `compactionIdentity: "The assistant is Fable; the user is Rosalia."` so the summary that survives compaction names the participants instead of writing about "the assistant" and "the user". It rides every summarization call on the compaction path (initial summary, iterative update, short summary, turn prefix); unset keeps the historical single-element summarizer prompt, so profiles without the field are byte-identical to before.
 - `tools` names the model-facing active tool set (lowercased, deduplicated at compile). The cut intersects the assembled set — built-ins, custom, and extension tools alike — while preserving session contracts: `ask` stays reachable while enabled, a required `yield` survives, `checkpoint`/`rewind` remain paired, `hub` rides along whenever `task` is listed (an orchestrator that can spawn subagents can always steer, wait on, and cancel them — from eval cells too), and memory tools ride the profile's `memory` axis rather than the list. The full registry stays constructed, so `/tools` can re-activate anything outside the profile's default set. Empty or omitted keeps every tool.
 
-`/prompt` is the compact operator surface for these settings. Bare `/prompt` or
-`/prompts` opens the keyboard-driven profile menu in the interactive TUI. The
+`/prompt` is the compact operator surface for these settings. Bare `/prompt`
+opens the keyboard-driven profile menu in the interactive TUI. The
 menu presents one base-prompt document and one appended-instructions document;
 the inline and file-backed configuration representations are not separate UI
 rows. A configured `promptFile` or `instructionsFile` opens at its resolved
@@ -87,9 +96,9 @@ the active immutable identity plus every configured profile and route;
 `/prompt show <profile>` expands one profile. Mutations use `/prompt use
 <profile> [main|sub]`, `/prompt unroute [main|sub]`, `/prompt set <profile>
 <field> <value>`, `/prompt unset <profile> <field>`, and `/prompt remove
-<profile>`. `set` accepts the exact fields above, creates a missing profile, and
-validates the complete configuration, including referenced files, before
-writing.
+<profile>`. `set` accepts the listed prompt fields except `constitution`, which is
+configured directly in YAML; it creates a missing profile and validates the
+complete configuration, including referenced files, before writing.
 
 OMP resolves files and compiles model globs once at process/session creation. The selected profile ID is recorded in the transcript header, emitted as `<system-prompt-profile id="…">`, and included in the provider prompt-cache key. Model changes that route to another profile are rejected before model mutation; incompatible live session switches leave the current session intact. Relaunch OMP to load a changed prompt identity: `/new` inherits the current profile ID and does not recompile profile content. `/identity` reports the effective role, prompt principal/profile/source, model, session ID, memory permission/backend, and active Hindsight bank scope.
 

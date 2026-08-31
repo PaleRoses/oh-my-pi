@@ -18,7 +18,7 @@ import { resolveMemoryBackend } from "../memory-backend/resolve";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
-import { usesCodexTaskPrompt, usesFableConstitution } from "../task/prompt-policy";
+import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
@@ -578,17 +578,14 @@ export class SessionTools {
 	#currentPromptModelKey(): string | undefined {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
-		// With `includeModelInPrompt: false` the key collapses to the prompt
-		// *policy* instead of the exact model — but every input that changes
-		// the rendered constitution must survive the collapse, or a model
-		// switch keeps the previous constitution (e.g. Opus waking up with the
-		// Fable prompt). Policy inputs: codex task policy + fable constitution.
+		// With `includeModelInPrompt: false` the key collapses to the model
+		// prompt policy. The selected profile remains an explicit cache boundary.
 		const modelKey =
 			!model || this.#host.settings.get("includeModelInPrompt")
 				? model
-				: `${usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default"}${
-						usesFableConstitution(model) ? ":fable" : ""
-					}`;
+				: usesCodexTaskPrompt(model)
+					? "task-policy:gpt-5.6"
+					: "task-policy:default";
 		return this.#identity.prompt.profileId
 			? `system-prompt-profile:${this.#identity.prompt.profileId}:${modelKey ?? "model:none"}`
 			: modelKey;

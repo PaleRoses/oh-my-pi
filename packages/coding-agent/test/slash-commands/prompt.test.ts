@@ -67,7 +67,11 @@ describe("/prompt slash command", () => {
 				"Active: role=main; profile=driver; principal=maintained-omp-prompt; source=maintained-omp-prompt",
 			),
 		);
-		expect(harness.output).toHaveBeenCalledWith(expect.stringContaining("driver: base=maintained"));
+		expect(harness.output).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"driver: constitution=none; base=maintained; append=none; context=all; memory=on; mcp=on; images=0; user=default; identity=default; tools=all",
+			),
+		);
 		expect(harness.output).toHaveBeenCalledWith(expect.stringContaining("1. main · * -> driver"));
 		expect(harness.set).not.toHaveBeenCalled();
 	});
@@ -131,6 +135,28 @@ describe("/prompt slash command", () => {
 
 		expect(harness.store.systemPromptProfiles.driver).toEqual({ memory: false, projectContextOnly: true });
 		expect(harness.flush).toHaveBeenCalledTimes(2);
+	});
+
+	it("sets only the closed Fable constitution and restores its default", async () => {
+		const harness = createRuntime();
+
+		await executeAcpBuiltinSlashCommand("/prompt set driver constitution fable", harness.runtime);
+		expect(harness.store.systemPromptProfiles.driver).toEqual({ constitution: "fable" });
+
+		await executeAcpBuiltinSlashCommand("/prompt status", harness.runtime);
+		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("driver: constitution=fable"));
+		await executeAcpBuiltinSlashCommand("/prompt show driver", harness.runtime);
+		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("constitution: fable"));
+
+		harness.set.mockClear();
+		await executeAcpBuiltinSlashCommand("/prompt set driver constitution other", harness.runtime);
+		expect(harness.set).not.toHaveBeenCalled();
+		expect(harness.output).toHaveBeenLastCalledWith(
+			'Prompt profile error: constitution expects fable, received "other".',
+		);
+
+		await executeAcpBuiltinSlashCommand("/prompt unset driver constitution", harness.runtime);
+		expect(harness.store.systemPromptProfiles.driver).toEqual({});
 	});
 
 	it("rejects invalid values without mutating settings", async () => {

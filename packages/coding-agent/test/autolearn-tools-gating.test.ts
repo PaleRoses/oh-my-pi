@@ -6,8 +6,12 @@ import { type } from "@oh-my-pi/omptype";
 import { getManagedSkillsDir } from "@oh-my-pi/pi-coding-agent/autolearn/managed-skills";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resetActiveSkillsForTests, type Skill, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
-import type { MnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
+import { createMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend";
+import type {
+	MemoryBackendSaveInput,
+	MemoryBackendSaveResult,
+	MemoryRuntimeContext,
+} from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
 import { ManageSkillTool } from "@oh-my-pi/pi-coding-agent/tools/manage-skill";
@@ -18,14 +22,82 @@ function makeSession(
 	settingsOverrides: Partial<Record<SettingPath, unknown>> = {},
 	extra: Partial<ToolSession> = {},
 ): ToolSession {
+	const settings = Settings.isolated(settingsOverrides);
+	const memoryRuntime = createMemoryRuntimeContext({
+		agentDir: "/tmp/agent",
+		cwd: "/tmp/test",
+		settings,
+	});
 	return {
 		cwd: "/tmp/test",
 		hasUI: false,
 		skipPythonPreflight: true,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
-		settings: Settings.isolated(settingsOverrides),
+		getMemoryRuntime: () => memoryRuntime,
+		settings,
 		...extra,
+	};
+}
+
+function saveRuntime(
+	backend: "hindsight" | "mnemopi",
+	save: (input: MemoryBackendSaveInput) => Promise<MemoryBackendSaveResult>,
+): MemoryRuntimeContext {
+	return {
+		async capabilities() {
+			return { recall: false, retain: false, reflect: false, edit: false, save: true };
+		},
+		async identity() {
+			return backend === "mnemopi"
+				? { backend, status: "active", banks: ["test"] }
+				: { backend, status: "active", bank: "test", project: "test", scope: "per-project", tags: [] };
+		},
+		async mentalModels() {
+			return backend === "hindsight" ? { backend, status: "disabled" } : { backend, status: "unsupported" };
+		},
+		async status() {
+			return { backend, active: true, writable: true, searchable: false };
+		},
+		async search(query) {
+			return { backend, query, count: 0, items: [] };
+		},
+		async save(input) {
+			return await save(typeof input === "string" ? { content: input } : input);
+		},
+		async retain() {
+			return {
+				backend,
+				accepted: 0,
+				stored: 0,
+				queued: false,
+				message: "Retaining memory is not available in this autolearn test.",
+			};
+		},
+		async recall(query) {
+			return {
+				backend,
+				query,
+				count: 0,
+				items: [],
+				rendered: "",
+				message: "Recalling memory is not available in this autolearn test.",
+			};
+		},
+		async reflect() {
+			return {
+				backend,
+				text: "",
+				message: "Reflecting on memory is not available in this autolearn test.",
+			};
+		},
+		async edit() {
+			return {
+				backend,
+				status: "unsupported",
+				message: "Editing memory is not available in this autolearn test.",
+			};
+		},
 	};
 }
 
@@ -200,17 +272,15 @@ describe("learn execute", () => {
 	let originalAgentDir: string;
 
 	function learnSession(): ToolSession {
-		const fakeState = {
-			sessionId: "sess-1",
-			session: { sessionManager: { getCwd: () => "/tmp/work" } },
-			rememberScoped: (memory: string) => {
-				remembered.push(memory);
-				return "mem-id";
-			},
-		};
 		return makeSession(
 			{ "autolearn.enabled": true, "memory.backend": "mnemopi" },
-			{ getMnemopiSessionState: () => fakeState as unknown as MnemopiSessionState },
+			{
+				getMemoryRuntime: () =>
+					saveRuntime("mnemopi", async input => {
+						remembered.push(input.content);
+						return { backend: "mnemopi", stored: 1, ids: ["mem-id"] };
+					}),
+			},
 		);
 	}
 
@@ -260,12 +330,11 @@ describe("learn execute", () => {
 		const session = makeSession(
 			{ "autolearn.enabled": true, "memory.backend": "hindsight" },
 			{
-				getHindsightSessionState: () =>
-					({
-						enqueueRetain: (memory: string, context?: string) => {
-							queued.push({ memory, context });
-						},
-					}) as unknown as HindsightSessionState,
+				getMemoryRuntime: () =>
+					saveRuntime("hindsight", async input => {
+						queued.push({ memory: input.content, context: input.context });
+						return { backend: "hindsight", stored: 0, queued: true };
+					}),
 			},
 		);
 
@@ -283,12 +352,11 @@ describe("learn execute", () => {
 		const session = makeSession(
 			{ "autolearn.enabled": true, "memory.backend": "hindsight" },
 			{
-				getHindsightSessionState: () =>
-					({
-						enqueueRetain: (memory: string) => {
-							queued.push(memory);
-						},
-					}) as unknown as HindsightSessionState,
+				getMemoryRuntime: () =>
+					saveRuntime("hindsight", async input => {
+						queued.push(input.content);
+						return { backend: "hindsight", stored: 0, queued: true };
+					}),
 			},
 		);
 
@@ -302,14 +370,16 @@ describe("learn execute", () => {
 	});
 
 	it("fails the lesson and skips the skill when mnemopi returns no id", async () => {
-		const failingState = {
-			sessionId: "sess-2",
-			session: { sessionManager: { getCwd: () => "/tmp/work" } },
-			rememberScoped: () => undefined,
-		};
 		const session = makeSession(
 			{ "autolearn.enabled": true, "memory.backend": "mnemopi" },
-			{ getMnemopiSessionState: () => failingState as unknown as MnemopiSessionState },
+			{
+				getMemoryRuntime: () =>
+					saveRuntime("mnemopi", async () => ({
+						backend: "mnemopi",
+						stored: 0,
+						message: "Mnemopi did not store the lesson.",
+					})),
+			},
 		);
 		await expect(
 			new LearnTool(session).execute("5", {

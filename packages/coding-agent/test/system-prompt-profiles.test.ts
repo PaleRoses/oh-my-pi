@@ -10,31 +10,45 @@ function selectedProfileId(decision: SystemPromptProfileDecision): string | unde
 }
 
 describe("system prompt profiles", () => {
-	it("routes the same Fable model by agent kind", async () => {
+	it("routes the constitutional profile before generic main routes without model-name selection", async () => {
 		const resolver = await createSystemPromptProfileResolver({
 			cwd: "/tmp",
 			profiles: {
 				driver: {},
+				"fable-driver": { constitution: "fable" },
 				worker: { prompt: "WORKER CONSTITUTION" },
 			},
 			routes: [
-				{ agentKind: "main", model: "anthropic/claude-fable-*", profile: "driver" },
+				{ agentKind: "main", model: "mock/constitutional-*", profile: "fable-driver" },
+				{ agentKind: "main", profile: "driver" },
 				{ agentKind: "sub", profile: "worker" },
 			],
 		});
 
-		expect(selectedProfileId(resolver.resolveInitial({ agentKind: "main", model: "anthropic/claude-fable-5" }))).toBe(
-			"driver",
-		);
-		expect(selectedProfileId(resolver.resolveInitial({ agentKind: "sub", model: "anthropic/claude-fable-5" }))).toBe(
-			"worker",
-		);
-		expect(selectedProfileId(resolver.resolveInitial({ agentKind: "sub", model: "openai-codex/gpt-5.6-sol" }))).toBe(
-			"worker",
-		);
-		expect(resolver.resolveInitial({ agentKind: "main", model: "openai-codex/gpt-5.6-sol" })).toEqual({
-			type: "default",
-		});
+		const fableMain = resolver.resolveInitial({ agentKind: "main", model: "mock/constitutional-main" });
+		expect(selectedProfileId(fableMain)).toBe("fable-driver");
+		if (fableMain.type !== "profile") throw new Error("Expected Fable driver profile");
+		expect(fableMain.profile.constitution).toBe("fable");
+
+		const genericMain = resolver.resolveInitial({ agentKind: "main", model: "mock/fable-in-name" });
+		expect(selectedProfileId(genericMain)).toBe("driver");
+		if (genericMain.type !== "profile") throw new Error("Expected generic driver profile");
+		expect(genericMain.profile.constitution).toBeUndefined();
+
+		const fableSub = resolver.resolveInitial({ agentKind: "sub", model: "mock/fable-in-name" });
+		expect(selectedProfileId(fableSub)).toBe("worker");
+		if (fableSub.type !== "profile") throw new Error("Expected worker profile");
+		expect(fableSub.profile.constitution).toBeUndefined();
+	});
+
+	it("rejects unknown constitution values", async () => {
+		await expect(
+			createSystemPromptProfileResolver({
+				cwd: "/tmp",
+				profiles: { driver: { constitution: "unknown" } },
+				routes: [{ agentKind: "main", profile: "driver" }],
+			}),
+		).rejects.toThrow("constitution");
 	});
 
 	it("loads trailing profile instructions from a file while leaving the maintained prompt selected", async () => {
@@ -53,7 +67,7 @@ describe("system prompt profiles", () => {
 				},
 				routes: [{ agentKind: "sub", profile: "worker" }],
 			});
-			const decision = resolver.resolveInitial({ agentKind: "sub", model: "anthropic/claude-fable-5" });
+			const decision = resolver.resolveInitial({ agentKind: "sub", model: "mock/worker-model" });
 
 			expect(decision.type).toBe("profile");
 			if (decision.type !== "profile") throw new Error("Expected worker profile");
@@ -76,7 +90,7 @@ describe("system prompt profiles", () => {
 				profiles: { driver: { contextImages: ["portrait.webp"] } },
 				routes: [{ agentKind: "main", profile: "driver" }],
 			});
-			const decision = resolver.resolveInitial({ agentKind: "main", model: "anthropic/claude-fable-5" });
+			const decision = resolver.resolveInitial({ agentKind: "main", model: "mock/driver-model" });
 			expect(decision.type).toBe("profile");
 			if (decision.type !== "profile") throw new Error("Expected driver profile");
 			expect(decision.profile.contextImages).toEqual([dir.join("portrait.webp")]);
@@ -99,7 +113,7 @@ describe("system prompt profiles", () => {
 			profiles: { rlm: { tools: ["Eval", "write", "eval", "read"] } },
 			routes: [{ agentKind: "main", profile: "rlm" }],
 		});
-		const decision = resolver.resolveInitial({ agentKind: "main", model: "anthropic/claude-fable-5" });
+		const decision = resolver.resolveInitial({ agentKind: "main", model: "mock/rlm-model" });
 		expect(decision.type).toBe("profile");
 		if (decision.type !== "profile") throw new Error("Expected rlm profile");
 		expect(decision.profile.tools).toEqual(["eval", "write", "read"]);
@@ -126,40 +140,40 @@ describe("system prompt profiles", () => {
 			cwd: "/tmp",
 			profiles: { worker: { prompt: "WORKER" } },
 			routes: [
-				{ agentKind: "main", model: "anthropic/claude-fable-*", deny: true, reason: "driver unavailable" },
+				{ agentKind: "main", model: "mock/denied-model", deny: true, reason: "driver unavailable" },
 				{ agentKind: "sub", profile: "worker" },
 			],
 		});
-		expect(resolver.resolveInitial({ agentKind: "main", model: "anthropic/claude-fable-5" })).toEqual({
+		expect(resolver.resolveInitial({ agentKind: "main", model: "mock/denied-model" })).toEqual({
 			type: "denied",
 			reason: "driver unavailable",
 		});
-		expect(() =>
-			resolver.assertCompatible(undefined, { agentKind: "main", model: "anthropic/claude-fable-5" }),
-		).toThrow("driver unavailable");
+		expect(() => resolver.assertCompatible(undefined, { agentKind: "main", model: "mock/denied-model" })).toThrow(
+			"driver unavailable",
+		);
 	});
 
-	it("accepts only model transitions that retain the pinned profile", async () => {
+	it("pins model transitions to the selected constitution profile", async () => {
 		const resolver = await createSystemPromptProfileResolver({
 			cwd: "/tmp",
 			profiles: {
 				driver: { prompt: "DRIVER" },
-				worker: { prompt: "WORKER" },
+				"fable-driver": { constitution: "fable", prompt: "FABLE DRIVER" },
 			},
 			routes: [
-				{ agentKind: "main", model: "anthropic/claude-fable-*", profile: "driver" },
-				{ agentKind: "main", model: "openai-codex/*", profile: "worker" },
+				{ agentKind: "main", model: "mock/constitutional-*", profile: "fable-driver" },
+				{ agentKind: "main", profile: "driver" },
 			],
 		});
 
 		expect(() =>
-			resolver.assertCompatible("driver", { agentKind: "main", model: "anthropic/claude-fable-5" }),
+			resolver.assertCompatible("fable-driver", { agentKind: "main", model: "mock/constitutional-main" }),
 		).not.toThrow();
 		expect(() =>
-			resolver.assertCompatible("driver", { agentKind: "main", model: "openai-codex/gpt-5.6-sol" }),
-		).toThrow('pinned to system prompt profile "driver"');
+			resolver.assertCompatible("fable-driver", { agentKind: "main", model: "mock/default-main" }),
+		).toThrow('pinned to system prompt profile "fable-driver"');
 		expect(() =>
-			resolver.assertCompatible(undefined, { agentKind: "main", model: "google/gemini-3.5" }),
+			resolver.assertCompatible("driver", { agentKind: "main", model: "mock/default-main" }),
 		).not.toThrow();
 	});
 });

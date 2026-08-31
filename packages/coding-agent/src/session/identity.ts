@@ -1,6 +1,6 @@
 import type { SystemPromptProfileAgentKind } from "../config/settings-schema";
-import type { HindsightScoping } from "../hindsight/config";
-import type { MemoryBackendId } from "../memory-backend/types";
+import type { MemoryBackendIdentity } from "../memory-backend/types";
+import type { AgentSession } from "./agent-session";
 
 export type EffectivePromptSource =
 	| "maintained-omp-prompt"
@@ -63,35 +63,22 @@ export function formatIdentityModel(
 	return model ? `${model.provider}/${model.id}` : undefined;
 }
 
-export interface AgentIdentityHindsightView {
-	readonly bankId: string;
-	readonly projectLabel: string;
-	readonly config: { readonly scoping: HindsightScoping };
-	readonly retainTags?: readonly string[];
-	readonly recallTags?: readonly string[];
-}
-
-interface AgentIdentityView {
-	readonly effectiveIdentity: EffectiveSessionIdentity;
-	readonly model?: { readonly provider: string; readonly id: string };
-	readonly sessionId: string;
-	readonly settings: { get(path: "memory.backend"): MemoryBackendId };
-	getHindsightSessionState(): AgentIdentityHindsightView | undefined;
-}
+type MemoryIdentityProjection =
+	| MemoryBackendIdentity
+	| { readonly backend: "unavailable"; readonly status: "not-started" };
 
 export interface AgentIdentitySnapshotInput {
 	readonly effectiveIdentity: EffectiveSessionIdentity;
 	readonly model?: { readonly provider: string; readonly id: string };
 	readonly sessionId: string;
-	readonly memoryBackend: MemoryBackendId;
-	readonly hindsight?: AgentIdentityHindsightView;
+	readonly memoryIdentity: MemoryBackendIdentity | undefined;
 }
 
 export interface AgentIdentitySnapshot extends EffectiveSessionIdentity {
 	readonly sessionId: string;
 	readonly model: { readonly status: "active"; readonly value: string } | { readonly status: "unavailable" };
 	readonly memory: EffectiveMemoryCapability & {
-		readonly backend: MemoryBackendId;
+		readonly backend: MemoryIdentityProjection["backend"];
 		readonly hindsight:
 			| { readonly status: "disabled-by-profile" }
 			| { readonly status: "disabled" }
@@ -100,7 +87,7 @@ export interface AgentIdentitySnapshot extends EffectiveSessionIdentity {
 					readonly status: "active";
 					readonly bank: string;
 					readonly project: string;
-					readonly scope: HindsightScoping;
+					readonly scope: "global" | "per-project" | "per-project-tagged";
 					readonly tags: readonly string[];
 			  };
 	};
@@ -110,22 +97,22 @@ export function deriveAgentIdentitySnapshot(input: AgentIdentitySnapshotInput): 
 	const identity = input.effectiveIdentity;
 	const modelValue = formatIdentityModel(input.model);
 	const model = modelValue ? ({ status: "active", value: modelValue } as const) : ({ status: "unavailable" } as const);
-	const hindsightState =
-		identity.memory.status === "enabled" && input.memoryBackend === "hindsight" ? input.hindsight : undefined;
+	const memoryIdentity: MemoryIdentityProjection = input.memoryIdentity ?? {
+		backend: "unavailable",
+		status: "not-started",
+	};
 	const hindsight =
 		identity.memory.status === "disabled-by-profile"
 			? ({ status: "disabled-by-profile" } as const)
-			: input.memoryBackend !== "hindsight"
+			: memoryIdentity.backend !== "hindsight"
 				? ({ status: "disabled" } as const)
-				: hindsightState
+				: memoryIdentity.status === "active"
 					? ({
 							status: "active",
-							bank: hindsightState.bankId,
-							project: hindsightState.projectLabel,
-							scope: hindsightState.config.scoping,
-							tags: Array.from(
-								new Set([...(hindsightState.retainTags ?? []), ...(hindsightState.recallTags ?? [])]),
-							).sort(),
+							bank: memoryIdentity.bank,
+							project: memoryIdentity.project,
+							scope: memoryIdentity.scope,
+							tags: memoryIdentity.tags,
 						} as const)
 					: ({ status: "configured-not-started" } as const);
 	return {
@@ -134,19 +121,18 @@ export function deriveAgentIdentitySnapshot(input: AgentIdentitySnapshotInput): 
 		sessionId: input.sessionId,
 		memory: {
 			...identity.memory,
-			backend: input.memoryBackend,
+			backend: memoryIdentity.backend,
 			hindsight,
 		},
 	};
 }
 
-export function snapshotAgentIdentity(session: AgentIdentityView): AgentIdentitySnapshot {
+export function snapshotAgentIdentity(session: AgentSession): AgentIdentitySnapshot {
 	return deriveAgentIdentitySnapshot({
 		effectiveIdentity: session.effectiveIdentity,
 		model: session.model,
 		sessionId: session.sessionId,
-		memoryBackend: session.settings.get("memory.backend"),
-		hindsight: session.getHindsightSessionState(),
+		memoryIdentity: session.memoryIdentity(),
 	});
 }
 

@@ -89,9 +89,11 @@ export interface ScheduleSnapshot extends ScheduleSpec {
 	firedCount: number;
 }
 
-/** Unsolicited push when a schedule fires, sent to the socket subscribed for the schedule's session. */
+/** Unsolicited push when a schedule fires, retained until its owning session acknowledges acceptance. */
 export interface ScheduleFireNotification {
 	event: "schedule-fire";
+	/** Stable delivery identity used to replay this fire until the session accepts it. */
+	fireId: string;
 	schedule: ScheduleSnapshot;
 	firedAt: number;
 }
@@ -123,7 +125,7 @@ export type DaemonOperation =
 	| { op: "describe"; name: string }
 	| { op: "schedule-set"; spec: ScheduleSpec }
 	| { op: "schedule-list" }
-	| { op: "schedule-clear"; name: string }
+	| { op: "schedule-clear"; name: string; sessionId: string }
 	| { op: "shutdown" };
 
 /** Typed broker result decoded before it reaches tool code. */
@@ -150,7 +152,7 @@ export type DaemonRpcResult =
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
 	| { op: "schedule-set"; schedule: ScheduleSnapshot }
 	| { op: "schedule-list"; schedules: ScheduleSnapshot[] }
-	| { op: "schedule-clear"; name: string }
+	| { op: "schedule-clear"; name: string; sessionId: string }
 	| { op: "shutdown" };
 
 /** Authenticated request envelope used by socket clients. */
@@ -161,6 +163,7 @@ export interface DaemonWireRequest {
 	detachedOwners?: string[];
 	completionEvents?: boolean;
 	completionAcks?: string[];
+	scheduleFireAcks?: string[];
 	completionUnsubscribes?: string[];
 	completionReplays?: string[];
 	completionSubscriptionId?: string;
@@ -366,6 +369,10 @@ export function parseDaemonWireRequest(value: unknown): DaemonWireRequest {
 				: booleanValue(source.completionEvents, "request.completionEvents"),
 		completionAcks:
 			source.completionAcks === undefined ? undefined : stringArray(source.completionAcks, "request.completionAcks"),
+		scheduleFireAcks:
+			source.scheduleFireAcks === undefined
+				? undefined
+				: stringArray(source.scheduleFireAcks, "request.scheduleFireAcks"),
 		completionUnsubscribes:
 			source.completionUnsubscribes === undefined
 				? undefined
@@ -391,7 +398,7 @@ export function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 	throw new Error("response.ok must be a boolean");
 }
 
-/** Decode one broker response or unsolicited completion notification. */
+/** Decode one broker response or unsolicited owner notification. */
 export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 	const source = record(value, "daemon message");
 	if (source.event === "daemon-completed") {
@@ -405,6 +412,7 @@ export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 	if (source.event === "schedule-fire") {
 		return {
 			event: "schedule-fire",
+			fireId: stringValue(source.fireId, "schedule.fireId"),
 			schedule: parseScheduleSnapshot(source.schedule),
 			firedAt: numberValue(source.firedAt, "schedule.firedAt"),
 		};
@@ -473,7 +481,11 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 		case "schedule-list":
 			return { op };
 		case "schedule-clear":
-			return { op, name: stringValue(source.name, "operation.name") };
+			return {
+				op,
+				name: stringValue(source.name, "operation.name"),
+				sessionId: stringValue(source.sessionId, "operation.sessionId"),
+			};
 		default:
 			throw new Error(`Unknown daemon operation: ${op}`);
 	}
@@ -534,7 +546,11 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			return { op: "schedule-list", schedules: source.schedules.map(parseScheduleSnapshot) };
 		}
 		case "schedule-clear":
-			return { op: "schedule-clear", name: stringValue(source.name, "result.name") };
+			return {
+				op: "schedule-clear",
+				name: stringValue(source.name, "result.name"),
+				sessionId: stringValue(source.sessionId, "result.sessionId"),
+			};
 		case "shutdown":
 			return { op: "shutdown" };
 	}

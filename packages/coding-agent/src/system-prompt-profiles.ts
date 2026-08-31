@@ -1,10 +1,17 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "arktype";
-import type { SystemPromptProfileAgentKind, SystemPromptProfileRouteSetting } from "./config/settings-schema";
+import {
+	SYSTEM_PROMPT_PROFILE_CONSTITUTION_VALUES,
+	type SystemPromptProfileAgentKind,
+	type SystemPromptProfileConstitution,
+	type SystemPromptProfileRouteSetting,
+} from "./config/settings-schema";
 
 export interface SystemPromptProfile {
 	readonly id: string;
+	/** Closed profile-owned constitution selection. */
+	readonly constitution?: SystemPromptProfileConstitution;
 	readonly prompt?: string;
 	readonly instructions?: string;
 	readonly projectContextOnly: boolean;
@@ -43,8 +50,10 @@ export function systemPromptProfileCacheKey(baseKey: string, profileId: string):
 	return `${baseKey}:system-prompt-profile:${profileId}`;
 }
 
+const systemPromptProfileConstitutionSchema = type.enumerated(...SYSTEM_PROMPT_PROFILE_CONSTITUTION_VALUES);
 const systemPromptProfileSchema = type({
 	"+": "reject",
+	"constitution?": systemPromptProfileConstitutionSchema,
 	"prompt?": "string",
 	"promptFile?": "string",
 	"instructions?": "string",
@@ -184,6 +193,7 @@ async function compileProfile(
 				: undefined;
 	return {
 		id: profileId,
+		constitution: raw.constitution,
 		prompt,
 		instructions,
 		projectContextOnly: raw.projectContextOnly === true,

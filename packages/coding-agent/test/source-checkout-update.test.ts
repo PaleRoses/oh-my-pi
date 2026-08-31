@@ -100,6 +100,19 @@ function advanceUpstream(fixture: Fixture, conflict = false): string {
 	return runGit(fixture.seed, ["rev-parse", "HEAD"]);
 }
 
+function replaceUpstreamHistory(fixture: Fixture): string {
+	const unrelated = path.join(fixture.root.path(), "unrelated-upstream");
+	fs.mkdirSync(unrelated);
+	runGit(unrelated, ["init", "-b", "main"]);
+	configureIdentity(unrelated);
+	fs.writeFileSync(path.join(unrelated, "unrelated.txt"), "unrelated\n");
+	runGit(unrelated, ["add", "unrelated.txt"]);
+	runGit(unrelated, ["commit", "-m", "unrelated"]);
+	runGit(unrelated, ["remote", "add", "upstream", fixture.upstream]);
+	runGit(unrelated, ["push", "--force", "upstream", "main"]);
+	return runGit(unrelated, ["rev-parse", "HEAD"]);
+}
+
 function publishedHead(fixture: Fixture): string {
 	return runGit(fixture.origin, ["rev-parse", "refs/heads/agent-profiles"]);
 }
@@ -133,6 +146,18 @@ describe("source checkout update", () => {
 				throw new Error("check-only mode must not validate");
 			},
 		});
+
+		expect(result).toEqual({ kind: "available", commits: 1, head: fixture.originalHead, upstream: upstreamHead });
+		expect(runGit(fixture.checkout, ["rev-parse", "HEAD"])).toBe(fixture.originalHead);
+		expect(runGit(fixture.checkout, ["status", "--porcelain"])).toBe("");
+		expect(publishedHead(fixture)).toBe(fixture.originalHead);
+	});
+
+	it("reports unrelated upstream history without changing the checkout", async () => {
+		const fixture = createFixture();
+		const upstreamHead = replaceUpstreamHistory(fixture);
+
+		const result = await update(fixture, { check: true });
 
 		expect(result).toEqual({ kind: "available", commits: 1, head: fixture.originalHead, upstream: upstreamHead });
 		expect(runGit(fixture.checkout, ["rev-parse", "HEAD"])).toBe(fixture.originalHead);

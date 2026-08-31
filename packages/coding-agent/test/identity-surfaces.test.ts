@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { MemoryBackendIdentity } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import { FooterComponent } from "@oh-my-pi/pi-coding-agent/modes/components/footer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -21,14 +22,7 @@ interface SessionStubOptions {
 	promptSource?: EffectivePromptSource;
 	memoryEnabled?: boolean;
 	model?: { provider: string; id: string; contextWindow: number };
-	memoryBackend?: "off" | "local" | "hindsight" | "mnemopi";
-	hindsight?: {
-		bankId: string;
-		projectLabel: string;
-		config: { scoping: "global" | "per-project" | "per-project-tagged" };
-		retainTags?: string[];
-		recallTags?: string[];
-	};
+	memoryIdentity?: MemoryBackendIdentity;
 }
 
 function sessionStub(options: SessionStubOptions = {}): AgentSession {
@@ -39,20 +33,21 @@ function sessionStub(options: SessionStubOptions = {}): AgentSession {
 		memoryEnabled: options.memoryEnabled ?? true,
 		...(options.promptProfile ? { profileId: options.promptProfile } : {}),
 	});
-	return {
+	const session = {
 		effectiveIdentity,
 		model,
 		sessionId: "session-01",
 		settings: {
-			get: (path: string) => (path === "memory.backend" ? (options.memoryBackend ?? "off") : undefined),
+			get: (path: string) => (path === "memory.backend" ? (options.memoryIdentity?.backend ?? "off") : undefined),
 		},
-		getHindsightSessionState: () => options.hindsight,
 		state: { model },
 		sessionManager: { getEntries: () => [] },
 		getContextUsage: () => undefined,
 		modelRegistry: { isUsingOAuth: () => false },
 		isAutoThinking: false,
+		memoryIdentity: () => options.memoryIdentity ?? { backend: "off", status: "off" },
 	} as unknown as AgentSession;
+	return session;
 }
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -70,13 +65,13 @@ describe("canonical agent identity surfaces", () => {
 			role: "sub",
 			promptProfile: "fable",
 			model: { provider: "anthropic", id: "claude-opus-5", contextWindow: 200_000 },
-			memoryBackend: "hindsight",
-			hindsight: {
-				bankId: "pale-meridian",
-				projectLabel: "pale-meridian",
-				config: { scoping: "per-project-tagged" },
-				retainTags: ["project:pale-meridian", "agent:fable"],
-				recallTags: ["project:pale-meridian"],
+			memoryIdentity: {
+				backend: "hindsight",
+				status: "active",
+				bank: "pale-meridian",
+				project: "pale-meridian",
+				scope: "per-project-tagged",
+				tags: ["agent:fable", "project:pale-meridian"],
 			},
 		});
 		const snapshot = snapshotAgentIdentity(session);
@@ -114,12 +109,14 @@ describe("canonical agent identity surfaces", () => {
 
 	test("distinguishes policy denial, backend disablement, and a configured backend not yet started", () => {
 		const disabled = snapshotAgentIdentity(sessionStub());
-		const configured = snapshotAgentIdentity(sessionStub({ memoryBackend: "hindsight" }));
+		const configured = snapshotAgentIdentity(
+			sessionStub({ memoryIdentity: { backend: "hindsight", status: "configured-not-started" } }),
+		);
 		const denied = snapshotAgentIdentity(
 			sessionStub({
 				promptProfile: "isolated",
 				memoryEnabled: false,
-				memoryBackend: "hindsight",
+				memoryIdentity: { backend: "hindsight", status: "configured-not-started" },
 			}),
 		);
 
@@ -143,11 +140,13 @@ describe("canonical agent identity surfaces", () => {
 		const session = sessionStub({
 			promptProfile: "long-prompt-profile",
 			model: { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 128_000 },
-			memoryBackend: "hindsight",
-			hindsight: {
-				bankId: "long-hindsight-bank-name",
-				projectLabel: "pale-meridian",
-				config: { scoping: "global" },
+			memoryIdentity: {
+				backend: "hindsight",
+				status: "active",
+				bank: "long-hindsight-bank-name",
+				project: "pale-meridian",
+				scope: "global",
+				tags: [],
 			},
 		});
 		const footer = new FooterComponent(session);

@@ -18,17 +18,9 @@ import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-sha
 import { parseExportArgs } from "../../export/html/args";
 import { shareSession } from "../../export/share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
-import {
-	diffMentalModelContent,
-	type HindsightApi,
-	type HindsightSessionState,
-	loadHindsightConfig,
-	reloadMentalModelsForSession,
-	resolveSeedsForScope,
-	seedAlreadyExists,
-	summarizeMentalModel,
-} from "../../hindsight";
+import { diffMentalModelContent } from "../../hindsight";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
+import type { MemoryBackendMentalModelController, MemoryBackendRuntime } from "../../memory-backend/types";
 import { BashExecutionComponent, bashPtyViewport } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -763,253 +755,177 @@ export class CommandController {
 		}
 
 		if (action === "mm") {
-			await this.#handleMentalModelsSubcommand(argumentText);
+			const runtime = backend.runtime({
+				agentDir,
+				cwd: this.ctx.sessionManager.getCwd(),
+				session: this.ctx.session,
+			});
+			await this.#handleMentalModelsSubcommand(argumentText, runtime);
 			return;
 		}
 
 		this.ctx.showError("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|mm ...>");
 	}
 
-	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {
-		// Parse: "mm <verb> [arg]"
+	async #handleMentalModelsSubcommand(argumentText: string, runtime: MemoryBackendRuntime): Promise<void> {
 		const parts = argumentText.split(/\s+/).slice(1);
 		const verb = parts[0]?.toLowerCase() ?? "list";
 		const arg = parts[1];
-
-		const state = this.ctx.session.getHindsightSessionState();
-		const primary = state && !state.isAlias ? state : undefined;
-		if (!primary) {
-			this.ctx.showError("Hindsight backend is not active for this session.");
+		const mentalModels = runtime.mentalModels();
+		if (mentalModels.status !== "active") {
+			this.ctx.showError(
+				mentalModels.backend === "hindsight" && mentalModels.status === "disabled"
+					? "Mental models are disabled (hindsight.mentalModelsEnabled = false)."
+					: "Hindsight backend is not active for this session.",
+			);
 			return;
 		}
-		if (!primary.config.mentalModelsEnabled) {
-			this.ctx.showError("Mental models are disabled (hindsight.mentalModelsEnabled = false).");
-			return;
-		}
-
 		switch (verb) {
 			case "list":
-				await this.#mmList(primary);
-				return;
+				return await this.#mmList(mentalModels.controller);
 			case "show":
 				if (!arg) return this.ctx.showError("Usage: /memory mm show <id>");
-				await this.#mmShow(primary, arg);
-				return;
+				return await this.#mmShow(mentalModels.controller, arg);
 			case "refresh":
-				await this.#mmRefresh(primary, arg);
-				return;
+				return await this.#mmRefresh(mentalModels.controller, arg);
 			case "history":
 				if (!arg) return this.ctx.showError("Usage: /memory mm history <id>");
-				await this.#mmHistory(primary, arg);
-				return;
+				return await this.#mmHistory(mentalModels.controller, arg);
 			case "seed":
-				await this.#mmSeed(primary);
-				return;
+				return await this.#mmSeed(mentalModels.controller);
 			case "reload":
-				await this.#mmReload(primary);
-				return;
+				return await this.#mmReload(mentalModels.controller);
 			case "delete":
 			case "remove":
 				if (!arg) return this.ctx.showError("Usage: /memory mm delete <id>");
-				await this.#mmDelete(primary, arg);
-				return;
+				return await this.#mmDelete(mentalModels.controller, arg);
 			default:
-				this.ctx.showError("Usage: /memory mm <list|show|refresh|history|seed|reload|delete>");
+				return this.ctx.showError("Usage: /memory mm <list|show|refresh|history|seed|reload|delete>");
 		}
 	}
 
-	async #mmList(state: HindsightSessionState): Promise<void> {
-		const client: HindsightApi = state.client;
+	async #mmList(controller: MemoryBackendMentalModelController): Promise<void> {
 		try {
-			const response = await client.listMentalModels(state.bankId, { detail: "metadata" });
-			const items = response.items ?? [];
-			if (items.length === 0) {
-				this.ctx.showStatus(`No mental models on bank ${state.bankId}.`);
-				return;
-			}
+			const items = await controller.list();
+			if (items.length === 0) return this.ctx.showStatus(`No mental models on bank ${controller.bank}.`);
+			const code = String.fromCharCode(96);
 			const lines = items
 				.slice()
 				.sort((a, b) => a.id.localeCompare(b.id))
-				.map(summarizeMentalModel);
-			showMarkdownPanel(this.ctx, `Mental Models — ${state.bankId}`, lines.join("\n"));
+				.map(
+					model =>
+						"- **" +
+						model.name +
+						"** (" +
+						code +
+						model.id +
+						code +
+						")" +
+						(model.tags.length > 0 ? ` — ${model.tags.join(", ")}` : ""),
+				);
+			showMarkdownPanel(this.ctx, `Mental Models — ${controller.bank}`, lines.join("\n"));
 		} catch (error) {
 			this.ctx.showError(`mm list failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
-	async #mmShow(state: HindsightSessionState, id: string): Promise<void> {
+	async #mmShow(controller: MemoryBackendMentalModelController, id: string): Promise<void> {
 		try {
-			const model = await state.client.getMentalModel(state.bankId, id, { detail: "content" });
-			if (!model) {
-				this.ctx.showError(`Mental model not found: ${id}`);
-				return;
-			}
-			const tags = model.tags && model.tags.length > 0 ? `\n_tags: ${model.tags.join(", ")}_` : "";
-			const refreshed = model.last_refreshed_at ? `\n_last refreshed: ${model.last_refreshed_at}_` : "";
-			const sourceQuery = model.source_query ? `\n\n**Source query:** ${model.source_query}` : "";
+			const model = await controller.show(id);
+			if (!model) return this.ctx.showError(`Mental model not found: ${id}`);
+			const tags = model.tags.length > 0 ? `\n_tags: ${model.tags.join(", ")}_` : "";
+			const refreshed = model.lastRefreshedAt ? `\n_last refreshed: ${model.lastRefreshedAt}_` : "";
+			const sourceQuery = model.sourceQuery ? `\n\n**Source query:** ${model.sourceQuery}` : "";
 			const content = (model.content ?? "_(empty — background reflect may still be running)_").trim();
+			const code = String.fromCharCode(96);
 			showMarkdownPanel(
 				this.ctx,
 				model.name,
-				`**id:** \`${model.id}\`${tags}${refreshed}${sourceQuery}\n\n${content}`,
+				`**id:** ${code}${model.id}${code}${tags}${refreshed}${sourceQuery}\n\n${content}`,
 			);
 		} catch (error) {
 			this.ctx.showError(`mm show failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
-	async #mmRefresh(state: HindsightSessionState, id: string | undefined): Promise<void> {
+	async #mmRefresh(controller: MemoryBackendMentalModelController, id: string | undefined): Promise<void> {
 		try {
-			if (id) {
-				// Single-model refresh is explicit operator intent: bypass the
-				// auto-refresh filter so curated/manual models can still be
-				// refreshed on demand.
-				await state.client.refreshMentalModel(state.bankId, id);
-				this.ctx.showStatus(`Refresh queued for mental model ${id}.`);
-			} else {
-				// Bulk refresh: only touch models that opted into automatic
-				// refresh via `trigger.refresh_after_consolidation`. Curated
-				// models are reviewed before publishing and must not be
-				// silently regenerated by a bank-wide refresh sweep. Reading
-				// `detail: "content"` here is required because the trigger
-				// field is excluded from `detail: "metadata"`.
-				const list = await state.client.listMentalModels(state.bankId, { detail: "content" });
-				const items = list.items ?? [];
-				if (items.length === 0) {
-					this.ctx.showStatus(`No mental models on bank ${state.bankId}.`);
-					return;
-				}
-				const targets = items.filter(m => m.trigger?.refresh_after_consolidation === true);
-				const skipped = items.length - targets.length;
-				if (targets.length === 0) {
+			const result = await controller.refresh(id);
+			switch (result.status) {
+				case "queued-one":
+					this.ctx.showStatus(`Refresh queued for mental model ${result.id}.`);
+					break;
+				case "queued-many":
 					this.ctx.showStatus(
-						`No mental models opted into auto-refresh; ${skipped} curated model(s) left untouched. Pass an explicit id to refresh one of them.`,
+						"Refresh queued for " +
+							result.queued +
+							"/" +
+							result.total +
+							" auto-refresh model(s)" +
+							(result.skipped > 0 ? `; skipped ${result.skipped} curated model(s)` : "") +
+							".",
 					);
-					return;
-				}
-				let queued = 0;
-				for (const item of targets) {
-					try {
-						await state.client.refreshMentalModel(state.bankId, item.id);
-						queued++;
-					} catch (error) {
-						this.ctx.showWarning(
-							`Refresh failed for ${item.id}: ${error instanceof Error ? error.message : String(error)}`,
-						);
-					}
-				}
-				const skippedSuffix = skipped > 0 ? `; skipped ${skipped} curated model(s)` : "";
-				this.ctx.showStatus(
-					`Refresh queued for ${queued}/${targets.length} auto-refresh model(s)${skippedSuffix}.`,
-				);
+					break;
+				case "no-models":
+					return this.ctx.showStatus(`No mental models on bank ${controller.bank}.`);
+				case "no-auto-refresh":
+					return this.ctx.showStatus(
+						"No mental models opted into auto-refresh; " +
+							result.skipped +
+							" curated model(s) left untouched. Pass an explicit id to refresh one of them.",
+					);
 			}
-			// Reload the cache after a brief grace so the new content (if the refresh
-			// completes synchronously on the server) flows into the system prompt.
 			await Bun.sleep(500);
-			await reloadMentalModelsForSession(state.session);
+			await controller.reload();
 		} catch (error) {
 			this.ctx.showError(`mm refresh failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
-	async #mmHistory(state: HindsightSessionState, id: string): Promise<void> {
+	async #mmHistory(controller: MemoryBackendMentalModelController, id: string): Promise<void> {
 		try {
-			const [model, history] = await Promise.all([
-				state.client.getMentalModel(state.bankId, id, { detail: "content" }),
-				state.client.getMentalModelHistory(state.bankId, id),
-			]);
-			if (!model) {
-				this.ctx.showError(`Mental model not found: ${id}`);
-				return;
-			}
-			if (history.length === 0) {
-				this.ctx.showStatus(`No history recorded for ${id}.`);
-				return;
-			}
-			// History is most-recent first. Each entry stores the content BEFORE that
-			// change. To diff "what changed at entry N", compare entry N's
-			// previous_content (= state before that change) with entry N-1's
-			// previous_content (= state after that change, which was state before
-			// the next change). For the most recent change, compare against the
-			// model's CURRENT content.
-			const sections: string[] = [];
-			for (let i = 0; i < history.length; i++) {
-				const before = history[i].previous_content ?? "";
-				const after = i === 0 ? (model.content ?? "") : (history[i - 1].previous_content ?? "");
-				const diff = diffMentalModelContent(before, after);
-				sections.push(`### ${history[i].changed_at}\n\n\`\`\`diff\n${diff}\n\`\`\``);
-			}
-			showMarkdownPanel(this.ctx, `History — ${model.name}`, sections.join("\n\n"));
+			const result = await controller.history(id);
+			if (result.status === "not-found") return this.ctx.showError(`Mental model not found: ${id}`);
+			if (result.entries.length === 0) return this.ctx.showStatus(`No history recorded for ${id}.`);
+			const fence = String.fromCharCode(96).repeat(3);
+			const sections = result.entries.map(
+				(entry, index) =>
+					"### " +
+					entry.changedAt +
+					"\n\n" +
+					fence +
+					"diff\n" +
+					diffMentalModelContent(
+						entry.previousContent ?? "",
+						index === 0 ? (result.model.content ?? "") : (result.entries[index - 1]?.previousContent ?? ""),
+					) +
+					"\n" +
+					fence,
+			);
+			showMarkdownPanel(this.ctx, `History — ${result.model.name}`, sections.join("\n\n"));
 		} catch (error) {
 			this.ctx.showError(`mm history failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
-	async #mmSeed(state: HindsightSessionState): Promise<void> {
+	async #mmSeed(controller: MemoryBackendMentalModelController): Promise<void> {
 		try {
-			const config = loadHindsightConfig(this.ctx.settings);
-			const seeds = resolveSeedsForScope(
-				{
-					bankId: state.bankId,
-					retainTags: state.retainTags,
-					recallTags: state.recallTags,
-					recallTagsMatch: state.recallTagsMatch,
-				},
-				config.scoping,
-			);
-			if (seeds.length === 0) {
-				this.ctx.showStatus(`No built-in seeds apply to scoping=${config.scoping}.`);
-				return;
-			}
-			const list = await state.client.listMentalModels(state.bankId, { detail: "metadata" });
-			const existing = list.items ?? [];
-			let created = 0;
-			let skipped = 0;
-			for (const seed of seeds) {
-				if (seedAlreadyExists(seed, existing)) {
-					skipped++;
-					continue;
-				}
-				try {
-					await state.client.createMentalModel(state.bankId, seed.name, seed.sourceQuery, {
-						id: seed.id,
-						tags: seed.tags.length > 0 ? seed.tags : undefined,
-						maxTokens: seed.maxTokens,
-						trigger: seed.trigger,
-					});
-					created++;
-				} catch (error) {
-					this.ctx.showWarning(
-						`Seed failed for ${seed.id}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-				}
-			}
-			this.ctx.showStatus(`Seeded ${created} new mental model(s); ${skipped} already present.`);
+			const result = await controller.seed();
+			this.ctx.showStatus(`Seeded ${result.created} new mental model(s); ${result.skipped} already present.`);
 		} catch (error) {
 			this.ctx.showError(`mm seed failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
-	async #mmReload(state: HindsightSessionState): Promise<void> {
-		const ok = await reloadMentalModelsForSession(state.session);
-		if (ok) {
-			this.ctx.showStatus("Mental-model cache reloaded.");
-		} else {
-			this.ctx.showError("Reload failed (Hindsight backend not active or mental models disabled).");
-		}
+	async #mmReload(controller: MemoryBackendMentalModelController): Promise<void> {
+		if (await controller.reload()) this.ctx.showStatus("Mental-model cache reloaded.");
+		else this.ctx.showError("Reload failed (Hindsight backend not active or mental models disabled).");
 	}
 
-	async #mmDelete(state: HindsightSessionState, id: string): Promise<void> {
+	async #mmDelete(controller: MemoryBackendMentalModelController, id: string): Promise<void> {
 		try {
-			const removed = await state.client.deleteMentalModel(state.bankId, id);
-			if (!removed) {
-				this.ctx.showError(`Mental model not found: ${id}`);
-				return;
-			}
-			// Drop the cached snippet so the closing tag does not silently keep
-			// stale content in the system prompt until the next agent_end TTL.
-			await reloadMentalModelsForSession(state.session);
-			this.ctx.showStatus(`Deleted mental model ${id} from bank ${state.bankId}.`);
+			if (!(await controller.delete(id))) return this.ctx.showError(`Mental model not found: ${id}`);
+			this.ctx.showStatus(`Deleted mental model ${id} from bank ${controller.bank}.`);
 		} catch (error) {
 			this.ctx.showError(`mm delete failed: ${error instanceof Error ? error.message : String(error)}`);
 		}

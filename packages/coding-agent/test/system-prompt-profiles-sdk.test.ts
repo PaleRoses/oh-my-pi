@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { getHindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -20,23 +21,26 @@ const EMPTY_TREE = {
 	agentsMdFiles: [],
 };
 
-function routedSettings(): Settings {
+function routedSettings(workerMemory = false): Settings {
 	return Settings.isolated({
 		"compaction.enabled": false,
 		"todo.enabled": false,
 		"retry.enabled": false,
 		systemPromptProfiles: {
 			driver: { prompt: "DRIVER CONSTITUTION" },
+			"fable-driver": { constitution: "fable" },
 			worker: {
 				instructions: "WORKER CONSTITUTION",
 				projectContextOnly: true,
-				memory: false,
+				memory: workerMemory,
 				mcpServerInstructions: false,
 			},
 		},
 		systemPromptProfileRoutes: [
+			{ agentKind: "main", model: "mock/constitutional-*", profile: "fable-driver" },
 			{ agentKind: "main", model: "mock/driver*", profile: "driver" },
 			{ agentKind: "main", model: "mock/worker*", profile: "worker" },
+			{ agentKind: "main", profile: "driver" },
 			{ agentKind: "sub", profile: "worker" },
 		],
 	});
@@ -73,6 +77,8 @@ describe("SDK system prompt profiles", () => {
 			customSystemPromptSource?: "explicit" | "discovered";
 			contextFiles?: Array<{ path: string; content: string; depth?: number }>;
 			toolNames?: string[];
+			restrictToolNames?: boolean;
+			parentSession?: AgentSession;
 		} = {},
 	): Promise<AgentSession> {
 		const model = createMockModel({ id: modelId, handler: () => ({ content: ["ok"] }) });
@@ -86,6 +92,8 @@ describe("SDK system prompt profiles", () => {
 			sessionManager: options.sessionManager ?? SessionManager.inMemory(dir.path()),
 			taskDepth: options.taskDepth,
 			agentKind: options.agentKind,
+			restrictToolNames: options.restrictToolNames,
+			parentSession: options.parentSession,
 			customSystemPrompt: options.customSystemPrompt,
 			customSystemPromptSource: options.customSystemPromptSource,
 			disableExtensionDiscovery: true,
@@ -120,6 +128,19 @@ describe("SDK system prompt profiles", () => {
 			source: "system-prompt-profile",
 		});
 	});
+	it("renders Fable only for the selected constitutional profile, not a model name", async () => {
+		const constitutional = await create("constitutional-main");
+		const fableNamedGeneric = await create("fable-in-name");
+		const constitutionalPrompt = constitutional.agent.state.systemPrompt.join("\n\n");
+		const genericPrompt = fableNamedGeneric.agent.state.systemPrompt.join("\n\n");
+
+		expect(constitutional.systemPromptProfileId).toBe("fable-driver");
+		expect(constitutionalPrompt).toContain("You are Fable, trusted absolutely");
+		expect(fableNamedGeneric.systemPromptProfileId).toBe("driver");
+		expect(genericPrompt).toContain("DRIVER CONSTITUTION");
+		expect(genericPrompt).not.toContain("You are Fable, trusted absolutely");
+		expect(genericPrompt).not.toContain("Helpful, trusted assistant");
+	});
 
 	it("injects the active Hindsight bank, project, and scope into the runtime identity prompt", async () => {
 		const settings = routedSettings();
@@ -148,8 +169,33 @@ describe("SDK system prompt profiles", () => {
 		);
 	});
 
-	it("routes a subagent using the same model family to the worker profile instead of ambient SYSTEM.md", async () => {
-		const session = await create("driver-primary", routedSettings(), {
+	it("starts Hindsight aliases for a restricted live worker without widening its tool grant", async () => {
+		const settings = routedSettings(true);
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.apiUrl", "http://localhost:8888");
+		settings.override("hindsight.bankId", "memory-bank");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		settings.override("hindsight.autoRecall", false);
+
+		const parent = await create("driver-primary", settings);
+		const child = await create("worker-restricted-memory", settings, {
+			agentKind: "sub",
+			taskDepth: 1,
+			parentSession: parent,
+			restrictToolNames: true,
+			toolNames: ["recall"],
+		});
+		const parentState = getHindsightSessionState(parent);
+		const childState = getHindsightSessionState(child);
+
+		expect(child.systemPromptProfileId).toBe("worker");
+		expect(parentState).toBeDefined();
+		expect(childState?.aliasOf).toBe(parentState);
+		expect(child.agent.state.tools.map(tool => tool.name)).toEqual(["recall"]);
+	});
+
+	it("routes a fable-named subagent to the worker profile instead of ambient SYSTEM.md", async () => {
+		const session = await create("fable-in-name", routedSettings(), {
 			taskDepth: 1,
 			customSystemPrompt: "AMBIENT SYSTEM PROMPT",
 			customSystemPromptSource: "discovered",
@@ -163,6 +209,7 @@ describe("SDK system prompt profiles", () => {
 		expect(session.systemPromptProfileId).toBe("worker");
 		expect(prompt).toContain("WORKER CONSTITUTION");
 		expect(prompt).not.toContain("DRIVER CONSTITUTION");
+		expect(prompt).not.toContain("You are Fable, trusted absolutely");
 		expect(prompt).not.toContain("AMBIENT SYSTEM PROMPT");
 		expect(prompt).toContain("§ Role");
 		expect(prompt).toContain("PROJECT WORKER RULES");
@@ -337,6 +384,29 @@ describe("SDK system prompt profiles", () => {
 		expect(changedReport).not.toContain("Model: mock/driver-primary");
 		await expect(session.setModel(incompatible)).rejects.toThrow('pinned to system prompt profile "driver"');
 		expect(session.model?.id).toBe("driver-secondary");
+	});
+	it("keeps constitutional content and cache identity stable across compatible and rejected model changes", async () => {
+		const settings = routedSettings();
+		settings.override("includeModelInPrompt", false);
+		const session = await create("constitutional-primary", settings);
+		const initialPrompt = session.agent.state.systemPrompt.join("\n\n");
+		const initialCacheKey = session.agent.promptCacheKey;
+		const compatible = createMockModel({ id: "constitutional-secondary", handler: () => ({ content: ["ok"] }) });
+		const incompatible = createMockModel({ id: "fable-in-name", handler: () => ({ content: ["ok"] }) });
+
+		await session.setModel(compatible);
+		const compatiblePrompt = session.agent.state.systemPrompt.join("\n\n");
+		const compatibleCacheKey = session.agent.promptCacheKey;
+		expect(session.systemPromptProfileId).toBe("fable-driver");
+		expect(compatiblePrompt).toContain("You are Fable, trusted absolutely");
+		expect(compatibleCacheKey).toContain("system-prompt-profile:fable-driver");
+		expect(initialPrompt).toContain("You are Fable, trusted absolutely");
+		expect(compatibleCacheKey).toBe(initialCacheKey);
+
+		await expect(session.setModel(incompatible)).rejects.toThrow('pinned to system prompt profile "fable-driver"');
+		expect(session.model?.id).toBe("constitutional-secondary");
+		expect(session.agent.state.systemPrompt.join("\n\n")).toBe(compatiblePrompt);
+		expect(session.agent.promptCacheKey).toBe(compatibleCacheKey);
 	});
 
 	it("rejects resume when the requested model routes away from the transcript profile", async () => {

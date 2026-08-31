@@ -116,6 +116,7 @@ describe("PromptProfileSelectorComponent", () => {
 		expect(profileScreen).toContain("Project context only");
 		expect(profileScreen).toContain("Memory");
 		expect(profileScreen).toContain("MCP server instructions");
+		expect(profileScreen).toContain("Constitution");
 
 		pressDown(harness.component, 3);
 		harness.component.handleInput("\n");
@@ -126,6 +127,29 @@ describe("PromptProfileSelectorComponent", () => {
 		expect(harness.store.systemPromptProfiles.driver).toEqual({ memory: false });
 		expect(harness.flush).toHaveBeenCalledTimes(1);
 		expect(render(harness.component)).toContain("Restart OMP to load the new prompt identity");
+	});
+
+	it("sets and clears the closed Fable constitution", async () => {
+		const harness = createHarness();
+
+		harness.component.handleInput("\n");
+		pressDown(harness.component, 6);
+		harness.component.handleInput("\n");
+		expect(render(harness.component)).toContain("Fable");
+		harness.component.handleInput("\n");
+		await settleOperation();
+
+		expect(harness.store.systemPromptProfiles.driver).toEqual({ constitution: "fable" });
+		expect(render(harness.component)).toContain("Constitution");
+		expect(render(harness.component)).toContain("Fable");
+
+		pressDown(harness.component, 6);
+		harness.component.handleInput("\n");
+		harness.component.handleInput("\x1b[B");
+		harness.component.handleInput("\n");
+		await settleOperation();
+
+		expect(harness.store.systemPromptProfiles.driver).toEqual({});
 	});
 
 	it("edits explicitly inline Markdown externally and restores it through the persistence owner", async () => {
@@ -273,7 +297,7 @@ describe("PromptProfileSelectorComponent", () => {
 		const harness = createHarness();
 
 		harness.component.handleInput("\n");
-		pressDown(harness.component, 6);
+		pressDown(harness.component, 7);
 		harness.component.handleInput("\n");
 		harness.component.handleInput("\n");
 		await settleOperation();

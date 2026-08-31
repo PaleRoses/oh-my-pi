@@ -34,8 +34,9 @@ import friendlyPersonality from "./prompts/system/personalities/friendly.md" wit
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
+import type { SystemPromptProfile } from "./system-prompt-profiles";
 import { normalizeConcurrencyLimit } from "./task/parallel";
-import { usesCodexTaskPrompt, usesFableConstitution } from "./task/prompt-policy";
+import { usesCodexTaskPrompt } from "./task/prompt-policy";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
@@ -653,6 +654,8 @@ export interface BuildSystemPromptOptions {
 	model?: string;
 	/** Whether to surface `model` in the workstation block. Model-specific prompt policy still uses it. Default: true. */
 	includeModelInPrompt?: boolean;
+	/** Compiled profile selected by the ordered system-prompt routes. */
+	systemPromptProfile?: SystemPromptProfile;
 	/** Personality preset rendered into the default system prompt. "none" omits the block. Default: "default" */
 	personality?: Personality;
 	/** Whether to include the workspace directory tree in the system prompt. Default: false */
@@ -723,6 +726,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		securityEnabled = false,
 		model,
 		includeModelInPrompt = true,
+		systemPromptProfile,
 		personality = "default",
 		includeWorkspaceTree = false,
 		renderMermaid = true,
@@ -1007,7 +1011,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
-		fableSession: usesFableConstitution(model),
+		fableSession: systemPromptProfile?.constitution === "fable",
 		personality: personalityBlock ? prompt.render(personalityBlock, { userTitle, userTitleCap }).trim() : "",
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",

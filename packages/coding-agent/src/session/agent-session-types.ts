@@ -40,12 +40,8 @@ import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { EffectiveSessionIdentity } from "./identity";
 import type { SessionManager } from "./session-manager";
 
-/** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
-export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
-
 /** Options controlling session disposal. */
 export interface AgentSessionDisposeOptions {
-	mnemopiConsolidateTimeoutMs?: number;
 	/**
 	 * Deadline for the settle/drain wait before the terminal memory release
 	 * (default 5s). The bounded-teardown paths (signal handlers, tests) may

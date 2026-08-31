@@ -23,6 +23,9 @@ import { resolveDaemonSpawnOptions } from "./spawn-options";
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const CONNECT_RETRY_MS = 50;
+const SCHEDULE_ACK_RESPONSE_TIMEOUT_MS = 1_000;
+const SCHEDULE_ACK_RETRY_BASE_MS = 50;
+const SCHEDULE_ACK_MAX_ATTEMPTS = 8;
 const TOKEN_FILE = "broker.token";
 const BROKER_SPAWN_OPTIONS = resolveDaemonSpawnOptions({
 	platform: process.platform,
@@ -35,6 +38,18 @@ interface PendingRequest {
 	reject: (error: Error) => void;
 	timer: NodeJS.Timeout;
 	removeAbort?: () => void;
+}
+
+interface PendingScheduleFireAck {
+	attempts: number;
+	timer: NodeJS.Timeout | undefined;
+}
+
+interface ClientRequestOptions {
+	acknowledgements?: { completionAcks?: string[]; scheduleFireAcks?: string[] };
+	completionUnsubscribes?: string[];
+	completionReplays?: string[];
+	responseTimeoutMs?: number;
 }
 
 /** Broker location and lifecycle overrides used by smoke tests and isolated consumers. */
@@ -57,10 +72,9 @@ export interface DaemonBrokerClient {
 		sink: (notification: DaemonCompletionNotification) => Promise<void> | void,
 	): (options?: DaemonCompletionUnregisterOptions) => void;
 	/**
-	 * Subscribe to schedule fires for `owner` (the schedule's sessionId),
-	 * mirroring `onCompletion` including replay-on-reconnect: fires that had no
-	 * live subscriber are retained by the broker (latest per schedule name) and
-	 * replayed on the next owner subscription.
+	 * Subscribe to durable schedule fires for `owner` (the schedule's sessionId).
+	 * A fire replays after reconnect or broker restart until this sink accepts it;
+	 * successful acceptance is acknowledged to the broker.
 	 */
 	onScheduleFire(owner: string, sink: (notification: ScheduleFireNotification) => Promise<void> | void): () => void;
 	/** Canonical project directory or synthetic directory identifying a global scope. */
@@ -146,6 +160,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #endpoint: string;
 	readonly #token: string;
 	readonly #seenCompletionIds = new Set<string>();
+	readonly #seenScheduleFireIds = new Set<string>();
 	readonly #idleGraceMs: number | undefined;
 	readonly #pending = new Map<string, PendingRequest>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
@@ -154,6 +169,8 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #preservedCompletionOwners = new Set<string>();
 	readonly #completionReplays = new Set<string>();
 	readonly #inFlightCompletionIds = new Set<string>();
+	readonly #inFlightScheduleFireIds = new Set<string>();
+	readonly #pendingScheduleFireAcks = new Map<string, PendingScheduleFireAck>();
 	readonly #completionSubscriptionId = crypto.randomUUID();
 	#socket: net.Socket | undefined;
 	#connectPromise: Promise<void> | undefined;
@@ -173,11 +190,29 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		if (this.#closed) throw new Error("Daemon broker client is closed");
 		if (signal?.aborted) throw new Error("Daemon broker request aborted");
 		await this.#connect();
-		const socket = this.#socket;
-		if (!socket || socket.destroyed) throw new Error("Daemon broker socket is unavailable");
-
 		const completionUnsubscribes = [...this.#completionUnsubscribes];
 		const completionReplays = [...this.#completionReplays];
+		const result = await this.#requestOnLiveSocket(operation, signal, {
+			completionUnsubscribes,
+			completionReplays,
+		});
+		for (const owner of completionUnsubscribes) {
+			if (!this.#completionSinks.has(owner)) this.#completionUnsubscribes.delete(owner);
+		}
+		for (const owner of completionReplays) {
+			if (this.#completionSinks.has(owner)) this.#completionReplays.delete(owner);
+		}
+		return result;
+	}
+
+	#requestOnLiveSocket(
+		operation: DaemonOperation,
+		signal: AbortSignal | undefined,
+		options: ClientRequestOptions = {},
+	): Promise<DaemonRpcResult> {
+		const socket = this.#socket;
+		if (!socket || socket.destroyed) return Promise.reject(new Error("Daemon broker socket is unavailable"));
+
 		const id = crypto.randomUUID();
 		const { promise, resolve, reject } = Promise.withResolvers<DaemonRpcResult>();
 		const timer = setTimeout(() => {
@@ -186,7 +221,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			this.#pending.delete(id);
 			pending.removeAbort?.();
 			reject(new Error(`Daemon ${operation.op} request timed out`));
-		}, requestTimeoutMs(operation));
+		}, options.responseTimeoutMs ?? requestTimeoutMs(operation));
 		const pending: PendingRequest = { operation, resolve, reject, timer };
 		if (signal) {
 			const abort = (): void => {
@@ -205,20 +240,14 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				owners: [...this.#completionSinks.keys(), ...this.#scheduleFireSinks.keys()],
 				detachedOwners: [...this.#preservedCompletionOwners],
 				completionEvents: true,
-				completionUnsubscribes,
-				completionReplays,
+				completionUnsubscribes: options.completionUnsubscribes ?? [],
+				completionReplays: options.completionReplays,
 				completionSubscriptionId: this.#completionSubscriptionId,
+				...options.acknowledgements,
 				operation,
 			})}\n`,
 		);
-		const result = await promise;
-		for (const owner of completionUnsubscribes) {
-			if (!this.#completionSinks.has(owner)) this.#completionUnsubscribes.delete(owner);
-		}
-		for (const owner of completionReplays) {
-			if (this.#completionSinks.has(owner)) this.#completionReplays.delete(owner);
-		}
-		return result;
+		return promise;
 	}
 
 	close(): void {
@@ -226,6 +255,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#closed = true;
 		clearTimeout(this.#completionReconnectTimer);
 		this.#completionReconnectTimer = undefined;
+		this.#clearPendingScheduleFireAcks();
 		this.#socket?.destroy();
 		this.#completionSinks.clear();
 		this.#scheduleFireSinks.clear();
@@ -348,6 +378,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	}
 
 	#bindSocket(socket: net.Socket): void {
+		this.#clearPendingScheduleFireAcks();
 		this.#socket = socket;
 		this.#buffer = "";
 		socket.setEncoding("utf8");
@@ -356,7 +387,9 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			// The close handler rejects pending requests with one stable error.
 		});
 		socket.on("close", () => {
-			if (this.#socket === socket) this.#socket = undefined;
+			if (this.#socket !== socket) return;
+			this.#socket = undefined;
+			this.#clearPendingScheduleFireAcks();
 			this.#rejectPending(new Error("Daemon broker connection closed"));
 			this.#scheduleCompletionReconnect();
 		});
@@ -419,7 +452,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 
 	async #deliverCompletion(message: DaemonCompletionNotification): Promise<void> {
 		if (this.#seenCompletionIds.has(message.completionId)) {
-			this.#ackCompletion(message.completionId);
+			this.#ackOwnerNotification({ completionAcks: [message.completionId] });
 			return;
 		}
 		if (this.#inFlightCompletionIds.has(message.completionId)) return;
@@ -428,12 +461,8 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#inFlightCompletionIds.add(message.completionId);
 		try {
 			await sink(message);
-			if (this.#seenCompletionIds.size >= 512) {
-				const oldest = this.#seenCompletionIds.values().next().value;
-				if (oldest !== undefined) this.#seenCompletionIds.delete(oldest);
-			}
-			this.#seenCompletionIds.add(message.completionId);
-			this.#ackCompletion(message.completionId);
+			this.#rememberAcceptedNotification(this.#seenCompletionIds, message.completionId);
+			this.#ackOwnerNotification({ completionAcks: [message.completionId] });
 		} catch (error) {
 			logger.warn("Daemon completion sink failed", {
 				owner: message.owner,
@@ -447,35 +476,106 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	}
 
 	async #deliverScheduleFire(message: ScheduleFireNotification): Promise<void> {
+		if (this.#seenScheduleFireIds.has(message.fireId)) {
+			this.#queueScheduleFireAck(message.fireId);
+			return;
+		}
+		if (this.#inFlightScheduleFireIds.has(message.fireId)) return;
 		const sink = this.#scheduleFireSinks.get(message.schedule.sessionId);
 		if (!sink) return;
+		this.#inFlightScheduleFireIds.add(message.fireId);
 		try {
 			await sink(message);
+			this.#rememberAcceptedNotification(this.#seenScheduleFireIds, message.fireId);
+			this.#queueScheduleFireAck(message.fireId);
 		} catch (error) {
 			logger.warn("Schedule fire sink failed", {
 				schedule: message.schedule.name,
+				fireId: message.fireId,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			this.#socket?.destroy();
+		} finally {
+			this.#inFlightScheduleFireIds.delete(message.fireId);
 		}
 	}
 
-	#ackCompletion(completionId: string): void {
-		const socket = this.#socket;
-		if (!socket || socket.destroyed) return;
-		socket.write(
-			`${JSON.stringify({
-				id: crypto.randomUUID(),
-				token: this.#token,
-				owners: [...this.#completionSinks.keys(), ...this.#scheduleFireSinks.keys()],
-				detachedOwners: [...this.#preservedCompletionOwners],
-				completionEvents: true,
-				completionAcks: [completionId],
-				completionUnsubscribes: [...this.#completionUnsubscribes],
-				completionSubscriptionId: this.#completionSubscriptionId,
-				operation: { op: "ping" },
-			})}\n`,
+	#rememberAcceptedNotification(seen: Set<string>, notificationId: string): void {
+		if (seen.size >= 512) {
+			const oldest = seen.values().next().value;
+			if (oldest !== undefined) seen.delete(oldest);
+		}
+		seen.add(notificationId);
+	}
+
+	#ackOwnerNotification(ack: { completionAcks?: string[] }): void {
+		void this.#requestOnLiveSocket({ op: "ping" }, undefined, {
+			acknowledgements: ack,
+			completionUnsubscribes: [...this.#completionUnsubscribes],
+		}).catch(error => {
+			logger.warn("Daemon notification acknowledgement failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	}
+
+	#queueScheduleFireAck(fireId: string): void {
+		if (this.#pendingScheduleFireAcks.has(fireId) || this.#closed) return;
+		this.#pendingScheduleFireAcks.set(fireId, { attempts: 0, timer: undefined });
+		this.#attemptScheduleFireAck(fireId);
+	}
+
+	#attemptScheduleFireAck(fireId: string): void {
+		const pending = this.#pendingScheduleFireAcks.get(fireId);
+		if (!pending) return;
+		if (this.#closed || !this.#socket || this.#socket.destroyed) {
+			this.#clearPendingScheduleFireAck(fireId);
+			return;
+		}
+		pending.attempts++;
+		void this.#requestOnLiveSocket({ op: "ping" }, undefined, {
+			acknowledgements: { scheduleFireAcks: [fireId] },
+			completionUnsubscribes: [...this.#completionUnsubscribes],
+			responseTimeoutMs: SCHEDULE_ACK_RESPONSE_TIMEOUT_MS,
+		}).then(
+			() => this.#clearPendingScheduleFireAck(fireId),
+			error => this.#retryScheduleFireAck(fireId, pending, error),
 		);
+	}
+
+	#retryScheduleFireAck(fireId: string, pending: PendingScheduleFireAck, error: unknown): void {
+		if (this.#pendingScheduleFireAcks.get(fireId) !== pending) return;
+		if (this.#closed || !this.#socket || this.#socket.destroyed) {
+			this.#clearPendingScheduleFireAck(fireId);
+			return;
+		}
+		if (pending.attempts >= SCHEDULE_ACK_MAX_ATTEMPTS) {
+			this.#clearPendingScheduleFireAck(fireId);
+			logger.warn("Schedule fire acknowledgement exhausted bounded retries", {
+				fireId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return;
+		}
+		pending.timer = setTimeout(
+			() => {
+				pending.timer = undefined;
+				this.#attemptScheduleFireAck(fireId);
+			},
+			SCHEDULE_ACK_RETRY_BASE_MS * 2 ** (pending.attempts - 1),
+		);
+		pending.timer.unref();
+	}
+
+	#clearPendingScheduleFireAck(fireId: string): void {
+		const pending = this.#pendingScheduleFireAcks.get(fireId);
+		if (!pending) return;
+		clearTimeout(pending.timer);
+		this.#pendingScheduleFireAcks.delete(fireId);
+	}
+
+	#clearPendingScheduleFireAcks(): void {
+		for (const fireId of this.#pendingScheduleFireAcks.keys()) this.#clearPendingScheduleFireAck(fireId);
 	}
 
 	#rejectPending(error: Error): void {

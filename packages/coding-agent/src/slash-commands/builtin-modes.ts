@@ -347,7 +347,6 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "prompt",
-		aliases: ["prompts"],
 		description: "Inspect and configure system-prompt profiles",
 		acpDescription: "Manage system-prompt profiles",
 		acpInputHint: "[status|show|use|unroute|set|unset|remove|help]",

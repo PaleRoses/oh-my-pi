@@ -119,7 +119,6 @@ import {
 	setActiveSkills,
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
-import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
 import { setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
@@ -134,9 +133,8 @@ import {
 	parseMCPToolName,
 } from "./mcp";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
-import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
+import { createSessionMemoryRuntimeContext, type MemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
-import type { MnemopiSessionState } from "./mnemopi/state";
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
@@ -564,10 +562,8 @@ export interface CreateAgentSessionOptions {
 	requireYieldTool?: boolean;
 	/** Task recursion depth (for subagent sessions). Default: 0 */
 	taskDepth?: number;
-	/** Parent Hindsight state to alias for subagent memory tools. */
-	parentHindsightSessionState?: HindsightSessionState;
-	/** Parent Mnemopi state to alias for subagent memory tools. */
-	parentMnemopiSessionState?: MnemopiSessionState;
+	/** Parent session whose selected memory backend may alias its runtime. */
+	parentSession?: AgentSession;
 	/** Pre-allocated agent identity for IRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
 	agentId?: string;
 	/** Session role when taskDepth/parentTaskPrefix inference is unavailable. */
@@ -1703,6 +1699,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let agent: Agent;
 	let session!: AgentSession;
 	let hasSession = false;
+	let memoryRuntime: MemoryRuntimeContext | undefined;
+	const getMemoryRuntime = (): MemoryRuntimeContext | undefined => {
+		if (!hasSession) return undefined;
+		memoryRuntime ??= createSessionMemoryRuntimeContext(session, agentDir);
+		return memoryRuntime;
+	};
 	let hasRegistered = false;
 	const restrictToolNames = options.restrictToolNames === true;
 	const enableLsp =
@@ -1820,8 +1822,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
 			isDisposed: () => session?.isDisposed ?? false,
-			getHindsightSessionState: () => session?.getHindsightSessionState(),
-			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
+			getAgentSession: () => (hasSession ? session : undefined),
+			getMemoryRuntime,
 			getAgentId: () => resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
@@ -2834,7 +2836,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			cwd,
 			sessionManager,
 			modelRegistry,
-			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDir, cwd) : undefined),
+			getMemoryRuntime,
 			settings,
 			localProtocolOptions,
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
@@ -3221,6 +3223,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				includeModelInPrompt: settings.get("includeModelInPrompt"),
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
 				renderMermaid: settings.get("tui.renderMermaid"),
+				systemPromptProfile: selectedSystemPromptProfile,
 				userTitle: selectedSystemPromptProfile?.userTitle,
 				activeRepoContext,
 			});
@@ -3232,7 +3235,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							effectiveIdentity,
 							model,
 							sessionId: sessionManager.getSessionId() ?? "initializing",
-							memoryBackend: settings.get("memory.backend"),
+							memoryIdentity: undefined,
 						});
 				return {
 					...result,
@@ -3365,7 +3368,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (settings.get("ask.enabled")) profileToolNames.add("ask");
 			if (options.requireYieldTool) profileToolNames.add("yield");
 			if (profileMemoryEnabled) {
-				for (const name of [...MEMORY_BACKEND_TOOL_NAMES, "manage_skill", "learn"]) {
+				for (const name of [...MEMORY_BACKEND_TOOL_NAMES, "manage_skill"]) {
 					profileToolNames.add(name);
 				}
 			}
@@ -4178,17 +4181,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const startMemoryBackend = async () => {
 			if (!profileMemoryEnabled) return;
-			const memoryBackend = await resolveMemoryBackend(settings);
-			await memoryBackend.start({
+			await session.startMemoryBackend({
 				session,
 				settings,
 				modelRegistry,
 				agentDir,
 				taskDepth,
-				parentHindsightSessionState: options.parentHindsightSessionState,
-				parentMnemopiSessionState: options.parentMnemopiSessionState,
+				parentSession: options.parentSession,
 			});
-			if (memoryBackend.id === "hindsight") await session.refreshBaseSystemPrompt();
+			if (settings.get("memory.backend") === "hindsight") await session.refreshBaseSystemPrompt();
 		};
 
 		const runAutoLearnCapture = createAutoLearnCaptureRunner({
@@ -4262,8 +4263,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// and the tools; the fire-time re-check in `#onAgentEnd` still handles a
 		// mid-session DISABLE. The subscription lives for the session's lifetime; the
 		// reference is intentionally discarded (the listener retains it).
-		if (!restrictToolNames && profileMemoryEnabled) {
-			const autoLearnEnabled = settings.get("autolearn.enabled") && taskDepth === 0;
+		if (profileMemoryEnabled) {
+			const autoLearnEnabled = !restrictToolNames && settings.get("autolearn.enabled") && taskDepth === 0;
 			if (autoLearnEnabled || settings.get("memory.backend") === "hindsight") {
 				await logger.time("startMemoryStartupTask", startMemoryBackend);
 			} else {

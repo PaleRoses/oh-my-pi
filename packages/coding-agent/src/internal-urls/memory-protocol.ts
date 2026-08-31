@@ -2,8 +2,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { getMemoryRoot } from "../memories";
+import type { MemoryBackendIdentity } from "../memory-backend/types";
 import { getMnemopiSessionState, type MnemopiScopedMemoryHit, type MnemopiSessionState } from "../mnemopi/state";
 import { AgentRegistry } from "../registry/agent-registry";
+import type { AgentSession } from "../session/agent-session";
 import { isMarkdownPath } from "../utils/lang-from-path";
 import { buildDirectoryResource } from "./filesystem-resource";
 import { parseInternalUrl } from "./parse";
@@ -32,7 +34,7 @@ export function memoryRootsFromRegistry(): string[] {
 
 function memoryRootsForContext(context?: ResolveContext): string[] {
 	if (context?.cwd) return [getMemoryRoot(getAgentDir(), context.cwd)];
-	return memoryRootsFromRegistry();
+	return context === undefined ? memoryRootsFromRegistry() : [];
 }
 
 function ensureWithinRoot(targetPath: string, rootPath: string): void {
@@ -222,16 +224,46 @@ function mnemopiSessionStatesFromRegistry(): MnemopiSessionState[] {
 	return states;
 }
 
-function memoryBackendFromContext(context?: ResolveContext): string | undefined {
-	if (!context?.settings || typeof context.settings !== "object") return undefined;
-	try {
-		const get = Reflect.get(context.settings, "get");
-		if (typeof get !== "function") return undefined;
-		const backend = Reflect.apply(get, context.settings, ["memory.backend"]);
-		return typeof backend === "string" ? backend : undefined;
-	} catch {
-		return undefined;
+interface MemorySessionResolution {
+	readonly caller: AgentSession | undefined;
+	readonly identity: MemoryBackendIdentity | undefined;
+	readonly contextless: boolean;
+}
+
+function liveSessions(): AgentSession[] {
+	return AgentRegistry.global()
+		.list()
+		.map(ref => ref.session)
+		.filter((session): session is AgentSession => session !== undefined);
+}
+
+/**
+ * Bind a routed URL to its caller's provider-owned identity. A session file
+ * disambiguates same-cwd sessions before a legacy cwd fallback. Registry-wide
+ * selection is retained exclusively for contextless legacy callers; a routed
+ * caller must never inherit another live session's backend or Mnemopi scope.
+ */
+function resolveMemorySession(context?: ResolveContext): MemorySessionResolution {
+	const registry = AgentRegistry.global();
+	if (context !== undefined) {
+		const caller = context.sessionFile
+			? (registry.list().find(ref => ref.sessionFile === context.sessionFile)?.session ?? undefined)
+			: context.cwd
+				? (registry.list().find(ref => ref.session?.sessionManager.getCwd() === context.cwd)?.session ?? undefined)
+				: undefined;
+		return { caller, identity: caller?.memoryIdentity(), contextless: false };
 	}
+	const sessions = liveSessions();
+	return {
+		caller: undefined,
+		identity: sessions.map(session => session.memoryIdentity()).find(identity => identity !== undefined),
+		contextless: true,
+	};
+}
+
+function primaryMnemopiState(session: AgentSession): MnemopiSessionState | undefined {
+	const state = getMnemopiSessionState(session);
+	return state?.aliasOf ?? state;
 }
 
 /**
@@ -290,8 +322,9 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 	readonly immutable = true;
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
-		const backend = memoryBackendFromContext(context);
-		if (backend === "off") {
+		const memorySession = resolveMemorySession(context);
+		const memoryIdentity = memorySession.identity;
+		if (memoryIdentity?.backend === "off") {
 			throw new Error("Unknown protocol: memory://");
 		}
 		const namespace = url.rawHost || url.hostname;
@@ -305,13 +338,36 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 		// `memory_edit update` and lets agents inspect the full content of a
 		// clipped recall preview before overwriting it (issue #4443).
 		if (namespace !== MEMORY_NAMESPACE) {
+			if (memorySession.caller) {
+				if (memoryIdentity?.backend === "hindsight") {
+					throw new Error(
+						"Hindsight memories are not addressable via memory://. Recall results are final — use `recall` to search or `reflect` to synthesize. `read memory://<id>` is only available with memory.backend=mnemopi.",
+					);
+				}
+				if (memoryIdentity?.backend === "mnemopi" && memoryIdentity.status === "active") {
+					const state = primaryMnemopiState(memorySession.caller);
+					const hit = state?.getScopedMemory(namespace);
+					if (hit) return renderMnemopiMemory(url, hit);
+					throw new Error(
+						`Mnemopi memory ${namespace} not found in the calling session's scoped bank. Use \`recall\` to list available ids.`,
+					);
+				}
+				throw new Error(
+					`Unknown memory namespace: ${namespace}. Supported: ${MEMORY_NAMESPACE} (file-backed memory summary), or a mnemopi memory id when memory.backend=mnemopi is active.`,
+				);
+			}
+
+			if (!memorySession.contextless) {
+				throw new Error(
+					`Unknown memory namespace: ${namespace}. Supported: ${MEMORY_NAMESPACE} (file-backed memory summary), or a mnemopi memory id when memory.backend=mnemopi is active.`,
+				);
+			}
+
 			const mnemopiStates = mnemopiSessionStatesFromRegistry();
 			const hindsightActive =
-				backend === "hindsight" ||
+				memoryIdentity?.backend === "hindsight" ||
 				(mnemopiStates.length === 0 &&
-					AgentRegistry.global()
-						.list()
-						.some(ref => ref.session?.getHindsightSessionState?.()));
+					liveSessions().some(session => session.memoryIdentity()?.backend === "hindsight"));
 			if (hindsightActive) {
 				// Hindsight keeps memories server-side and exposes no
 				// `memory://<id>` addressing, yet the shared `recall` tool
@@ -369,7 +425,13 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 		if (memoryRootsForContext(context).length > 0) {
 			completions.push({ value: MEMORY_NAMESPACE, description: "Project memory summary" });
 		}
-		if (mnemopiSessionStatesFromRegistry().length > 0) {
+		const memorySession = resolveMemorySession(context);
+		const mnemopiAvailable = memorySession.caller
+			? memorySession.identity?.backend === "mnemopi" &&
+				memorySession.identity.status === "active" &&
+				primaryMnemopiState(memorySession.caller) !== undefined
+			: memorySession.contextless && mnemopiSessionStatesFromRegistry().length > 0;
+		if (mnemopiAvailable) {
 			completions.push({
 				value: "<memory-id>",
 				description: "Full mnemopi memory by id (from recall)",

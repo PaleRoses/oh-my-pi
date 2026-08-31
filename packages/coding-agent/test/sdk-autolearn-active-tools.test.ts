@@ -90,7 +90,7 @@ describe("createAgentSession auto-learn tool activation", () => {
 		});
 		sessions.push(session);
 
-		expect(session.getHindsightSessionState()).toBeDefined();
+		expect(session.memoryIdentity()).toMatchObject({ backend: "hindsight", status: "active" });
 	});
 
 	it("omits manage_skill from a restricted session when auto-learn is off", async () => {

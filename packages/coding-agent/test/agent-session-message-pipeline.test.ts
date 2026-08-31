@@ -23,8 +23,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as memoryBackend from "@oh-my-pi/pi-coding-agent/memory-backend";
-import type { MemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
-import { type MnemopiSessionState, setMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
+import type { MemoryBackend, MemoryBackendRuntime } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import { createAgentSession, type ExtensionContext, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import { obfuscateProviderContext, SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -77,6 +76,78 @@ async function withNativeDialectEnv<T>(fn: () => Promise<T>): Promise<T> {
 			Bun.env.PI_DIALECT = previous;
 		}
 	}
+}
+
+const PROMPT_MEMORY_CAPABILITIES = {
+	recall: true,
+	retain: false,
+	reflect: false,
+	edit: false,
+	save: false,
+} as const;
+
+function createPromptMemoryRuntime(resetTranscript: () => void): MemoryBackendRuntime {
+	return {
+		capabilities: PROMPT_MEMORY_CAPABILITIES,
+		identity() {
+			return { backend: "mnemopi", status: "active", banks: ["test"] };
+		},
+		mentalModels() {
+			return { backend: "mnemopi", status: "unsupported" };
+		},
+		async dispose() {},
+		async flush() {},
+		rekey() {},
+		async resetTranscript() {
+			resetTranscript();
+			return true;
+		},
+		async status() {
+			return { backend: "mnemopi", active: true, writable: false, searchable: true };
+		},
+		async search(query) {
+			return { backend: "mnemopi", query, count: 0, items: [] };
+		},
+		async save() {
+			return { backend: "mnemopi", stored: 0, message: "Saving memory is not available in this prompt test." };
+		},
+		async retain() {
+			return {
+				backend: "mnemopi",
+				accepted: 0,
+				stored: 0,
+				queued: false,
+				message: "Retaining memory is not available in this prompt test.",
+			};
+		},
+		async recall(query) {
+			return { backend: "mnemopi", query, count: 0, items: [], rendered: "" };
+		},
+		async reflect() {
+			return {
+				backend: "mnemopi",
+				text: "",
+				message: "Reflecting on memory is not available in this prompt test.",
+			};
+		},
+		async edit() {
+			return {
+				backend: "mnemopi",
+				status: "unsupported",
+				message: "Editing memory is not available in this prompt test.",
+			};
+		},
+	};
+}
+
+async function startTestMemoryBackend(session: AgentSession): Promise<void> {
+	await session.startMemoryBackend({
+		session,
+		settings: session.settings,
+		modelRegistry: createModelRegistryStub() as never,
+		agentDir: "/tmp",
+		taskDepth: 0,
+	});
 }
 
 describe("AgentSession message pipeline", () => {
@@ -858,6 +929,12 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>remember blue</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: PROMPT_MEMORY_CAPABILITIES,
+			runtime() {
+				return createPromptMemoryRuntime(() => {
+					remembered = false;
+				});
+			},
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
@@ -914,6 +991,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 		});
 		sessions.push(session);
+		await startTestMemoryBackend(session);
 
 		await session.sendUserMessage("first");
 		await session.sendUserMessage("second");
@@ -1241,6 +1319,12 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>session A only</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: PROMPT_MEMORY_CAPABILITIES,
+			runtime() {
+				return createPromptMemoryRuntime(() => {
+					remembered = false;
+				});
+			},
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
@@ -1301,14 +1385,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 		});
 		sessions.push(session);
-		setMnemopiSessionState(session, {
-			aliasOf: undefined,
-			setSessionId(_sessionId: string) {},
-			resetConversationTracking() {
-				remembered = false;
-			},
-			async dispose() {},
-		} as unknown as MnemopiSessionState);
+		await startTestMemoryBackend(session);
 
 		await session.sendUserMessage("first");
 		expect(session.systemPrompt.join("\n")).toContain(injected);
@@ -1330,6 +1407,12 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>previous session only</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: PROMPT_MEMORY_CAPABILITIES,
+			runtime() {
+				return createPromptMemoryRuntime(() => {
+					remembered = false;
+				});
+			},
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
@@ -1390,14 +1473,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 		});
 		sessions.push(session);
-		setMnemopiSessionState(session, {
-			aliasOf: undefined,
-			setSessionId(_sessionId: string) {},
-			resetConversationTracking() {
-				remembered = false;
-			},
-			async dispose() {},
-		} as unknown as MnemopiSessionState);
+		await startTestMemoryBackend(session);
 
 		await session.sendUserMessage("first");
 		expect(session.systemPrompt.join("\n")).toContain(injected);
@@ -1423,6 +1499,12 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>forked recall</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: PROMPT_MEMORY_CAPABILITIES,
+			runtime() {
+				return createPromptMemoryRuntime(() => {
+					remembered = false;
+				});
+			},
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
@@ -1483,14 +1565,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 		});
 		sessions.push(session);
-		setMnemopiSessionState(session, {
-			aliasOf: undefined,
-			setSessionId(_sessionId: string) {},
-			resetConversationTracking() {
-				remembered = false;
-			},
-			async dispose() {},
-		} as unknown as MnemopiSessionState);
+		await startTestMemoryBackend(session);
 
 		await session.sendUserMessage("first");
 		expect(session.systemPrompt.join("\n")).toContain(injected);

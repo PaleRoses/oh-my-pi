@@ -9,6 +9,7 @@ import {
 	refreshMemoryToolDeveloperInstructionsCacheAfterStartup,
 	saveLearnedLesson,
 } from "@oh-my-pi/pi-coding-agent/memories";
+import { createMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend";
 import { localBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/local-backend";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -135,15 +136,15 @@ describe("learned-lesson storage (local backend)", () => {
 	});
 
 	it("the local backend's save() delegates to the same file", async () => {
-		const result = await localBackend.save?.({ agentDir, cwd: projCwd }, { content: "Via the backend" });
-		expect(result?.stored).toBe(1);
+		const result = await localBackend.runtime({ agentDir, cwd: projCwd }).save({ content: "Via the backend" });
+		expect(result.stored).toBe(1);
 		expect(await Bun.file(learnedFile).text()).toContain("- Via the backend");
 	});
 
 	it("local backend status reports writable", async () => {
-		const status = await localBackend.status?.({ agentDir, cwd: projCwd });
-		expect(status?.writable).toBe(true);
-		expect(status?.backend).toBe("local");
+		const status = await localBackend.runtime({ agentDir, cwd: projCwd }).status();
+		expect(status.writable).toBe(true);
+		expect(status.backend).toBe("local");
 	});
 });
 
@@ -334,12 +335,14 @@ describe("learn tool (local backend)", () => {
 		const settings = Settings.isolated({ "autolearn.enabled": true, "memory.backend": "local" });
 		spyOn(settings, "getAgentDir").mockReturnValue(agentDir);
 		spyOn(settings, "getCwd").mockReturnValue(projCwd);
+		const memoryRuntime = createMemoryRuntimeContext({ agentDir, cwd: projCwd, settings });
 		return {
 			cwd: projCwd,
 			hasUI: false,
 			skipPythonPreflight: true,
 			getSessionFile: () => null,
 			getSessionSpawns: () => "*",
+			getMemoryRuntime: () => memoryRuntime,
 			settings,
 		};
 	}

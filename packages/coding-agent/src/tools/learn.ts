@@ -2,7 +2,6 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
-import { localBackend } from "../memory-backend/local-backend";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -20,11 +19,9 @@ const learnSchema = type({
 export type LearnParams = typeof learnSchema.infer;
 
 /**
- * Orchestrating "learn" tool: persists a lesson to long-term memory and,
- * given a `skill` payload, mints/enhances a managed skill via the shared
- * `writeManagedSkill` primitive. Gated behind `autolearn.enabled` plus a live
- * memory backend — `hindsight`/`mnemopi` (remote/SQLite) or `local` (the
- * file-based rollout backend, where lessons append to `learned.md`).
+ * Orchestrating "learn" tool: persists a lesson through the selected backend
+ * and, given a `skill` payload, mints/enhances a managed skill via the shared
+ * `writeManagedSkill` primitive.
  */
 export class LearnTool implements AgentTool<typeof learnSchema> {
 	readonly name = "learn";
@@ -42,58 +39,23 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): LearnTool | null {
-		if (!session.settings.get("autolearn.enabled")) return null;
-		const backend = session.settings.get("memory.backend");
-		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "local") return null;
-		return new LearnTool(session);
+		return session.settings.get("autolearn.enabled") ? new LearnTool(session) : null;
 	}
 
 	async execute(_id: string, params: LearnParams): Promise<AgentToolResult> {
-		// 1) Persist or queue the lesson to long-term memory (mirrors MemoryRetainTool).
-		const backend = this.session.settings.get("memory.backend");
-		let memoryMessage = "Lesson stored";
-		if (backend === "mnemopi") {
-			const state = this.session.getMnemopiSessionState?.();
-			if (!state) {
-				throw new Error("Mnemopi backend is not initialised for this session.");
-			}
-			const id = state.rememberScoped(params.memory, {
-				source: "coding-agent-learn",
-				importance: 0.8,
-				metadata: {
-					session_id: state.sessionId,
-					cwd: state.session.sessionManager.getCwd(),
-					context: params.context ?? null,
-					tool: "learn",
-				},
-				scope: "bank",
-				extract: true,
-				extractEntities: true,
-				veracity: "tool",
-				memoryType: "fact",
-			});
-			// rememberScoped returns undefined when the retain failed (closed DB /
-			// disk error); mirror mnemopiBackend.save and fail loudly rather than
-			// reporting (and minting a skill for) a lesson that was silently dropped.
-			if (!id) {
-				throw new Error("Mnemopi did not store the lesson (no memory id returned).");
-			}
-		} else if (backend === "local") {
-			const result = await localBackend.save?.(
-				{ agentDir: this.session.settings.getAgentDir(), cwd: this.session.settings.getCwd() },
-				{ content: params.memory, context: params.context, source: "coding-agent-learn", importance: 0.8 },
-			);
-			if (!result || result.stored === 0) {
-				throw new Error("Lesson was empty after sanitization; nothing stored.");
-			}
-		} else {
-			const state = this.session.getHindsightSessionState?.();
-			if (!state) {
-				throw new Error("Hindsight backend is not initialised for this session.");
-			}
-			state.enqueueRetain(params.memory, params.context);
-			memoryMessage = "Lesson queued for retention";
+		const memory = this.session.getMemoryRuntime?.();
+		if (!memory) throw new Error("Memory backend is not initialised for this session.");
+		const saved = await memory.save({
+			content: params.memory,
+			context: params.context,
+			source: "coding-agent-learn",
+			importance: 0.8,
+			purpose: "learn",
+		});
+		if (saved.stored === 0 && !saved.queued) {
+			throw new Error(saved.message ?? "Lesson was not stored.");
 		}
+		const memoryMessage = saved.queued ? "Lesson queued for retention" : "Lesson stored";
 
 		// 2) Optionally mint/enhance a managed skill. A failure here is surfaced
 		// as a partial outcome — the lesson is already stored or queued.

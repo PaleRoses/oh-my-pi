@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { getMemoryRoot } from "@oh-my-pi/pi-coding-agent/memories";
+import type { MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
 	loadMnemopi,
 	loadMnemopiCore,
@@ -49,6 +50,7 @@ async function withMemoryFixture(fn: (fixture: MemoryFixture) => Promise<void>):
 					getArtifactsDir: () => null,
 					getSessionId: () => "test",
 				},
+				memoryIdentity: () => ({ backend: "local", status: "active" }),
 			} as unknown as AgentSession,
 			sessionFile: null,
 		});
@@ -82,11 +84,26 @@ describe("MemoryProtocolHandler", () => {
 	});
 
 	it("rejects memory URLs when the calling session disables memory", async () => {
+		const cwd = path.join(os.tmpdir(), "memory-protocol-off");
+		AgentRegistry.global().register({
+			id: "test-off",
+			displayName: "test-off",
+			kind: "main",
+			session: {
+				sessionManager: {
+					getCwd: () => cwd,
+					getArtifactsDir: () => null,
+					getSessionId: () => "test-off",
+				},
+				memoryIdentity: () => ({ backend: "off", status: "off" }),
+			} as unknown as AgentSession,
+			sessionFile: null,
+		});
 		const router = InternalUrlRouter.instance();
 		const settings = Settings.isolated({ "memory.backend": "off" });
 
-		await expect(router.resolve("memory://", { settings })).rejects.toThrow("Unknown protocol: memory://");
-		await expect(router.resolve("memory://root", { settings })).rejects.toThrow("Unknown protocol: memory://");
+		await expect(router.resolve("memory://", { cwd, settings })).rejects.toThrow("Unknown protocol: memory://");
+		await expect(router.resolve("memory://root", { cwd, settings })).rejects.toThrow("Unknown protocol: memory://");
 	});
 
 	it("advertises memory URLs only while a memory backend is enabled", () => {
@@ -150,6 +167,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "first-session",
 					},
+					memoryIdentity: () => ({ backend: "local", status: "active" }),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -163,6 +181,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "second-session",
 					},
+					memoryIdentity: () => ({ backend: "local", status: "active" }),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -224,6 +243,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "test-first",
 					},
+					memoryIdentity: () => ({ backend: "local", status: "active" }),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -237,6 +257,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "test-second",
 					},
+					memoryIdentity: () => ({ backend: "local", status: "active" }),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -400,7 +421,7 @@ let sharedMnemopiFixture: MnemopiFixture | undefined;
 async function withMnemopiSession(fn: (fixture: MnemopiFixture) => Promise<void>): Promise<void> {
 	if (!sharedMnemopiFixture) {
 		const dbDir = TempDir.createSync("memory-protocol-mnemopi-");
-		const config = {
+		const config: MnemopiBackendConfig = {
 			dbPath: dbDir.join("mnemopi.db"),
 			bank: "test-bank",
 			autoRecall: false,
@@ -416,10 +437,11 @@ async function withMnemopiSession(fn: (fixture: MnemopiFixture) => Promise<void>
 			debug: false,
 			providerOptions: {
 				noEmbeddings: true,
+				debug: false,
 				llm: false,
 			},
-			llmMode: "none" as const,
-		} as unknown as ConstructorParameters<typeof MnemopiSessionState>[0]["config"];
+			llmMode: "none",
+		};
 		const session = {
 			sessionId: "test-mnemopi",
 			sessionManager: {
@@ -429,7 +451,7 @@ async function withMnemopiSession(fn: (fixture: MnemopiFixture) => Promise<void>
 				getSessionId: () => "test-mnemopi",
 			},
 			emitNotice: () => {},
-			getHindsightSessionState: () => undefined,
+			memoryIdentity: () => ({ backend: "mnemopi", status: "active", banks: ["test-bank"] }),
 		} as unknown as AgentSession;
 		const state = new MnemopiSessionState({ sessionId: "test-mnemopi", config, session });
 		setMnemopiSessionState(session, state);
@@ -547,6 +569,104 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 		});
 	});
 
+	it("isolates memory ids between two live mnemopi sessions", async () => {
+		await withMnemopiSession(async ({ state, dbDir }) => {
+			const otherDbDir = TempDir.createSync("memory-protocol-mnemopi-isolation-");
+			let otherState: MnemopiSessionState | undefined;
+			try {
+				const otherSession = {
+					sessionId: "other-mnemopi",
+					sessionManager: {
+						getEntries: () => [],
+						getCwd: () => otherDbDir.path(),
+						getArtifactsDir: () => null,
+						getSessionId: () => "other-mnemopi",
+					},
+					emitNotice: () => {},
+					memoryIdentity: () => ({ backend: "mnemopi", status: "active", banks: ["other-bank"] }),
+				} as unknown as AgentSession;
+				otherState = new MnemopiSessionState({
+					sessionId: "other-mnemopi",
+					config: { ...state.config, dbPath: otherDbDir.join("mnemopi.db"), bank: "other-bank" },
+					session: otherSession,
+				});
+				setMnemopiSessionState(otherSession, otherState);
+				AgentRegistry.global().register({
+					id: "other-mnemopi",
+					displayName: "other-mnemopi",
+					kind: "main",
+					session: otherSession,
+					sessionFile: null,
+				});
+
+				const ownId = state.rememberInScope("primary session memory");
+				const otherId = otherState.rememberInScope("other session memory");
+				if (!ownId || !otherId) throw new Error("Expected mnemopi fixtures to store memory ids");
+
+				const router = InternalUrlRouter.instance();
+				await expect(router.resolve(`memory://${ownId}`, { cwd: dbDir.path() })).resolves.toMatchObject({
+					content: expect.stringContaining("primary session memory"),
+				});
+				await expect(router.resolve(`memory://${otherId}`, { cwd: dbDir.path() })).rejects.toThrow(
+					/calling session's scoped bank/,
+				);
+				await expect(router.resolve(`memory://${otherId}`, { cwd: otherDbDir.path() })).resolves.toMatchObject({
+					content: expect.stringContaining("other session memory"),
+				});
+			} finally {
+				await otherState?.dispose({ consolidate: false });
+				await otherDbDir.remove();
+			}
+		});
+	});
+
+	it("uses session-file identity before a shared cwd across memory backends", async () => {
+		await withMnemopiSession(async ({ state, dbDir, session }) => {
+			const parentSessionFile = path.join(dbDir.path(), "parent.jsonl");
+			const childSessionFile = path.join(dbDir.path(), "child.jsonl");
+			AgentRegistry.global().register({
+				id: "test-mnemopi",
+				displayName: "test-mnemopi",
+				kind: "main",
+				session,
+				sessionFile: parentSessionFile,
+			});
+			const childSession = {
+				sessionManager: {
+					getCwd: () => dbDir.path(),
+					getArtifactsDir: () => null,
+					getSessionId: () => "hindsight-child",
+				},
+				memoryIdentity: () => ({
+					backend: "hindsight",
+					status: "active",
+					bank: "child-bank",
+					project: "child-project",
+					scope: "per-project",
+					tags: [],
+				}),
+			} as unknown as AgentSession;
+			AgentRegistry.global().register({
+				id: "hindsight-child",
+				displayName: "hindsight-child",
+				kind: "sub",
+				parentId: "test-mnemopi",
+				session: childSession,
+				sessionFile: childSessionFile,
+			});
+
+			const id = state.rememberInScope("parent-only mnemopi memory");
+			if (!id) throw new Error("Expected mnemopi fixture to store a memory id");
+
+			await expect(
+				InternalUrlRouter.instance().resolve(`memory://${id}`, {
+					cwd: dbDir.path(),
+					sessionFile: childSessionFile,
+				}),
+			).rejects.toThrow("Hindsight memories are not addressable via memory://");
+		});
+	});
+
 	it("routes memory://root to the file-backed summary even when mnemopi is active", async () => {
 		await withMnemopiSession(async () => {
 			const router = InternalUrlRouter.instance();
@@ -564,7 +684,19 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
  */
 function withHindsightSession(fn: () => Promise<void>): Promise<void> {
 	const session = {
-		getHindsightSessionState: () => ({ bankId: "test-bank" }),
+		sessionManager: {
+			getCwd: () => process.cwd(),
+			getArtifactsDir: () => null,
+			getSessionId: () => "test-hindsight",
+		},
+		memoryIdentity: () => ({
+			backend: "hindsight",
+			status: "active",
+			bank: "test-bank",
+			project: "test-project",
+			scope: "per-project",
+			tags: [],
+		}),
 	} as unknown as AgentSession;
 	AgentRegistry.global().register({
 		id: "test-hindsight",
@@ -601,7 +733,7 @@ describe("MemoryProtocolHandler — hindsight (issue #7587)", () => {
 			await withHindsightSession(async () => {
 				const router = InternalUrlRouter.instance();
 				const settings = Settings.isolated({ "memory.backend": "hindsight" });
-				await expect(router.resolve("memory://a1b2c3d4e5f6", { settings })).rejects.toThrow(
+				await expect(router.resolve("memory://a1b2c3d4e5f6", { cwd: process.cwd(), settings })).rejects.toThrow(
 					/Hindsight memories are not addressable via memory:\/\//,
 				);
 			});

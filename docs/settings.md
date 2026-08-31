@@ -369,11 +369,15 @@ See [Models](./models.md) for the `models.yml` schema and custom-provider defini
 
 #### System prompt profiles
 
-`systemPromptProfiles` defines named provider-facing prompt identities. `systemPromptProfileRoutes` selects the first matching identity from `agentKind` (`main` or `sub`) and an optional `model` glob over `provider/model`.
+`systemPromptProfiles` defines named provider-facing prompt identities. Its optional closed `constitution` selection is a profile fact; `fable` is currently the only accepted value. `systemPromptProfileRoutes` selects the first matching identity from `agentKind` (`main` or `sub`) and an optional `model` glob over `provider/model`.
+
+Routes are ordered and first-match: a model-qualified `main` route that selects a constitutional profile must precede generic `main`, which would otherwise match first. Model names never select a constitution.
 
 ```yaml
 systemPromptProfiles:
   driver: {}
+  fable-driver:
+    constitution: fable
   worker:
     instructionsFile: ~/.omp/agent/prompts/worker-constitution.md
     memory: false
@@ -382,10 +386,15 @@ systemPromptProfiles:
 
 systemPromptProfileRoutes:
   - agentKind: main
+    model: anthropic/claude-opus-*
+    profile: fable-driver
+  - agentKind: main
     profile: driver
   - agentKind: sub
     profile: worker
 ```
+
+`constitution` is compiled with the profile; a route's `model` glob only selects a profile. Omit it to leave the constitution unspecified. The rendered Fable block appears only for a selected `constitution: fable` profile: a model whose name contains `fable` does not enable it, and a `sub` route selecting a nonconstitutional worker profile does not inherit it.
 
 A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `instructions` or `instructionsFile` adds a final profile-owned system block after generated prompt context. `projectContextOnly: true` excludes context files outside the session cwd and its additional workspace roots. `contextImages` lists image paths injected once per conversation as hidden standing context in the message stream (system content is text-only, so images cannot ride the prompt itself). `userTitle` substitutes a name or phrase for "the user" throughout the maintained prompt (unset keeps the generic wording). `compactionIdentity` adds one paragraph to the compaction summarizer's system prompt so handover notes name the participants instead of writing generically about "the assistant" and "the user" (unset keeps the generic summarizer prompt).
 
@@ -393,17 +402,18 @@ A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `inst
 
 Use `/prompt` for the concise profile form instead of editing these record and
 array settings in the general panel. It shows profiles and ordered routes,
-sets or unsets individual profile elements, assigns an unconditional `main`
-or `sub` route, validates referenced files before saving, and reports the
-required OMP restart. `/new` retains the current profile.
+sets or unsets its supported prompt elements, and assigns an unconditional
+`main` or `sub` route. The closed `constitution` selection is configured directly
+in YAML. `/prompt` validates referenced files before saving and reports the required OMP
+restart. `/new` retains the current profile.
 
 OMP pins the selected profile ID when it creates the transcript. Resume, model cycling, prewalk, and retry fallback may continue only when routing still selects that ID. A live switch may enter only a transcript pinned to the same profile and leaves the current session intact if its saved model is incompatible. Changing prompt identity requires a new OMP process and transcript; `/new` intentionally inherits the current profile.
 When Hindsight retention runs, the profile's immutable effective identity supplies the retained `prompt`, `principal`, and `prompt-source` provenance; see [recall](./tools/recall.md).
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `systemPromptProfiles` | record | `{}` | Named profiles with optional `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, `mcpServerInstructions`, `contextImages`, `userTitle`, `compactionIdentity`, and `tools`. |
-| `systemPromptProfileRoutes` | array | `[]` | Ordered routes selected by optional `agentKind` and `model` glob. Each route names a `profile` or sets `deny: true`. |
+| `systemPromptProfiles` | record | `{}` | Named profiles with optional closed `constitution` (`fable` only), `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, `mcpServerInstructions`, `contextImages`, `userTitle`, `compactionIdentity`, and `tools`. |
+| `systemPromptProfileRoutes` | array | `[]` | Ordered first-match routes selected by optional `agentKind` and `model` glob. Each route names a `profile` or sets `deny: true`; a model-qualified constitutional `main` route must precede generic `main`. |
 
 ### Advisor
 

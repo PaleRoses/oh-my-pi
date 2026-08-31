@@ -172,7 +172,6 @@ describe("Hindsight conversation source timestamps", () => {
 				effectiveIdentity: TEST_IDENTITY,
 				sessionManager: {
 					getCwd: () => "/tmp",
-					getEntries: () => entries,
 					getHeader: () => ({
 						type: "session",
 						id: "sess-ts",
@@ -180,7 +179,6 @@ describe("Hindsight conversation source timestamps", () => {
 						cwd: "/tmp",
 					}),
 				},
-				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
 		});
@@ -229,7 +227,6 @@ describe("Hindsight conversation source timestamps", () => {
 				effectiveIdentity: TEST_IDENTITY,
 				sessionManager: {
 					getCwd: () => "/tmp",
-					getEntries: () => entries,
 					getHeader: () => ({
 						type: "session",
 						id: "sess-bad-ts",
@@ -237,7 +234,6 @@ describe("Hindsight conversation source timestamps", () => {
 						cwd: "/tmp",
 					}),
 				},
-				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
 		});

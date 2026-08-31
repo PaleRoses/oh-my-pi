@@ -49,18 +49,14 @@ function createRuntime() {
 }
 
 describe("/prompt TUI dispatch", () => {
-	it.each(["/prompt", "/prompts"])(
-		"opens the interactive selector for bare %s and clears the slash draft",
-		async command => {
-			const harness = createRuntime();
+	it("opens the interactive selector for bare /prompt and clears the slash draft", async () => {
+		const harness = createRuntime();
 
-			expect(await executeBuiltinSlashCommand(command, harness.runtime)).toBe(true);
-			expect(harness.setText).toHaveBeenCalledWith("");
-			expect(harness.showPromptProfileSelector).toHaveBeenCalledTimes(1);
-			expect(harness.showStatus).not.toHaveBeenCalled();
-		},
-	);
-
+		expect(await executeBuiltinSlashCommand("/prompt", harness.runtime)).toBe(true);
+		expect(harness.setText).toHaveBeenCalledWith("");
+		expect(harness.showPromptProfileSelector).toHaveBeenCalledTimes(1);
+		expect(harness.showStatus).not.toHaveBeenCalled();
+	});
 	it("keeps non-empty prompt commands on the textual TUI path", async () => {
 		const harness = createRuntime();
 

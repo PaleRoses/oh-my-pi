@@ -5,13 +5,14 @@
 ## Source
 - Entry: `packages/coding-agent/src/tools/memory-recall.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/recall.md`
+- Runtime owner: `packages/coding-agent/src/memory-backend/types.ts` — `ToolSession.getMemoryRuntime()` exposes `MemoryRuntimeContext`, which resolves the selected `MemoryBackendRuntime`.
 - Hindsight collaborators:
-  - `packages/coding-agent/src/hindsight/state.ts` — session state, recall query composition, and prompt-side auto-recall.
+  - packages/coding-agent/src/hindsight/state.ts — provider-owned state, recall query composition, and prompt-side auto-recall.
   - `packages/coding-agent/src/hindsight/content.ts` — result formatting and UTC timestamp formatting.
   - `packages/coding-agent/src/hindsight/client.ts` — HTTP `recall` call and error mapping.
   - `packages/coding-agent/src/hindsight/bank.ts` — bank id and tag-filter scoping.
 - Mnemopi collaborators:
-  - `packages/coding-agent/src/mnemopi/state.ts` — scoped local recall and result formatting with ids.
+  - packages/coding-agent/src/mnemopi/state.ts — provider-owned scoped local recall and result formatting with ids.
   - `packages/coding-agent/src/mnemopi/config.ts` — local bank scoping and recall limits.
   - `docs/tools/retain.md` — shared backend, storage, scoping, and retention behavior.
 
@@ -54,21 +55,16 @@ When no matches exist:
 - `useless = true`, allowing callers/renderers to treat the result as non-contributing context.
 
 ## Flow
-1. `MemoryRecallTool.createIf(...)` exposes the tool when `memory.backend` is either `"hindsight"` or `"mnemopi"`.
-2. `execute(...)` wraps the operation in `untilAborted(...)`.
-3. If the backend is `mnemopi`:
-   - it reads `session.getMnemopiSessionState()` and throws if the backend was not started;
-   - it calls `state.recallResultsScoped(params.query)`;
-   - scoped recall queries every resolved recall bank with `recallEnhanced(query, recallLimit, { includeFacts: true, channelId: bank })`, merges/deduplicates results by id/content, sorts them, and truncates to `recallLimit`;
+
+1. MemoryRecallTool.createIf(...) exposes the tool when memory.backend is either "hindsight" or "mnemopi".
+2. execute(...) wraps the operation in untilAborted(...), obtains MemoryRuntimeContext from ToolSession.getMemoryRuntime(), and calls recall(...) on the selected MemoryBackendRuntime.
+3. For mnemopi, that runtime resolves its provider-owned state and calls recallResultsScoped(params.query):
+   - scoped recall queries every resolved recall bank with recallEnhanced(query, recallLimit, { includeFacts: true, channelId: bank }), merges/deduplicates results by id/content, sorts them, and truncates to recallLimit;
    - per-project modes may include safe legacy banks whose working-memory rows all belong to the active absolute cwd; startup scanning is capped at 64 candidate bank directories;
-   - in `per-project-tagged`, the shared bank may receive one extra fallback query with project-bank literal tokens stripped so broad global memories still match;
-   - results are formatted with ids for later full-row reads and `memory_edit`.
-4. If the backend is `hindsight`:
-   - it reads `session.getHindsightSessionState()` and throws if the backend was not started;
-   - it calls `state.client.recall(...)` with `bankId`, query, configured `budget`, `maxTokens`, `types`, and bank-scope tag filters;
-   - `HindsightApi.recall(...)` POSTs `/v1/default/banks/{bank_id}/memories/recall`;
-   - results are formatted into a plain-text list with `formatMemories(...)`.
-5. Backend failures are logged with `logger.warn("recall failed", ...)` and rethrown as `Error` instances when needed.
+   - in per-project-tagged, the shared bank may receive one extra fallback query with project-bank literal tokens stripped so broad global memories still match;
+   - results are formatted with ids for later full-row reads and memory_edit.
+4. For hindsight, that runtime resolves its provider-owned state, calls state.client.recall(...) with bank id, query, configured budget, max tokens, types, and bank-scope tag filters, then formats results through formatMemories(...).
+5. Backend failures are logged with logger.warn("recall failed", ...) and rethrown as Error instances when needed.
 
 ## Modes / Variants
 - Tool path: explicit query-only recall. It does not compose context from recent turns.

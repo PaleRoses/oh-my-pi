@@ -12,7 +12,8 @@ import type {
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { formatMemories, type HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
-import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { HindsightSessionState, setHindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import type { MemoryBackendIdentity } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import {
 	type AgentIdentitySnapshot,
@@ -95,6 +96,7 @@ function createState(
 	let state: HindsightSessionState;
 	const session = {
 		effectiveIdentity: identity,
+		memoryIdentity: () => hindsightMemoryIdentity(state),
 		get model() {
 			return runtime.model;
 		},
@@ -103,7 +105,6 @@ function createState(
 		get sessionId() {
 			return state.sessionId;
 		},
-		getHindsightSessionState: () => state,
 		emitNotice: () => {},
 	} as unknown as AgentSession;
 	state = new HindsightSessionState({
@@ -116,7 +117,21 @@ function createState(
 		session,
 		banksSet: new Set(),
 	});
+	setHindsightSessionState(session, state);
 	return state;
+}
+
+function hindsightMemoryIdentity(state: HindsightSessionState | undefined): MemoryBackendIdentity {
+	const primary = state?.isAlias ? state.aliasOf : state;
+	if (!primary) return { backend: "hindsight", status: "configured-not-started" };
+	return {
+		backend: "hindsight",
+		status: "active",
+		bank: primary.bankId,
+		project: primary.projectLabel,
+		scope: primary.config.scoping,
+		tags: Array.from(new Set([...(primary.retainTags ?? []), ...(primary.recallTags ?? [])])).sort(),
+	};
 }
 function activeProfileMetadata(snapshot: AgentIdentitySnapshot): Record<string, string> {
 	const profileId = snapshot.prompt.profileId;

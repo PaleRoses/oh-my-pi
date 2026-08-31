@@ -220,23 +220,36 @@ export function setMnemopiSessionState(
 	return previous;
 }
 
-export interface MnemopiSessionStateOptions {
+interface MnemopiSessionStateBaseOptions {
 	sessionId: string;
-	config: MnemopiBackendConfig;
 	session: AgentSession;
-	aliasOf?: MnemopiSessionState;
 	lastRetainedTurn?: number;
 	hasRecalledForFirstTurn?: boolean;
 }
 
+interface MnemopiPrimarySessionStateOptions extends MnemopiSessionStateBaseOptions {
+	config: MnemopiBackendConfig;
+	aliasOf?: never;
+}
+
+interface MnemopiAliasSessionStateOptions extends MnemopiSessionStateBaseOptions {
+	/**
+	 * A subagent alias follows the primary parent's live state slot. Parent
+	 * transitions replace the scoped SQLite handles, so retaining a captured
+	 * state would strand the child on handles the parent has just closed.
+	 */
+	aliasOf: MnemopiSessionState;
+	config?: never;
+}
+
+export type MnemopiSessionStateOptions = MnemopiPrimarySessionStateOptions | MnemopiAliasSessionStateOptions;
+
 export class MnemopiSessionState {
 	sessionId: string;
-	readonly config: MnemopiBackendConfig;
 	readonly session: AgentSession;
-	readonly memory: Mnemopi;
-	readonly globalMemory?: Mnemopi;
-	readonly aliasOf?: MnemopiSessionState;
-	private readonly scoped: MnemopiScopedResources;
+	readonly #config?: MnemopiBackendConfig;
+	readonly #primarySession?: AgentSession;
+	readonly #scoped?: MnemopiScopedResources;
 	lastRetainedTurn: number;
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
@@ -245,14 +258,46 @@ export class MnemopiSessionState {
 
 	constructor(options: MnemopiSessionStateOptions) {
 		this.sessionId = options.sessionId;
-		this.config = options.config;
 		this.session = options.session;
-		this.aliasOf = options.aliasOf;
+		if (options.aliasOf) {
+			const primary = options.aliasOf.aliasOf ?? options.aliasOf;
+			this.#primarySession = primary.session;
+		} else {
+			this.#config = options.config;
+			this.#scoped = createScopedResources(options.config);
+		}
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
 		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
-		this.scoped = options.aliasOf?.scoped ?? createScopedResources(options.config);
-		this.memory = this.scoped.retain.memory;
-		this.globalMemory = this.scoped.global?.memory;
+	}
+
+	get isAlias(): boolean {
+		return this.#primarySession !== undefined;
+	}
+
+	/** The primary state currently installed in the parent session. */
+	get aliasOf(): MnemopiSessionState | undefined {
+		const state = getMnemopiSessionState(this.#primarySession);
+		return state?.isAlias ? state.aliasOf : state;
+	}
+
+	get config(): MnemopiBackendConfig {
+		return this.aliasOf?.config ?? this.#config ?? this.#missingPrimaryState();
+	}
+
+	get memory(): Mnemopi {
+		return this.scoped.retain.memory;
+	}
+
+	get globalMemory(): Mnemopi | undefined {
+		return this.scoped.global?.memory;
+	}
+
+	private get scoped(): MnemopiScopedResources {
+		return this.aliasOf?.scoped ?? this.#scoped ?? this.#missingPrimaryState();
+	}
+
+	#missingPrimaryState(): never {
+		throw new Error("Mnemopi parent state is no longer active.");
 	}
 
 	setSessionId(sessionId: string): void {
@@ -494,7 +539,7 @@ export class MnemopiSessionState {
 	}
 
 	async maybeRetainOnAgentEnd(_messages: AgentMessage[]): Promise<void> {
-		if (!this.config.autoRetain || this.aliasOf) return;
+		if (!this.config.autoRetain || this.isAlias) return;
 		const flat = extractMessages(this.session.sessionManager);
 		this.#restoreRetainedTurnCursor();
 		const userTurns = flat.filter(message => message.role === "user").length;
@@ -508,7 +553,7 @@ export class MnemopiSessionState {
 	}
 
 	async forceRetainCurrentSession(options: { extract?: boolean } = {}): Promise<void> {
-		if (this.aliasOf) return;
+		if (this.isAlias) return;
 		const flat = extractMessages(this.session.sessionManager);
 		this.#restoreRetainedTurnCursor();
 		const userTurns = flat.filter(message => message.role === "user").length;
@@ -697,7 +742,7 @@ export class MnemopiSessionState {
 	async dispose(options: { consolidate?: boolean; timeoutMs?: number } = {}): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		if (this.aliasOf) return;
+		if (this.isAlias) return;
 		const closeOwned = (): void => {
 			for (const memory of this.scoped.owned) memory.close();
 		};

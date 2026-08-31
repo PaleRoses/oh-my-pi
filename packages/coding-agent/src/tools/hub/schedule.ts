@@ -1,10 +1,10 @@
 /**
  * Hub schedule half — broker-owned schedules/heartbeats. The hub `schedule`
- * op upserts one schedule by name (one-shot `at` or repeating `every`),
- * lists, or clears it. Fires are pushed to the socket subscribed for the
+ * op upserts one schedule per session/name (one-shot `at` or repeating
+ * `every`), lists, or clears it. Fires are pushed to a live socket for the
  * schedule's session and delivered through the session's IRC path with a
- * synthetic `schedule:<name>` sender; with no live subscriber the broker
- * retains only the latest undelivered fire per name for replay on reconnect.
+ * synthetic `schedule:<name>` sender. Each fire stays persisted until that
+ * session accepts it, then replays across reconnects and broker restarts.
  */
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
@@ -134,7 +134,7 @@ export async function executeSchedule(
 	} else if (params.clear) {
 		const name = params.name?.trim();
 		if (!name) throw new ToolError("schedule clear requires name");
-		operation = { op: "schedule-clear", name };
+		operation = { op: "schedule-clear", name, sessionId };
 	} else {
 		const spec = buildScheduleSpec(params, sessionId);
 		if (!spec) throw new ToolError("schedule requires at or every");

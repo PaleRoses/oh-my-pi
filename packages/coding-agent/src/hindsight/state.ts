@@ -87,6 +87,24 @@ interface HindsightAliasSessionStateOptions extends HindsightSessionStateBaseOpt
 
 export type HindsightSessionStateOptions = HindsightPrimarySessionStateOptions | HindsightAliasSessionStateOptions;
 
+const hindsightSessionStates = new WeakMap<AgentSession, HindsightSessionState>();
+
+/** Provider-owned Hindsight state for an AgentSession. */
+export function getHindsightSessionState(session: AgentSession | undefined): HindsightSessionState | undefined {
+	return session ? hindsightSessionStates.get(session) : undefined;
+}
+
+/** Install or release the provider-owned Hindsight state for an AgentSession. */
+export function setHindsightSessionState(
+	session: AgentSession,
+	state: HindsightSessionState | undefined,
+): HindsightSessionState | undefined {
+	const previous = hindsightSessionStates.get(session);
+	if (state) hindsightSessionStates.set(session, state);
+	else hindsightSessionStates.delete(session);
+	return previous;
+}
+
 /**
  * Debounced batch queue for tool-initiated `retain` calls owned by one
  * Hindsight session state instance.
@@ -174,7 +192,7 @@ export class HindsightRetainQueue {
 	async #doFlush(items: PendingRetainItem[]): Promise<void> {
 		const state = this.#state;
 		const sessionId = state.sessionId;
-		if (state.session.getHindsightSessionState() !== state) {
+		if (getHindsightSessionState(state.session) !== state) {
 			// Session went away before we could flush. We can't notify anyone, so
 			// log and drop — these are best-effort facts, not transactional writes.
 			logger.warn("Hindsight retain queue: session vanished, dropping batch", {
@@ -281,7 +299,7 @@ function boundedMetadataValue(value: unknown): string | undefined {
 	return normalized.slice(0, RETENTION_METADATA_VALUE_MAX_CHARS);
 }
 
-/** Per-session Hindsight runtime state owned by its AgentSession. */
+/** Per-session Hindsight runtime state owned by the Hindsight provider and keyed by AgentSession. */
 export class HindsightSessionState {
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
@@ -353,7 +371,7 @@ export class HindsightSessionState {
 
 	/** The primary state currently installed in the parent session. */
 	get aliasOf(): HindsightSessionState | undefined {
-		const state = this.#primarySession?.getHindsightSessionState();
+		const state = getHindsightSessionState(this.#primarySession);
 		return state?.isAlias ? state.aliasOf : state;
 	}
 

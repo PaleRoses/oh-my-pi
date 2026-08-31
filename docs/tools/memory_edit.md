@@ -5,7 +5,7 @@
 ## Source
 - Entry: `packages/coding-agent/src/tools/memory-edit.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/memory-edit.md`
-- Backend collaborator: `packages/coding-agent/src/mnemopi/state.ts` (`editScopedMemory(...)`)
+- Runtime owner: `packages/coding-agent/src/memory-backend/types.ts` — `ToolSession.getMemoryRuntime()` exposes `MemoryRuntimeContext`, which resolves the selected `MemoryBackendRuntime`; the Mnemopi runtime delegates to `packages/coding-agent/src/mnemopi/state.ts` (`editScopedMemory(...)`).
 
 ## Registration / Visibility
 - Tool metadata: `approval = "read"`, `strict = true`, `loadMode = "discoverable"`, even though successful calls mutate local memory.
@@ -32,13 +32,13 @@
 - `details` is `{ status, bank?, store? }`, where status is `"updated" | "deleted" | "invalidated" | "not_found" | "not_editable"` and store is `"working" | "episodic" | "fact"` when a row was resolved.
 
 ## Flow
-1. `MemoryEditTool.createIf(...)` exposes the tool only when `memory.backend == "mnemopi"`.
-2. `execute(...)` fetches `session.getMnemopiSessionState()` and fails if the backend is not initialized.
-3. `update` requires at least one of `content` or `importance`.
-4. `importance` is clamped to `0..1` before the backend call.
-5. The tool calls `state.editScopedMemory(op, id, { content, importance, replacementId })`.
-6. The backend searches the deduplicated retain, recall, and global targets in that order. It returns the first successful editable result, otherwise the first resolved ineligible result, otherwise `not_found`.
-7. The tool renders the returned status and passes the backend result through unchanged in `details`.
+1. MemoryEditTool.createIf(...) exposes the tool only when memory.backend == "mnemopi".
+2. execute(...) obtains MemoryRuntimeContext from ToolSession.getMemoryRuntime() and calls edit(...); a missing runtime fails before any provider operation.
+3. update requires at least one of content or importance.
+4. importance is clamped to 0..1 before the runtime call.
+5. The selected MemoryBackendRuntime.edit(...) delegates the Mnemopi case to its provider-owned scoped state’s editScopedMemory(op, id, { content, importance, replacementId }).
+6. The backend searches the deduplicated retain, recall, and global targets in that order. It returns the first successful editable result, otherwise the first resolved ineligible result, otherwise not_found.
+7. The tool renders the returned status and passes the backend result through unchanged in details.
 
 ## Modes / Variants
 - `update` replaces working-memory text and/or importance. Content replacement is wholesale, not a patch.
@@ -50,7 +50,7 @@
 ## Side Effects
 - Filesystem: mutates the local Mnemopi SQLite database containing the resolved row, which may be a retain, recall, shared, or safely discovered legacy bank.
 - Network: none; edit operations do not invoke embedding or extraction providers.
-- Session state: reads the active session's scoped Mnemopi state; it does not rewrite already injected `<memories>` context.
+- Session state: MemoryBackendRuntime.edit(...) reads provider-owned Mnemopi state; it does not rewrite already injected <memories> context.
 
 ## Limits & Caps
 - Availability requires `memory.backend = "mnemopi"`; Hindsight and local file-backed memory do not expose this tool.
@@ -60,7 +60,7 @@
 - `importance` values outside `0..1` are clamped rather than rejected.
 
 ## Errors
-- Throws `Mnemopi backend is not initialised for this session.` when the tool is exposed but session state is missing.
+- Throws Memory backend is not initialised for this session. when no MemoryRuntimeContext is available.
 - Throws `memory_edit update requires content or importance.` for an empty update.
 - Missing, episodic-for-update/forget, and fact ids are normal results rather than thrown errors; inspect `details.status`.
 - `read memory://<id>` throws `Mnemopi memory <id> not found` when no scoped bank contains the row.
