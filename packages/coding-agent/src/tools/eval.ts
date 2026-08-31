@@ -241,34 +241,6 @@ function detailsNotice(cells: ResolvedEvalCell[]): string | undefined {
 	return notices.length > 0 ? notices.join(" ") : undefined;
 }
 
-/**
- * Resolve the session's live Python eval backend through the eval tool's own
- * path (allowance + availability probe). Shared with the eval-capture helper
- * so a `capture` request starts exactly the backend the eval tool would.
- */
-export async function resolveSessionPythonBackend(
-	session: ToolSession,
-	probeOpts?: BackendProbeOptions,
-): Promise<ExecutorBackend> {
-	const backends = resolveEvalBackends(session);
-	if (!backends.python) throw new ToolError("Python backend is disabled (PI_PY=0 or eval.py = false).");
-	const available = await pythonBackend.isAvailable(session, probeOpts);
-	throwIfAborted(probeOpts?.signal);
-	if (!available) {
-		const alternatives = [
-			backends.js ? '"js"' : null,
-			backends.ruby ? '"rb"' : null,
-			backends.julia ? '"jl"' : null,
-		].filter(Boolean);
-		throw new ToolError(
-			alternatives.length > 0
-				? `Python backend is unavailable in this session. Pass language: ${alternatives.join(" or ")} or install the python kernel.`
-				: 'Python backend is unavailable in this session. Install the python kernel to use language: "py".',
-		);
-	}
-	return pythonBackend;
-}
-
 async function resolveBackend(
 	session: ToolSession,
 	language: EvalLanguage,
@@ -281,7 +253,20 @@ async function resolveBackend(
 	const allowJl = backends.julia;
 
 	if (language === "python") {
-		return { backend: await resolveSessionPythonBackend(session, probeOpts) };
+		if (!allowPy) throw new ToolError("Python backend is disabled (PI_PY=0 or eval.py = false).");
+		const available = await pythonBackend.isAvailable(session, probeOpts);
+		throwIfAborted(probeOpts?.signal);
+		if (!available) {
+			const alternatives = [allowJs ? '"js"' : null, allowRb ? '"rb"' : null, allowJl ? '"jl"' : null].filter(
+				Boolean,
+			);
+			throw new ToolError(
+				alternatives.length > 0
+					? `Python backend is unavailable in this session. Pass language: ${alternatives.join(" or ")} or install the python kernel.`
+					: 'Python backend is unavailable in this session. Install the python kernel to use language: "py".',
+			);
+		}
+		return { backend: pythonBackend };
 	}
 	if (language === "ruby") {
 		if (!allowRb) throw new ToolError("Ruby backend is disabled (PI_RB=0 or eval.rb = false).");

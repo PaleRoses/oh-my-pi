@@ -42,8 +42,6 @@ import {
 } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
-import { CAPTURE_PARAM_DESCRIPTION } from "./capture-schema";
-import { applyEvalCapture } from "./eval-capture";
 import { materializeReadUrlToFile, parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
@@ -91,7 +89,6 @@ const searchSchema = type({
 	"skip?": type("number")
 		.or("null")
 		.describe("files to skip before collecting results — use to paginate when the prior call hit the file limit"),
-	"capture?": type("string").describe(CAPTURE_PARAM_DESCRIPTION),
 });
 
 export type GrepToolInput = typeof searchSchema.infer;
@@ -1598,17 +1595,8 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				};
 				if (truncation.truncated) details.truncation = truncation;
 				if (linesTruncated) details.linesTruncated = true;
-				const resultText = params.capture
-					? (
-							await applyEvalCapture(this.session, {
-								toolLabel: "grep",
-								captureName: params.capture,
-								text: output,
-							})
-						).content
-					: output;
 				const resultBuilder = toolResult(details)
-					.text(resultText)
+					.text(output)
 					.limits({ columnMax: linesTruncated ? DEFAULT_MAX_COLUMN : undefined });
 				if (truncation.truncated) {
 					resultBuilder.truncation(truncation, { direction: "head" });

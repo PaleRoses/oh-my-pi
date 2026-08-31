@@ -57,7 +57,6 @@ import { isInspectImageToolActive } from "../utils/inspect-image-mode";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
 import { buildDirectoryTree, type DirectoryTree } from "../workspace-tree";
-import { CAPTURE_PARAM_DESCRIPTION } from "./capture-schema";
 import {
 	type ConflictEntry,
 	type ConflictScope,
@@ -69,7 +68,6 @@ import {
 	scanConflictLines,
 	scanFileForConflicts,
 } from "./conflict-detect";
-import { applyEvalCapture } from "./eval-capture";
 import { executeReadUrl, fetchReadUrl, parseReadUrlTarget } from "./fetch";
 import { type OutputMeta, resolveOutputMaxColumns } from "./output-meta";
 import {
@@ -533,12 +531,10 @@ const readSchema = type({
 	path: type("string").describe(
 		"Local path, internal URI (e.g. memory://, skill://), or URL. Inline selectors are supported.",
 	),
-	"capture?": type("string").describe(CAPTURE_PARAM_DESCRIPTION),
 });
 
 const readSchemaWithoutMemory = type({
 	path: type("string").describe("Local path, internal URI (e.g. skill://), or URL. Inline selectors are supported."),
-	"capture?": type("string").describe(CAPTURE_PARAM_DESCRIPTION),
 });
 
 export type ReadToolInput = typeof readSchema.infer;
@@ -1082,58 +1078,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 
 	async #executeInner(
-		_toolCallId: string,
-		params: ReadParams,
-		signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
-		_toolContext?: AgentToolContext,
-	): Promise<AgentToolResult<ReadToolDetails>> {
-		return this.#applyReadCapture(
-			await this.#executeRead(_toolCallId, params, signal, _onUpdate, _toolContext),
-			params.capture,
-		);
-	}
-
-	/**
-	 * Apply the `capture` parameter to a finished read result: text results have
-	 * their full output bound to a Python kernel variable and the content
-	 * replaced by a stub; image/binary results ignore capture and keep the full
-	 * output plus one warning line. Any capture failure degrades to the original
-	 * output with an appended warning — the read itself never fails because
-	 * capture failed.
-	 */
-	async #applyReadCapture<T>(result: AgentToolResult<T>, capture: string | undefined): Promise<AgentToolResult<T>> {
-		if (!capture) return result;
-		const textBlocks = result.content.filter((block): block is TextContent => block.type === "text");
-		if (result.content.some(block => block.type === "image")) {
-			// Image output: keep everything, append one warning line.
-			const warning = "\n[capture ignored: image output; full output retained]";
-			if (textBlocks.length === 0) {
-				return { ...result, content: [...result.content, { type: "text", text: warning.trimStart() }] };
-			}
-			const lastText = textBlocks[textBlocks.length - 1];
-			return {
-				...result,
-				content: result.content.map(block =>
-					block === lastText ? { ...block, text: `${block.text}${warning}` } : block,
-				),
-			};
-		}
-		if (textBlocks.length === 0) return result;
-
-		const fullText = textBlocks.map(block => block.text).join("\n");
-		const applied = await applyEvalCapture(this.session, {
-			toolLabel: "read",
-			captureName: capture,
-			text: fullText,
-		});
-		// Captured: the stub replaces the content. Degraded: the original output
-		// plus the warning line (applyEvalCapture's failure content) replaces it
-		// — in both cases a single text block is the result.
-		return { ...result, content: [{ type: "text", text: applied.content }] };
-	}
-
-	async #executeRead(
 		_toolCallId: string,
 		params: ReadParams,
 		signal?: AbortSignal,

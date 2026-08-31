@@ -38,9 +38,7 @@ import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-intera
 import { checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
-import { CAPTURE_PARAM_DESCRIPTION } from "./capture-schema";
 import { resolveEvalBackends } from "./eval-backends";
-import { applyEvalCapture } from "./eval-capture";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import {
 	formatStyledTruncationWarning,
@@ -321,7 +319,6 @@ const bashSchemaBase = type({
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": type("string").describe("working directory"),
 	"pty?": type("boolean").describe("run in pty mode"),
-	"capture?": type("string").describe(CAPTURE_PARAM_DESCRIPTION),
 });
 
 const bashSchemaWithAsync = type({
@@ -331,7 +328,6 @@ const bashSchemaWithAsync = type({
 	"cwd?": "string",
 	"pty?": "boolean",
 	"async?": type("boolean").describe("run in background"),
-	"capture?": type("string").describe(CAPTURE_PARAM_DESCRIPTION),
 });
 
 type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync;
@@ -344,8 +340,6 @@ export interface BashToolInput {
 
 	async?: boolean;
 	pty?: boolean;
-	/** Bind the full output to this Python kernel variable; see CAPTURE_PARAM_DESCRIPTION. */
-	capture?: string;
 }
 
 export interface BashToolDetails {
@@ -682,7 +676,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			notices?: readonly string[];
 			terminalId?: string;
 			wallTimeMs?: number;
-			capture?: string;
 		} = {},
 	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
@@ -740,25 +733,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			saveArtifact: (full: string) => result.artifactId ?? saveBashOriginalArtifact(this.session, full),
 		};
 
-		// `capture` binds the FULL command output (raw stream, excluding the
-		// wall-time/exit-code notices #buildCompletedResult appends) to a Python
-		// kernel variable and swaps the result text for a stub. On failure the
-		// original result text plus one warning line is returned and the normal
-		// inline cap still applies, so the tool call never fails because capture
-		// failed.
-		const fullOutput = normalizeResultOutput(result);
-		const applyCapture = async (displayText: string): Promise<string> => {
-			if (!options.capture) return displayText;
-			const capture = await applyEvalCapture(this.session, {
-				toolLabel: "bash",
-				captureName: options.capture,
-				text: fullOutput,
-			});
-			if (capture.captured) return capture.content;
-			const warningLine = capture.content.slice(fullOutput.length);
-			return await enforceInlineByteCap(`${displayText}${warningLine}`, inlineCap);
-		};
-
 		if (isTimeout) {
 			details.timedOut = true;
 			const message =
@@ -768,7 +742,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			if (!normalizeResultOutput(result).startsWith(`[${message}]\n`)) {
 				outputLines.push("", `[${message}]`);
 			}
-			const timeoutOutputText = await applyCapture(await enforceInlineByteCap(outputLines.join("\n"), inlineCap));
+			const timeoutOutputText = await enforceInlineByteCap(outputLines.join("\n"), inlineCap);
 			return toolResult(details)
 				.text(timeoutOutputText)
 				.truncationFromSummary(result, { direction: "tail" })
@@ -780,7 +754,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		this.#throwIfUnfinished(result, timeoutSec, outputText);
 
 		// No-op for already-bounded output; see `inlineCap` above.
-		const cappedOutputText = await applyCapture(await enforceInlineByteCap(outputText, inlineCap));
+		const cappedOutputText = await enforceInlineByteCap(outputText, inlineCap);
 
 		const resultBuilder = toolResult(details)
 			.text(cappedOutputText)
@@ -832,7 +806,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		timeoutSec: number | undefined;
 		requestedTimeoutSec?: number;
 		notices?: readonly string[];
-		capture?: string;
 
 		resolvedEnv?: Record<string, string>;
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
@@ -875,7 +848,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
 						notices: options.notices ?? [],
-						capture: options.capture,
 						wallTimeMs,
 					});
 					const finalText = this.#extractTextResult(finalResult);
@@ -933,7 +905,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 			async: asyncRequested = false,
 			pty = false,
-			capture,
 		}: BashToolInput,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
@@ -1048,7 +1019,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				timeoutSec,
 				requestedTimeoutSec,
 				notices: pendingNotices,
-				capture,
 
 				resolvedEnv,
 				onUpdate,
@@ -1087,7 +1057,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				timeoutSec,
 				requestedTimeoutSec,
 				notices: pendingNotices,
-				capture,
 
 				resolvedEnv,
 				onUpdate,
@@ -1389,7 +1358,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					requestedTimeoutSec,
 					notices: bridgeNotices,
 					terminalId: handle.terminalId,
-					capture,
 					wallTimeMs: performance.now() - bridgeWallTimeStart,
 				});
 			} finally {
@@ -1474,7 +1442,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		return this.#buildCompletedResult(result, timeoutSec, {
 			requestedTimeoutSec,
 			notices: pendingNotices,
-			capture,
 			wallTimeMs,
 		});
 	}
