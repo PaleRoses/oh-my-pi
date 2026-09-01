@@ -1,5 +1,5 @@
 import type { SystemPromptProfileAgentKind } from "../config/settings-schema";
-import type { MemoryBackendIdentity } from "../memory-backend/types";
+import type { MemoryBackendId } from "../memory-backend/types";
 import type { AgentSession } from "./agent-session";
 
 export type EffectivePromptSource =
@@ -63,22 +63,34 @@ export function formatIdentityModel(
 	return model ? `${model.provider}/${model.id}` : undefined;
 }
 
-type MemoryIdentityProjection =
-	| MemoryBackendIdentity
+type MemoryProviderIdentity =
+	| { readonly backend: "off"; readonly status: "disabled" }
+	| { readonly backend: "local" | "sharpshooter"; readonly status: "active" }
+	| { readonly backend: "mnemopi"; readonly status: "configured-not-started" | "active" }
+	| { readonly backend: "hindsight"; readonly status: "configured-not-started" }
+	| {
+			readonly backend: "hindsight";
+			readonly status: "active";
+			readonly bank: string;
+			readonly project: string;
+			readonly scope: "global" | "per-project" | "per-project-tagged";
+			readonly tags: readonly string[];
+	  }
 	| { readonly backend: "unavailable"; readonly status: "not-started" };
 
 export interface AgentIdentitySnapshotInput {
 	readonly effectiveIdentity: EffectiveSessionIdentity;
 	readonly model?: { readonly provider: string; readonly id: string };
 	readonly sessionId: string;
-	readonly memoryIdentity: MemoryBackendIdentity | undefined;
+	readonly memoryIdentity?: MemoryProviderIdentity;
 }
 
 export interface AgentIdentitySnapshot extends EffectiveSessionIdentity {
 	readonly sessionId: string;
 	readonly model: { readonly status: "active"; readonly value: string } | { readonly status: "unavailable" };
 	readonly memory: EffectiveMemoryCapability & {
-		readonly backend: MemoryIdentityProjection["backend"];
+		readonly backend: MemoryProviderIdentity["backend"];
+		readonly providerStatus: MemoryProviderIdentity["status"];
 		readonly hindsight:
 			| { readonly status: "disabled-by-profile" }
 			| { readonly status: "disabled" }
@@ -93,11 +105,40 @@ export interface AgentIdentitySnapshot extends EffectiveSessionIdentity {
 	};
 }
 
+function configuredMemoryIdentity(session: AgentSession): MemoryProviderIdentity {
+	if (session.effectiveIdentity.memory.status !== "enabled") {
+		return { backend: "unavailable", status: "not-started" };
+	}
+	const backend: MemoryBackendId = session.settings.get("memory.backend") ?? "off";
+	switch (backend) {
+		case "off":
+			return { backend, status: "disabled" };
+		case "local":
+		case "sharpshooter":
+			return { backend, status: "active" };
+		case "mnemopi":
+			return { backend, status: session.getMnemopiSessionState() ? "active" : "configured-not-started" };
+		case "hindsight": {
+			const state = session.getHindsightSessionState();
+			const primary = state?.isAlias ? state.aliasOf : state;
+			if (!primary) return { backend, status: "configured-not-started" };
+			return {
+				backend,
+				status: "active",
+				bank: primary.bankId,
+				project: primary.projectLabel,
+				scope: primary.config.scoping,
+				tags: primary.retainTags ?? [],
+			};
+		}
+	}
+}
+
 export function deriveAgentIdentitySnapshot(input: AgentIdentitySnapshotInput): AgentIdentitySnapshot {
 	const identity = input.effectiveIdentity;
 	const modelValue = formatIdentityModel(input.model);
 	const model = modelValue ? ({ status: "active", value: modelValue } as const) : ({ status: "unavailable" } as const);
-	const memoryIdentity: MemoryIdentityProjection = input.memoryIdentity ?? {
+	const memoryIdentity: MemoryProviderIdentity = input.memoryIdentity ?? {
 		backend: "unavailable",
 		status: "not-started",
 	};
@@ -122,6 +163,7 @@ export function deriveAgentIdentitySnapshot(input: AgentIdentitySnapshotInput): 
 		memory: {
 			...identity.memory,
 			backend: memoryIdentity.backend,
+			providerStatus: memoryIdentity.status,
 			hindsight,
 		},
 	};
@@ -132,7 +174,7 @@ export function snapshotAgentIdentity(session: AgentSession): AgentIdentitySnaps
 		effectiveIdentity: session.effectiveIdentity,
 		model: session.model,
 		sessionId: session.sessionId,
-		memoryIdentity: session.memoryIdentity(),
+		memoryIdentity: configuredMemoryIdentity(session),
 	});
 }
 
@@ -151,7 +193,7 @@ export function formatAgentIdentityReport(snapshot: AgentIdentitySnapshot): stri
 		`Model: ${snapshot.model.status === "active" ? snapshot.model.value : "unavailable"}`,
 		`Session ID: ${snapshot.sessionId}`,
 		`Memory permission: ${formatMemoryPermission(snapshot)}`,
-		`Memory backend: ${snapshot.memory.backend === "off" ? "off (disabled)" : snapshot.memory.backend}`,
+		`Memory backend: ${snapshot.memory.backend} (${snapshot.memory.providerStatus})`,
 		`Active Hindsight bank: ${hindsight.status === "active" ? hindsight.bank : hindsight.status}`,
 		`Project: ${hindsight.status === "active" ? hindsight.project : hindsight.status}`,
 		`Scope: ${hindsight.status === "active" ? hindsight.scope : hindsight.status}`,
@@ -186,7 +228,7 @@ export function formatAgentIdentitySystemPrompt(
 							hindsight.tags.length > 0 ? hindsight.tags.join(",") : "none"
 						}`
 					: hindsight.status
-				: snapshot.memory.backend;
+				: `${snapshot.memory.backend}:${snapshot.memory.providerStatus}`;
 	return [
 		"<agent-identity>",
 		`Role: ${snapshot.role}`,

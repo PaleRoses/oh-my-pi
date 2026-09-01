@@ -774,6 +774,8 @@ async function resolveInternalSearchInputs(opts: {
 	archiveDisplayMap: ReadonlyMap<string, string>;
 	localProtocolOptions?: LocalProtocolOptions;
 	skills?: ResolveContext["skills"];
+	sessionId?: string;
+	memoryEnabled?: boolean;
 	sessionFile?: string;
 }): Promise<InternalSearchInputResolution> {
 	const internalRouter = InternalUrlRouter.instance();
@@ -787,6 +789,8 @@ async function resolveInternalSearchInputs(opts: {
 		cwd: opts.cwd,
 		settings: opts.settings,
 		signal: opts.signal,
+		sessionId: opts.sessionId,
+		memoryEnabled: opts.memoryEnabled,
 		sessionFile: opts.sessionFile,
 		localProtocolOptions: opts.localProtocolOptions,
 		skills: opts.skills,
@@ -999,6 +1003,8 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					archiveDisplayMap,
 					localProtocolOptions: this.session.localProtocolOptions,
 					skills: this.session.skills,
+					sessionId: this.session.getSessionId?.() ?? undefined,
+					memoryEnabled: this.session.memoryEnabled?.() ?? false,
 					sessionFile: this.session.getSessionFile() ?? undefined,
 				});
 				const searchablePaths = internalResolution.paths;
@@ -1042,6 +1048,8 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						signal,
 						localProtocolOptions: this.session.localProtocolOptions,
 						skills: this.session.skills,
+						sessionId: this.session.getSessionId?.() ?? undefined,
+						memoryEnabled: this.session.memoryEnabled?.() ?? false,
 						sessionFile: this.session.getSessionFile() ?? undefined,
 						resolveExternalUrl: materializeExternalUrlForSearch,
 						trackImmutableSources: true,

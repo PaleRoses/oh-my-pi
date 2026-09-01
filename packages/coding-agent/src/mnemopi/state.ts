@@ -220,84 +220,38 @@ export function setMnemopiSessionState(
 	return previous;
 }
 
-interface MnemopiSessionStateBaseOptions {
+export interface MnemopiSessionStateOptions {
 	sessionId: string;
+	config: MnemopiBackendConfig;
 	session: AgentSession;
 	lastRetainedTurn?: number;
 	hasRecalledForFirstTurn?: boolean;
 }
 
-interface MnemopiPrimarySessionStateOptions extends MnemopiSessionStateBaseOptions {
-	config: MnemopiBackendConfig;
-	aliasOf?: never;
-}
-
-interface MnemopiAliasSessionStateOptions extends MnemopiSessionStateBaseOptions {
-	/**
-	 * A subagent alias follows the primary parent's live state slot. Parent
-	 * transitions replace the scoped SQLite handles, so retaining a captured
-	 * state would strand the child on handles the parent has just closed.
-	 */
-	aliasOf: MnemopiSessionState;
-	config?: never;
-}
-
-export type MnemopiSessionStateOptions = MnemopiPrimarySessionStateOptions | MnemopiAliasSessionStateOptions;
-
 export class MnemopiSessionState {
 	sessionId: string;
+	readonly config: MnemopiBackendConfig;
 	readonly session: AgentSession;
-	readonly #config?: MnemopiBackendConfig;
-	readonly #primarySession?: AgentSession;
-	readonly #scoped?: MnemopiScopedResources;
+	readonly memory: Mnemopi;
+	readonly globalMemory?: Mnemopi;
+	readonly #scoped: MnemopiScopedResources;
 	lastRetainedTurn: number;
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	unsubscribe?: () => void;
 	#retentionCursorLoaded = false;
+	#disposePromise?: Promise<void>;
 
 	constructor(options: MnemopiSessionStateOptions) {
 		this.sessionId = options.sessionId;
+		this.config = options.config;
 		this.session = options.session;
-		if (options.aliasOf) {
-			const primary = options.aliasOf.aliasOf ?? options.aliasOf;
-			this.#primarySession = primary.session;
-		} else {
-			this.#config = options.config;
-			this.#scoped = createScopedResources(options.config);
-		}
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
 		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
-	}
-
-	get isAlias(): boolean {
-		return this.#primarySession !== undefined;
-	}
-
-	/** The primary state currently installed in the parent session. */
-	get aliasOf(): MnemopiSessionState | undefined {
-		const state = getMnemopiSessionState(this.#primarySession);
-		return state?.isAlias ? state.aliasOf : state;
-	}
-
-	get config(): MnemopiBackendConfig {
-		return this.aliasOf?.config ?? this.#config ?? this.#missingPrimaryState();
-	}
-
-	get memory(): Mnemopi {
-		return this.scoped.retain.memory;
-	}
-
-	get globalMemory(): Mnemopi | undefined {
-		return this.scoped.global?.memory;
-	}
-
-	private get scoped(): MnemopiScopedResources {
-		return this.aliasOf?.scoped ?? this.#scoped ?? this.#missingPrimaryState();
-	}
-
-	#missingPrimaryState(): never {
-		throw new Error("Mnemopi parent state is no longer active.");
+		this.#scoped = createScopedResources(options.config);
+		this.memory = this.#scoped.retain.memory;
+		this.globalMemory = this.#scoped.global?.memory;
+		mnemopiEmbedClient.acquireOwner();
 	}
 
 	setSessionId(sessionId: string): void {
@@ -315,11 +269,11 @@ export class MnemopiSessionState {
 	}
 
 	getScopedRecallTargets(): readonly MnemopiScopedMemory[] {
-		return this.scoped.recall;
+		return this.#scoped.recall;
 	}
 
 	getScopedRetainTarget(): MnemopiScopedMemory {
-		return this.scoped.retain;
+		return this.#scoped.retain;
 	}
 
 	/**
@@ -337,9 +291,9 @@ export class MnemopiSessionState {
 	 */
 	getScopedMemory(id: string): MnemopiScopedMemoryHit | null {
 		const targets = dedupeScopedTargets([
-			this.scoped.retain,
-			...this.scoped.recall,
-			...(this.scoped.global ? [this.scoped.global] : []),
+			this.#scoped.retain,
+			...this.#scoped.recall,
+			...(this.#scoped.global ? [this.#scoped.global] : []),
 		]);
 		for (const target of targets) {
 			const raw = target.memory.get(id) as MnemopiStoredMemoryRow | null;
@@ -372,9 +326,9 @@ export class MnemopiSessionState {
 		options: MnemopiMemoryEditOptions = {},
 	): MnemopiMemoryEditResult {
 		const targets = dedupeScopedTargets([
-			this.scoped.retain,
-			...this.scoped.recall,
-			...(this.scoped.global ? [this.scoped.global] : []),
+			this.#scoped.retain,
+			...this.#scoped.recall,
+			...(this.#scoped.global ? [this.#scoped.global] : []),
 		]);
 		let ineligible: MnemopiMemoryEditResult | undefined;
 		for (const target of targets) {
@@ -435,12 +389,12 @@ export class MnemopiSessionState {
 		let successfulTargets = 0;
 		const sharedFallbackQuery = deriveSharedRecallFallbackQuery(
 			query,
-			this.scoped.retain.bank,
-			this.scoped.global?.bank,
+			this.#scoped.retain.bank,
+			this.#scoped.global?.bank,
 		);
-		for (const target of this.scoped.recall) {
+		for (const target of this.#scoped.recall) {
 			const queries =
-				target.bank === this.scoped.global?.bank && sharedFallbackQuery ? [query, sharedFallbackQuery] : [query];
+				target.bank === this.#scoped.global?.bank && sharedFallbackQuery ? [query, sharedFallbackQuery] : [query];
 			let targetSucceeded = false;
 			try {
 				for (const recallQuery of queries) {
@@ -494,10 +448,10 @@ export class MnemopiSessionState {
 
 	rememberInScope(memory: MnemopiRememberInput, options: MnemopiRememberOptions = {}): string | undefined {
 		try {
-			return this.scoped.retain.memory.remember(memory, options);
+			return this.#scoped.retain.memory.remember(memory, options);
 		} catch (error) {
 			logger.warn("Mnemopi: retain failed", {
-				bank: this.scoped.retain.bank,
+				bank: this.#scoped.retain.bank,
 				error: String(error),
 			});
 			return undefined;
@@ -539,7 +493,7 @@ export class MnemopiSessionState {
 	}
 
 	async maybeRetainOnAgentEnd(_messages: AgentMessage[]): Promise<void> {
-		if (!this.config.autoRetain || this.isAlias) return;
+		if (!this.config.autoRetain) return;
 		const flat = extractMessages(this.session.sessionManager);
 		this.#restoreRetainedTurnCursor();
 		const userTurns = flat.filter(message => message.role === "user").length;
@@ -553,7 +507,6 @@ export class MnemopiSessionState {
 	}
 
 	async forceRetainCurrentSession(options: { extract?: boolean } = {}): Promise<void> {
-		if (this.isAlias) return;
 		const flat = extractMessages(this.session.sessionManager);
 		this.#restoreRetainedTurnCursor();
 		const userTurns = flat.filter(message => message.role === "user").length;
@@ -622,13 +575,13 @@ export class MnemopiSessionState {
 				void this.maybeRecallOnAgentStart().catch(error => {
 					this.#logLifecycleFailure(
 						"agent_start recall",
-						this.scoped.recall.map(target => target.bank),
+						this.#scoped.recall.map(target => target.bank),
 						error,
 					);
 				});
 			} else if (event.type === "agent_end") {
 				void this.maybeRetainOnAgentEnd(event.messages).catch(error => {
-					this.#logLifecycleFailure("agent_end retention", [this.scoped.retain.bank], error);
+					this.#logLifecycleFailure("agent_end retention", [this.#scoped.retain.bank], error);
 				});
 			}
 		});
@@ -674,15 +627,6 @@ export class MnemopiSessionState {
 	 * `/memory enqueue` path requests full cross-session consolidation; disposal
 	 * composes the lighter retain-and-flush path with closing the DB handles.
 	 *
-	 * Aliased subagent states share `scoped` (and therefore the actual SQLite
-	 * banks) with their parent. `consolidate()` deliberately does NOT
-	 * short-circuit on `aliasOf`: `forceRetainCurrentSession` already guards
-	 * itself, and an explicit `/memory enqueue` invoked from within a subagent
-	 * still needs to flush extractions and sleep the parent's shared banks —
-	 * otherwise enqueue would report success while leaving the subagent's
-	 * retained memories unconsolidated until a later full consolidation request
-	 * (PR #2327 review).
-	 *
 	 * @param options.full - When true, run `sleepAllSessions` on every owned bank
 	 *  (the full cross-session consolidation used by `/memory enqueue`). When
 	 *  false (the default), run only `sleep` on the current session when bank
@@ -696,7 +640,7 @@ export class MnemopiSessionState {
 	 */
 	async consolidate(options: { full?: boolean; extract?: boolean; sleep?: boolean } = {}): Promise<void> {
 		await this.forceRetainCurrentSession({ extract: options.extract });
-		for (const memory of this.scoped.owned) {
+		for (const memory of this.#scoped.owned) {
 			await memory.flushExtractions();
 			if (options.sleep === false) continue;
 			if (options.full) {
@@ -736,18 +680,26 @@ export class MnemopiSessionState {
 		// the retain bank — or a locked shared bank (per-project-tagged) still stalls
 		// teardown for Mnemopi's default 5s busy timeout (#7351 review).
 		const busyTimeoutMs = Math.max(1, Math.floor(timeoutMs));
-		for (const memory of this.scoped.owned) memory.beam.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
+		for (const memory of this.#scoped.owned) memory.beam.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 	}
 
 	async dispose(options: { consolidate?: boolean; timeoutMs?: number } = {}): Promise<void> {
+		this.#disposePromise ??= this.#dispose(options);
+		await this.#disposePromise;
+	}
+
+	async #dispose(options: { consolidate?: boolean; timeoutMs?: number }): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		if (this.isAlias) return;
-		const closeOwned = (): void => {
-			for (const memory of this.scoped.owned) memory.close();
+		const closeOwned = async (): Promise<void> => {
+			try {
+				for (const memory of this.#scoped.owned) memory.close();
+			} finally {
+				await mnemopiEmbedClient.releaseOwner();
+			}
 		};
 		if (options.consolidate === false) {
-			closeOwned();
+			await closeOwned();
 			return;
 		}
 		const { timeoutMs } = options;
@@ -770,17 +722,15 @@ export class MnemopiSessionState {
 					timeoutMs,
 				});
 				// Defer close until the in-flight consolidate settles so SQLite
-				// writes don't race a closed handle. The process is on the way
-				// to `postmortem.quit(0)`; if it exits first, the OS reclaims
-				// the handles (and a still-pending embed() goes down with the
-				// embed worker the caller is about to SIGKILL).
+				// writes don't race a closed handle. The last state to close also
+				// terminates the shared embed worker.
 				void consolidatePromise.finally(closeOwned);
 				return;
 			}
 		} else {
 			await consolidatePromise;
 		}
-		closeOwned();
+		await closeOwned();
 	}
 }
 

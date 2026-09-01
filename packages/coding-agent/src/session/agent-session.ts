@@ -150,10 +150,11 @@ import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slas
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState } from "../goals/state";
+import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
-import type { MemoryBackendIdentity, MemoryBackendStartOptions } from "../memory-backend/types";
+import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
@@ -183,6 +184,8 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import { releaseSharpshooterSession } from "../sharpshooter/backend";
+import { flushSharpshooterExtraction } from "../sharpshooter/extract";
 import { systemPromptProfileCacheKey } from "../system-prompt-profiles";
 import {
 	AUTO_THINKING,
@@ -732,6 +735,7 @@ export class AgentSession {
 	#yieldTerminationPending = false;
 	#synchronouslyTerminatedYieldToolCallIds = new Set<string>();
 	#providerSessionState = new Map<string, ProviderSessionState>();
+	#hindsightSessionState: HindsightSessionState | undefined = undefined;
 	readonly #memory: SessionMemory;
 	readonly rawSseDebugBuffer: RawSseDebugBuffer;
 
@@ -1253,7 +1257,12 @@ export class AgentSession {
 			settings: this.settings,
 			modelRegistry: this.#modelRegistry,
 			isDisposed: () => this.#isDisposed,
+			memoryEnabled: () => this.effectiveIdentity.memory.status === "enabled",
 			memoryBackendSession: () => this,
+			getHindsightSessionState: () => this.getHindsightSessionState(),
+			setHindsightSessionState: state => this.setHindsightSessionState(state),
+			getMnemopiSessionState: () => this.getMnemopiSessionState(),
+			takeMnemopiSessionState: () => setMnemopiSessionState(this, undefined),
 			setBaseSystemPrompt: prompt => {
 				this.#tools.setBaseSystemPrompt(prompt);
 				this.agent.setSystemPrompt(prompt);
@@ -1262,9 +1271,9 @@ export class AgentSession {
 			replaceMemoryTools: tools => this.#tools.replaceMemoryTools(tools),
 		};
 		this.#memory = new SessionMemory(memoryHost, {
-			identity: this.effectiveIdentity,
 			memoryAgentDir: config.memoryAgentDir,
 			memoryTaskDepth: config.memoryTaskDepth,
+			parentHindsightSessionState: config.parentHindsightSessionState,
 			createMemoryTools: config.createMemoryTools,
 		});
 		// Resolve the wire service-tier per request so the Fireworks Priority
@@ -1870,6 +1879,20 @@ export class AgentSession {
 	/** Hint forwarded to provider calls that support websocket transport. */
 	get preferWebsockets(): boolean | undefined {
 		return this.#preferWebsockets;
+	}
+
+	getHindsightSessionState(): HindsightSessionState | undefined {
+		return this.#hindsightSessionState;
+	}
+
+	setHindsightSessionState(state: HindsightSessionState | undefined): HindsightSessionState | undefined {
+		const previous = this.#hindsightSessionState;
+		this.#hindsightSessionState = state;
+		return previous;
+	}
+
+	getMnemopiSessionState(): MnemopiSessionState | undefined {
+		return getMnemopiSessionState(this);
 	}
 
 	/** TTSR manager for time-traveling stream rules */
@@ -4285,6 +4308,13 @@ export class AgentSession {
 		}
 	}
 
+	async #disposeMnemopi(
+		state: MnemopiSessionState | undefined,
+		consolidateTimeoutMs: number | undefined,
+	): Promise<void> {
+		await state?.dispose({ timeoutMs: consolidateTimeoutMs });
+	}
+
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
 		this.#recordSessionExit(options.reason ?? "dispose");
@@ -4316,6 +4346,16 @@ export class AgentSession {
 		await this.#drainAutolearnCapture();
 		await this.#memory.transition;
 
+		const hindsightState = this.getHindsightSessionState();
+		const mnemopiState = setMnemopiSessionState(this, undefined);
+		// Bound the wait for a just-fired Sharpshooter extraction before dropping
+		// its subscriptions, so print-mode exits don't cut queued-delta writes.
+		const sharpshooterFlushed = flushSharpshooterExtraction(this, options.mnemopiConsolidateTimeoutMs);
+		try {
+			releaseSharpshooterSession(this);
+		} catch (error) {
+			logger.warn("Session dispose: Sharpshooter release failed", { error: String(error) });
+		}
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		const results = await Promise.allSettled([
 			this.#disposeOwnedAsyncJobs(),
@@ -4325,7 +4365,9 @@ export class AgentSession {
 			shutdownTinyTitleClient(),
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
-			this.#memory.dispose(),
+			hindsightState?.retireRetainQueue() ?? Promise.resolve(),
+			this.#disposeMnemopi(mnemopiState, options.mnemopiConsolidateTimeoutMs),
+			sharpshooterFlushed,
 		]);
 		for (const result of results) {
 			if (result.status === "rejected") {
@@ -4340,6 +4382,8 @@ export class AgentSession {
 		this.#movedFromEmptySessionFile = undefined;
 		this.#closeAllProviderSessions("dispose");
 		this.#maintenance.cancelSpeculation();
+		this.setHindsightSessionState(undefined);
+		hindsightState?.dispose();
 		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();
@@ -5028,16 +5072,6 @@ export class AgentSession {
 	/** Applies the selected memory backend to runtime state, tools, and prompt. */
 	applyMemoryBackend(): Promise<void> {
 		return this.#memory.applyMemoryBackend();
-	}
-
-	/** Provider-owned memory identity without exposing concrete provider state. */
-	memoryIdentity(): MemoryBackendIdentity | undefined {
-		return this.#memory.identity();
-	}
-
-	/** Starts and retains the selected memory backend runtime. */
-	startMemoryBackend(options: MemoryBackendStartOptions): Promise<void> {
-		return this.#memory.start(options);
 	}
 
 	/** Rebuilds the stable base prompt for the current tools and model. */

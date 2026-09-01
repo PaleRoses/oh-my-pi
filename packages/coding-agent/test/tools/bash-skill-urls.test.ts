@@ -181,11 +181,15 @@ describe("expandInternalUrls", () => {
 		const cwd = "/tmp/session-b";
 		const sourcePath = "/tmp/session-b-memory/memory_summary.md";
 		let observedCwd: string | undefined;
+		let observedSessionId: string | undefined;
+		let observedMemoryEnabled: boolean | undefined;
 		let observedPathOnly: boolean | undefined;
 		const router = {
 			canHandle: (input: string) => input === "memory://root/memory_summary.md",
 			resolve: async (input: string, context?: ResolveContext) => {
 				observedCwd = context?.cwd;
+				observedSessionId = context?.sessionId;
+				observedMemoryEnabled = context?.memoryEnabled;
 				observedPathOnly = context?.pathOnly;
 				return {
 					url: input,
@@ -198,9 +202,17 @@ describe("expandInternalUrls", () => {
 		};
 
 		await expect(
-			expandInternalUrls("cat memory://root/memory_summary.md", { skills: [], internalRouter: router, cwd }),
+			expandInternalUrls("cat memory://root/memory_summary.md", {
+				skills: [],
+				internalRouter: router,
+				cwd,
+				sessionId: "stable-session",
+				memoryEnabled: false,
+			}),
 		).resolves.toBe(`cat ${shellEscape(sourcePath)}`);
 		expect(observedCwd).toBe(cwd);
+		expect(observedSessionId).toBe("stable-session");
+		expect(observedMemoryEnabled).toBe(false);
 		expect(observedPathOnly).toBe(true);
 	});
 

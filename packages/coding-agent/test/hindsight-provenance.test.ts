@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "bun:test";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { computeBankScope, resolveProjectLabel } from "@oh-my-pi/pi-coding-agent/hindsight/bank";
 import type {
 	BankProfileResponse,
@@ -12,8 +13,7 @@ import type {
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { formatMemories, type HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
-import { HindsightSessionState, setHindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
-import type { MemoryBackendIdentity } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
+import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import {
 	type AgentIdentitySnapshot,
@@ -21,6 +21,9 @@ import {
 	type EffectiveSessionIdentity,
 	snapshotAgentIdentity,
 } from "@oh-my-pi/pi-coding-agent/session/identity";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
+import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
 const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig => ({
@@ -94,9 +97,9 @@ function createState(
 	options: { config?: HindsightConfig; projectLabel?: string; retainTags?: string[] } = {},
 ): HindsightSessionState {
 	let state: HindsightSessionState;
+	let installed: HindsightSessionState | undefined;
 	const session = {
 		effectiveIdentity: identity,
-		memoryIdentity: () => hindsightMemoryIdentity(state),
 		get model() {
 			return runtime.model;
 		},
@@ -106,6 +109,13 @@ function createState(
 			return state.sessionId;
 		},
 		emitNotice: () => {},
+		getHindsightSessionState: () => installed,
+		setHindsightSessionState: (next: HindsightSessionState | undefined) => {
+			const previous = installed;
+			installed = next;
+			return previous;
+		},
+		getMnemopiSessionState: () => undefined,
 	} as unknown as AgentSession;
 	state = new HindsightSessionState({
 		sessionId: "session-42",
@@ -117,22 +127,10 @@ function createState(
 		session,
 		banksSet: new Set(),
 	});
-	setHindsightSessionState(session, state);
+	session.setHindsightSessionState(state);
 	return state;
 }
 
-function hindsightMemoryIdentity(state: HindsightSessionState | undefined): MemoryBackendIdentity {
-	const primary = state?.isAlias ? state.aliasOf : state;
-	if (!primary) return { backend: "hindsight", status: "configured-not-started" };
-	return {
-		backend: "hindsight",
-		status: "active",
-		bank: primary.bankId,
-		project: primary.projectLabel,
-		scope: primary.config.scoping,
-		tags: Array.from(new Set([...(primary.retainTags ?? []), ...(primary.recallTags ?? [])])).sort(),
-	};
-}
 function activeProfileMetadata(snapshot: AgentIdentitySnapshot): Record<string, string> {
 	const profileId = snapshot.prompt.profileId;
 	if (profileId === undefined || snapshot.model.status !== "active") {
@@ -202,6 +200,52 @@ describe("Hindsight retention provenance", () => {
 		expect(Object.isFrozen(identity.memory)).toBe(true);
 	});
 
+	it("carries explicit learn and retain provenance through the queued batch flush", async () => {
+		const client = new RecordingHindsightApi();
+		const identity = createEffectiveSessionIdentity({
+			role: "main",
+			profileId: "profile-tools",
+			promptSource: "system-prompt-profile",
+			memoryEnabled: true,
+		});
+		const state = createState(
+			client,
+			identity,
+			{ cwd: "/workspace/tools-project", model: { provider: "openai-codex", id: "gpt-5.6-sol" } },
+			{ projectLabel: "tools-project", retainTags: ["project:tools-project"] },
+		);
+		const settings = Settings.isolated({ "autolearn.enabled": true, "memory.backend": "hindsight" });
+		const toolSession = {
+			cwd: "/workspace/tools-project",
+			hasUI: false,
+			settings,
+			getSessionFile: () => null,
+			getSessionSpawns: () => null,
+			getHindsightSessionState: () => state,
+		} as unknown as ToolSession;
+
+		await new LearnTool(toolSession).execute("learn-provenance", { memory: "learned fact" });
+		await MemoryRetainTool.createIf(toolSession)!.execute("retain-provenance", {
+			items: [{ content: "retained fact" }],
+		});
+		await state.flushRetainQueue();
+
+		expect(client.batches).toHaveLength(1);
+		expect(client.batches[0]?.items.map(item => item.content)).toEqual(["learned fact", "retained fact"]);
+		for (const item of client.batches[0]?.items ?? []) {
+			expect(item.metadata).toMatchObject({
+				session_id: "session-42",
+				agent_kind: "main",
+				prompt_profile: "profile-tools",
+				prompt_principal: "prompt-profile:profile-tools",
+				prompt_source: "system-prompt-profile",
+				model: "openai-codex/gpt-5.6-sol",
+				project: "tools-project",
+				cwd: "/workspace/tools-project",
+				source: "agent-retain",
+			});
+		}
+	});
 	it("uses the bank project label once and performs no repository discovery per retained item", async () => {
 		const discovery = vi.spyOn(vcs, "repo").mockReturnValue({
 			primaryRoot: () => "/workspace/aurora",

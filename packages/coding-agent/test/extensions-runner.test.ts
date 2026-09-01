@@ -2051,9 +2051,6 @@ describe("ExtensionRunner", () => {
 				sessionManager,
 				modelRegistry,
 				() => ({
-					capabilities: async () => ({ recall: false, retain: false, reflect: false, edit: false, save: true }),
-					identity: async () => ({ backend: "mnemopi", status: "active", banks: ["test"] }),
-					mentalModels: async () => ({ backend: "mnemopi", status: "unsupported" }),
 					status: async () => ({
 						backend: "mnemopi",
 						active: true,
@@ -2061,32 +2058,7 @@ describe("ExtensionRunner", () => {
 						searchable: true,
 					}),
 					search: async query => ({ backend: "mnemopi", query, count: 0, items: [] }),
-					save: async _input => ({ backend: "mnemopi", stored: 1 }),
-					retain: async () => ({
-						backend: "mnemopi",
-						accepted: 0,
-						stored: 0,
-						queued: false,
-						message: "Retaining memory is not available in this extension runner test.",
-					}),
-					recall: async query => ({
-						backend: "mnemopi",
-						query,
-						count: 0,
-						items: [],
-						rendered: "",
-						message: "Recalling memory is not available in this extension runner test.",
-					}),
-					reflect: async () => ({
-						backend: "mnemopi",
-						text: "",
-						message: "Reflecting on memory is not available in this extension runner test.",
-					}),
-					edit: async () => ({
-						backend: "mnemopi",
-						status: "unsupported",
-						message: "Editing memory is not available in this extension runner test.",
-					}),
+					save: async () => ({ backend: "mnemopi", stored: 1 }),
 				}),
 			);
 			runner.initialize(

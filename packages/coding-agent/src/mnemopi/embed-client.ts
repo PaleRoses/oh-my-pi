@@ -106,6 +106,7 @@ export class MnemopiEmbedClient {
 	#unsubscribeError: (() => void) | null = null;
 	#pending = new Map<string, PendingRequest>();
 	#nextRequestId = 0;
+	#owners = 0;
 	#spawnWorker: () => MnemopiEmbedWorkerHandle;
 	#requestTimeoutMs: number;
 
@@ -115,6 +116,16 @@ export class MnemopiEmbedClient {
 	) {
 		this.#spawnWorker = spawnWorker;
 		this.#requestTimeoutMs = requestTimeoutMs;
+	}
+
+	acquireOwner(): void {
+		this.#owners++;
+	}
+
+	async releaseOwner(): Promise<void> {
+		if (this.#owners === 0) return;
+		this.#owners--;
+		if (this.#owners === 0) await this.terminate();
 	}
 
 	/**

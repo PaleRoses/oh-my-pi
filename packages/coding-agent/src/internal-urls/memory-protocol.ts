@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { getMemoryRoot } from "../memories";
-import type { MemoryBackendIdentity } from "../memory-backend/types";
+import type { MemoryBackendId } from "../memory-backend/types";
 import { getMnemopiSessionState, type MnemopiScopedMemoryHit, type MnemopiSessionState } from "../mnemopi/state";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
@@ -216,7 +216,7 @@ function mnemopiSessionStatesFromRegistry(): MnemopiSessionState[] {
 		if (!session) continue;
 		const state = getMnemopiSessionState(session);
 		if (!state) continue;
-		const primary = state.aliasOf ?? state;
+		const primary = state;
 		if (seen.has(primary)) continue;
 		seen.add(primary);
 		states.push(primary);
@@ -226,7 +226,7 @@ function mnemopiSessionStatesFromRegistry(): MnemopiSessionState[] {
 
 interface MemorySessionResolution {
 	readonly caller: AgentSession | undefined;
-	readonly identity: MemoryBackendIdentity | undefined;
+	readonly backend: MemoryBackendId | undefined;
 	readonly contextless: boolean;
 }
 
@@ -237,33 +237,73 @@ function liveSessions(): AgentSession[] {
 		.filter((session): session is AgentSession => session !== undefined);
 }
 
+function memoryBackendFromContext(context?: ResolveContext): MemoryBackendId | undefined {
+	if (!context?.settings || typeof context.settings !== "object") return undefined;
+	try {
+		const get = Reflect.get(context.settings, "get");
+		if (typeof get !== "function") return undefined;
+		const backend = Reflect.apply(get, context.settings, ["memory.backend"]);
+		return ["off", "local", "hindsight", "mnemopi", "sharpshooter"].includes(String(backend))
+			? (backend as MemoryBackendId)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function sessionMemoryBackend(session: AgentSession): MemoryBackendId {
+	if (session.effectiveIdentity?.memory.status === "disabled-by-profile") return "off";
+	return session.settings.get("memory.backend") ?? "off";
+}
+
 /**
- * Bind a routed URL to its caller's provider-owned identity. A session file
- * disambiguates same-cwd sessions before a legacy cwd fallback. Registry-wide
- * selection is retained exclusively for contextless legacy callers; a routed
- * caller must never inherit another live session's backend or Mnemopi scope.
+ * Bind a routed URL to its caller. A session file disambiguates same-cwd
+ * sessions before the legacy cwd fallback. Registry-wide selection remains
+ * exclusively for contextless legacy callers.
  */
 function resolveMemorySession(context?: ResolveContext): MemorySessionResolution {
 	const registry = AgentRegistry.global();
 	if (context !== undefined) {
-		const caller = context.sessionFile
-			? (registry.list().find(ref => ref.sessionFile === context.sessionFile)?.session ?? undefined)
-			: context.cwd
-				? (registry.list().find(ref => ref.session?.sessionManager.getCwd() === context.cwd)?.session ?? undefined)
+		if (context.memoryEnabled === false) {
+			return { caller: undefined, backend: "off", contextless: false };
+		}
+		const refs = registry.list();
+		const bySessionId = (): AgentSession | undefined =>
+			context.sessionId
+				? (refs.find(ref => ref.session?.sessionManager.getSessionId() === context.sessionId)?.session ?? undefined)
 				: undefined;
-		return { caller, identity: caller?.memoryIdentity(), contextless: false };
+		const caller = context.sessionFile
+			? (refs.find(ref => ref.sessionFile === context.sessionFile)?.session ?? bySessionId())
+			: context.sessionId
+				? bySessionId()
+				: context.cwd
+					? (refs.find(ref => ref.session?.sessionManager.getCwd() === context.cwd)?.session ?? undefined)
+					: undefined;
+		const hasExactCaller = context.sessionFile !== undefined || context.sessionId !== undefined;
+		return {
+			caller,
+			backend: caller
+				? sessionMemoryBackend(caller)
+				: hasExactCaller
+					? "off"
+					: context.memoryEnabled === true
+						? memoryBackendFromContext(context)
+						: "off",
+			contextless: false,
+		};
 	}
 	const sessions = liveSessions();
+	const activeBackend = sessions.map(sessionMemoryBackend).find(backend => backend !== "off");
 	return {
 		caller: undefined,
-		identity: sessions.map(session => session.memoryIdentity()).find(identity => identity !== undefined),
+		backend: activeBackend ?? (sessions.length > 0 ? "off" : undefined),
 		contextless: true,
 	};
 }
 
 function primaryMnemopiState(session: AgentSession): MnemopiSessionState | undefined {
 	const state = getMnemopiSessionState(session);
-	return state?.aliasOf ?? state;
+	return state;
 }
 
 /**
@@ -323,8 +363,8 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
 		const memorySession = resolveMemorySession(context);
-		const memoryIdentity = memorySession.identity;
-		if (memoryIdentity?.backend === "off") {
+		const backend = memorySession.backend;
+		if (backend === "off") {
 			throw new Error("Unknown protocol: memory://");
 		}
 		const namespace = url.rawHost || url.hostname;
@@ -339,12 +379,12 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 		// clipped recall preview before overwriting it (issue #4443).
 		if (namespace !== MEMORY_NAMESPACE) {
 			if (memorySession.caller) {
-				if (memoryIdentity?.backend === "hindsight") {
+				if (backend === "hindsight") {
 					throw new Error(
 						"Hindsight memories are not addressable via memory://. Recall results are final — use `recall` to search or `reflect` to synthesize. `read memory://<id>` is only available with memory.backend=mnemopi.",
 					);
 				}
-				if (memoryIdentity?.backend === "mnemopi" && memoryIdentity.status === "active") {
+				if (backend === "mnemopi") {
 					const state = primaryMnemopiState(memorySession.caller);
 					const hit = state?.getScopedMemory(namespace);
 					if (hit) return renderMnemopiMemory(url, hit);
@@ -365,9 +405,9 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 
 			const mnemopiStates = mnemopiSessionStatesFromRegistry();
 			const hindsightActive =
-				memoryIdentity?.backend === "hindsight" ||
+				backend === "hindsight" ||
 				(mnemopiStates.length === 0 &&
-					liveSessions().some(session => session.memoryIdentity()?.backend === "hindsight"));
+					liveSessions().some(session => sessionMemoryBackend(session) === "hindsight"));
 			if (hindsightActive) {
 				// Hindsight keeps memories server-side and exposes no
 				// `memory://<id>` addressing, yet the shared `recall` tool
@@ -421,15 +461,14 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 	}
 
 	async complete(_query?: string, context?: ResolveContext): Promise<UrlCompletion[]> {
+		const memorySession = resolveMemorySession(context);
+		if (memorySession.backend === "off") return [];
 		const completions: UrlCompletion[] = [];
 		if (memoryRootsForContext(context).length > 0) {
 			completions.push({ value: MEMORY_NAMESPACE, description: "Project memory summary" });
 		}
-		const memorySession = resolveMemorySession(context);
 		const mnemopiAvailable = memorySession.caller
-			? memorySession.identity?.backend === "mnemopi" &&
-				memorySession.identity.status === "active" &&
-				primaryMnemopiState(memorySession.caller) !== undefined
+			? memorySession.backend === "mnemopi" && primaryMnemopiState(memorySession.caller) !== undefined
 			: memorySession.contextless && mnemopiSessionStatesFromRegistry().length > 0;
 		if (mnemopiAvailable) {
 			completions.push({

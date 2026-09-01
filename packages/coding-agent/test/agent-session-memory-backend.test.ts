@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
@@ -7,14 +6,13 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getMemoryRoot } from "@oh-my-pi/pi-coding-agent/memories";
-import { createSessionMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend";
-import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
+import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
+import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import { getMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { sharpshooterBankId, sharpshooterMemoryFilePath } from "@oh-my-pi/pi-coding-agent/sharpshooter/paths";
+import { SessionMemory } from "@oh-my-pi/pi-coding-agent/session/session-memory";
 import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -95,26 +93,64 @@ describe("AgentSession memory backend lifecycle", () => {
 		return session;
 	}
 
-	it("installs only the selected backend's memory operations", async () => {
+	it("switches runtime state, memory tools, and prompt in one apply", async () => {
 		const current = createSession(async () =>
-			["retain", "recall", "reflect", "memory_edit", "learn"].map(createTool),
+			settings.get("memory.backend") === "mnemopi" ? [createTool("retain"), createTool("memory_edit")] : [],
 		);
-		const expectedToolNames = new Map([
-			["hindsight", ["learn", "read", "recall", "reflect", "retain"]],
-			["mnemopi", ["learn", "memory_edit", "read", "recall", "reflect", "retain"]],
-			["local", ["learn", "read"]],
-			["sharpshooter", ["read"]],
-			["off", ["read"]],
-		] as const);
 
-		for (const [backend, toolNames] of expectedToolNames) {
-			settings.override("memory.backend", backend);
-			await current.applyMemoryBackend();
-			expect(current.getActiveToolNames().sort()).toEqual([...toolNames]);
-			expect(current.getAllToolNames().sort()).toEqual([...toolNames]);
-			expect(current.systemPrompt).toEqual([`backend:${backend};tools:${toolNames.join(",")}`]);
-		}
+		settings.override("memory.backend", "mnemopi");
+		await current.applyMemoryBackend();
+
+		expect(getMnemopiSessionState(current)).toBeDefined();
+		expect(current.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "retain", "memory_edit"]));
+		expect(current.systemPrompt).toEqual(["backend:mnemopi;tools:memory_edit,read,retain"]);
+
+		settings.override("memory.backend", "off");
+		await current.applyMemoryBackend();
+
+		expect(getMnemopiSessionState(current)).toBeUndefined();
+		expect(current.getActiveToolNames()).toEqual(["read"]);
+		expect(current.getAllToolNames()).toEqual(["read"]);
+		expect(current.systemPrompt).toEqual(["backend:off;tools:read"]);
 	});
+	it("applies destination backends and project labels across cwd move and rollback", async () => {
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.apiUrl", "http://localhost:8888");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		settings.override("hindsight.scoping", "global");
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const current = createSession(async () =>
+			settings.get("memory.backend") === "mnemopi" ? [createTool("retain")] : [],
+		);
+		await current.applyMemoryBackend();
+		const initial = current.getHindsightSessionState();
+		expect(initial).toBeDefined();
+
+		const destinationCwd = path.join(tempDir.path(), "destination-project");
+		current.sessionManager.setCwdWithoutRelocation(destinationCwd);
+		await settings.reloadForCwd(destinationCwd);
+		await rebindMemoryBackendForCwd(current);
+		const destination = current.getHindsightSessionState();
+		expect(destination).toBeDefined();
+		expect(destination).not.toBe(initial);
+		expect(destination?.projectLabel).not.toBe(initial?.projectLabel);
+
+		settings.override("memory.backend", "mnemopi");
+		await rebindMemoryBackendForCwd(current);
+		expect(current.getHindsightSessionState()).toBeUndefined();
+		expect(getMnemopiSessionState(current)).toBeDefined();
+
+		settings.override("memory.backend", "hindsight");
+		await rebindMemoryBackendForCwd(current);
+		expect(getMnemopiSessionState(current)).toBeUndefined();
+		expect(current.getHindsightSessionState()).toBeDefined();
+
+		settings.override("memory.backend", "off");
+		await rebindMemoryBackendForCwd(current);
+		expect(current.getHindsightSessionState()).toBeUndefined();
+		expect(getMnemopiSessionState(current)).toBeUndefined();
+	});
+
 	it("cancels a displaced local startup generation", async () => {
 		const current = createSession(async () => []);
 		const localStartup = current.beginLocalMemoryStartup();
@@ -153,124 +189,111 @@ describe("AgentSession memory backend lifecycle", () => {
 		expect(maxRunning).toBe(1);
 		expect(calls).toBe(2);
 	});
-	it("writes a local learned lesson to the moved session's project", async () => {
-		settings.override("memory.backend", "local");
-		const current = createSession(async () => [createTool("learn")]);
-		const memory = createSessionMemoryRuntimeContext(current, tempDir.path());
-		const previousCwd = current.sessionManager.getCwd();
-		const movedCwd = path.join(tempDir.path(), "moved-project");
 
-		await memory.status();
-		await current.moveSession(movedCwd);
-		await expect(memory.save({ content: "Prefer behavioral tests." })).resolves.toMatchObject({
-			backend: "local",
-			stored: 1,
+	it("waits for an in-flight initial backend apply before terminal disposal", async () => {
+		settings.override("memory.backend", "mnemopi");
+		const toolsStarted = Promise.withResolvers<void>();
+		const releaseTools = Promise.withResolvers<void>();
+		const current = createSession(async () => {
+			toolsStarted.resolve();
+			await releaseTools.promise;
+			return [createTool("retain")];
 		});
+		const startup = current.applyMemoryBackend();
+		await toolsStarted.promise;
 
-		expect(await Bun.file(path.join(getMemoryRoot(tempDir.path(), movedCwd), "learned.md")).text()).toContain(
-			"Prefer behavioral tests.",
-		);
-		expect(await Bun.file(path.join(getMemoryRoot(tempDir.path(), previousCwd), "learned.md")).exists()).toBe(false);
+		let disposalSettled = false;
+		const disposal = current.dispose().then(() => {
+			disposalSettled = true;
+		});
+		await Bun.sleep(0);
+		expect(disposalSettled).toBe(false);
+
+		releaseTools.resolve();
+		await Promise.all([startup, disposal]);
+		expect(getMnemopiSessionState(current)).toBeUndefined();
+		expect(current.getHindsightSessionState()).toBeUndefined();
+		session = undefined;
 	});
 
-	it("searches and reports the moved Sharpshooter bank through its cached runtime", async () => {
-		settings.override("memory.backend", "sharpshooter");
+	it("serializes a destination rebind after an in-flight initial backend apply", async () => {
+		settings.override("memory.backend", "mnemopi");
+		const toolsStarted = Promise.withResolvers<void>();
+		const releaseTools = Promise.withResolvers<void>();
+		let toolBuilds = 0;
+		const current = createSession(async () => {
+			toolBuilds++;
+			if (toolBuilds === 1) {
+				toolsStarted.resolve();
+				await releaseTools.promise;
+			}
+			return settings.get("memory.backend") === "mnemopi" ? [createTool("retain")] : [];
+		});
+		const startup = current.applyMemoryBackend();
+		await toolsStarted.promise;
+
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.apiUrl", "http://localhost:8888");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const rebound = rebindMemoryBackendForCwd(current);
+		releaseTools.resolve();
+		await Promise.all([startup, rebound]);
+
+		expect(getMnemopiSessionState(current)).toBeUndefined();
+		expect(current.getHindsightSessionState()).toBeDefined();
+	});
+
+	it("serializes a Hindsight scope rebuild with terminal disposal", async () => {
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.apiUrl", "http://localhost:8888");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		settings.set("hindsight.bankId", "initial");
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retainStarted = Promise.withResolvers<void>();
+		const releaseRetain = Promise.withResolvers<void>();
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockImplementation(async () => {
+			retainStarted.resolve();
+			await releaseRetain.promise;
+			return {} as never;
+		});
 		const current = createSession(async () => []);
-		const memory = createSessionMemoryRuntimeContext(current, tempDir.path());
-		const previousCwd = current.sessionManager.getCwd();
-		const movedCwd = path.join(tempDir.path(), "moved-project");
-		const sourceFile = sharpshooterMemoryFilePath(tempDir.path(), previousCwd, "architecture.md");
-		const movedFile = sharpshooterMemoryFilePath(tempDir.path(), movedCwd, "architecture.md");
-		await mkdir(path.dirname(sourceFile), { recursive: true });
-		await mkdir(path.dirname(movedFile), { recursive: true });
-		await Bun.write(sourceFile, "source evidence\nsource evidence\nsource evidence\n");
-		await Bun.write(movedFile, "target search evidence\n");
+		await current.applyMemoryBackend();
+		const initial = current.getHindsightSessionState();
+		expect(initial).toBeDefined();
+		initial!.enqueueRetain("accepted before scope change");
 
-		await memory.status();
-		await current.moveSession(movedCwd);
-		const [status, search] = await Promise.all([memory.status(), memory.search("target search")]);
+		settings.set("hindsight.bankId", "replacement");
+		await retainStarted.promise;
+		const disposal = current.dispose();
+		releaseRetain.resolve();
+		await disposal;
 
-		expect(status).toMatchObject({ backend: "sharpshooter", scope: sharpshooterBankId(movedCwd) });
-		expect(status.message).toContain("architecture.md: 1 lines");
-		expect(search.items).toEqual([{ content: "target search evidence", source: "architecture.md" }]);
+		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
+		expect(current.getHindsightSessionState()).toBeUndefined();
+		session = undefined;
 	});
-	it("keeps Mnemopi child aliases live across parent transitions without owning SQLite handles", async () => {
-		settings.override("memory.backend", "mnemopi");
-		const parent = createSession(async () => [createTool("retain"), createTool("recall"), createTool("memory_edit")]);
-		await parent.applyMemoryBackend();
-		const childCwd = path.join(tempDir.path(), "child-project");
-		const makeChildSession = (sessionId: string) =>
-			({
-				sessionId,
+
+	it("keeps Hindsight child auto-recall suppressed across transcript resets", async () => {
+		settings.override("memory.backend", "hindsight");
+		const resetConversationTracking = vi.fn();
+		const aliasState = {
+			isAlias: true,
+			hasRecalledForFirstTurn: true,
+			resetConversationTracking,
+		};
+		const memory = new SessionMemory(
+			{
 				settings,
-				sessionManager: { getCwd: () => childCwd },
-				subscribe: () => () => {},
-			}) as never;
-		const child = makeChildSession("mnemopi-child");
-		await mnemopiBackend.start({
-			session: child,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: tempDir.path(),
-			taskDepth: 1,
-			parentSession: parent,
-		});
-		const alias = getMnemopiSessionState(child);
-		const initial = getMnemopiSessionState(parent);
-		expect(alias?.aliasOf).toBe(initial);
+				getHindsightSessionState: () => aliasState,
+				getMnemopiSessionState: () => undefined,
+			} as never,
+			{},
+		);
 
-		await parent.moveSession(path.join(tempDir.path(), "moved-project"));
-		const moved = getMnemopiSessionState(parent);
-		expect(moved).not.toBe(initial);
-		expect(alias?.aliasOf).toBe(moved);
+		await memory.resetContextForNewTranscript();
 
-		await parent.applyMemoryBackend();
-		const reapplied = getMnemopiSessionState(parent);
-		expect(reapplied).not.toBe(moved);
-		expect(alias?.aliasOf).toBe(reapplied);
-
-		settings.override("memory.backend", "off");
-		await parent.applyMemoryBackend();
-		expect(alias?.aliasOf).toBeUndefined();
-		settings.override("memory.backend", "mnemopi");
-		await parent.applyMemoryBackend();
-		const selected = getMnemopiSessionState(parent);
-		expect(alias?.aliasOf).toBe(selected);
-
-		const childRuntime = mnemopiBackend.runtime({ agentDir: tempDir.path(), cwd: childCwd, session: child });
-		const retained = "dynamic child alias retained after parent transition";
-		await expect(childRuntime.retain({ items: [{ content: retained }] })).resolves.toMatchObject({
-			backend: "mnemopi",
-			stored: 1,
-		});
-		await expect(childRuntime.recall(retained)).resolves.toMatchObject({
-			backend: "mnemopi",
-			items: expect.arrayContaining([expect.objectContaining({ content: retained })]),
-		});
-
-		const activeMemory = selected!.memory;
-		await childRuntime.dispose({ persistPending: false });
-		expect(activeMemory.getStats()).toBeDefined();
-
-		const lateChild = makeChildSession("mnemopi-child-after-parent");
-		await mnemopiBackend.start({
-			session: lateChild,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: tempDir.path(),
-			taskDepth: 1,
-			parentSession: parent,
-		});
-		const lateChildRuntime = mnemopiBackend.runtime({ agentDir: tempDir.path(), cwd: childCwd, session: lateChild });
-		const parentRuntime = mnemopiBackend.runtime({
-			agentDir: tempDir.path(),
-			cwd: parent.sessionManager.getCwd(),
-			session: parent,
-		});
-		const closeSpy = vi.spyOn(selected!.memory, "close");
-		await parentRuntime.dispose({ persistPending: false });
-		const closesAfterParent = closeSpy.mock.calls.length;
-		await lateChildRuntime.dispose({ persistPending: false });
-		expect(closeSpy).toHaveBeenCalledTimes(closesAfterParent);
+		expect(resetConversationTracking).not.toHaveBeenCalled();
+		expect(aliasState.hasRecalledForFirstTurn).toBe(true);
 	});
 });

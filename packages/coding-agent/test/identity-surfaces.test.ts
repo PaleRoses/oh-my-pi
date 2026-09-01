@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { MemoryBackendIdentity } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import { FooterComponent } from "@oh-my-pi/pi-coding-agent/modes/components/footer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -16,13 +15,25 @@ import { lookupBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-comma
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 
+type StubMemoryIdentity =
+	| { readonly backend: "off"; readonly status: "disabled" }
+	| { readonly backend: "hindsight"; readonly status: "configured-not-started" }
+	| {
+			readonly backend: "hindsight";
+			readonly status: "active";
+			readonly bank: string;
+			readonly project: string;
+			readonly scope: "global" | "per-project" | "per-project-tagged";
+			readonly tags: readonly string[];
+	  };
+
 interface SessionStubOptions {
 	role?: "main" | "sub";
 	promptProfile?: string;
 	promptSource?: EffectivePromptSource;
 	memoryEnabled?: boolean;
 	model?: { provider: string; id: string; contextWindow: number };
-	memoryIdentity?: MemoryBackendIdentity;
+	memoryIdentity?: StubMemoryIdentity;
 }
 
 function sessionStub(options: SessionStubOptions = {}): AgentSession {
@@ -33,6 +44,15 @@ function sessionStub(options: SessionStubOptions = {}): AgentSession {
 		memoryEnabled: options.memoryEnabled ?? true,
 		...(options.promptProfile ? { profileId: options.promptProfile } : {}),
 	});
+	const hindsightState =
+		options.memoryIdentity?.backend === "hindsight" && options.memoryIdentity.status === "active"
+			? {
+					bankId: options.memoryIdentity.bank,
+					projectLabel: options.memoryIdentity.project,
+					config: { scoping: options.memoryIdentity.scope },
+					retainTags: options.memoryIdentity.tags,
+				}
+			: undefined;
 	const session = {
 		effectiveIdentity,
 		model,
@@ -45,7 +65,8 @@ function sessionStub(options: SessionStubOptions = {}): AgentSession {
 		getContextUsage: () => undefined,
 		modelRegistry: { isUsingOAuth: () => false },
 		isAutoThinking: false,
-		memoryIdentity: () => options.memoryIdentity ?? { backend: "off", status: "off" },
+		getHindsightSessionState: () => hindsightState,
+		getMnemopiSessionState: () => undefined,
 	} as unknown as AgentSession;
 	return session;
 }

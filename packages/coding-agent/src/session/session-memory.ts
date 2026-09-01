@@ -4,10 +4,11 @@ import type { Agent, AgentTool } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
+import type { HindsightSessionState } from "../hindsight/state";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
-import { memoryBackendToolNames } from "../memory-backend/tool-names";
-import type { MemoryBackendIdentity, MemoryBackendRuntime, MemoryBackendStartOptions } from "../memory-backend/types";
-import type { EffectiveSessionIdentity } from "./identity";
+import type { MemoryBackendStartOptions } from "../memory-backend/types";
+import type { MnemopiSessionState } from "../mnemopi/state";
+import { releaseSharpshooterSession } from "../sharpshooter/backend";
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface SessionMemoryHost {
@@ -15,7 +16,12 @@ export interface SessionMemoryHost {
 	settings: Settings;
 	modelRegistry: ModelRegistry;
 	isDisposed(): boolean;
+	memoryEnabled(): boolean;
 	memoryBackendSession(): MemoryBackendStartOptions["session"];
+	getHindsightSessionState(): HindsightSessionState | undefined;
+	setHindsightSessionState(state: HindsightSessionState | undefined): void;
+	getMnemopiSessionState(): MnemopiSessionState | undefined;
+	takeMnemopiSessionState(): MnemopiSessionState | undefined;
 	setBaseSystemPrompt(prompt: string[]): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	replaceMemoryTools(tools: AgentTool[]): Promise<void>;
@@ -26,46 +32,31 @@ export class SessionMemory {
 	readonly #host: SessionMemoryHost;
 	readonly #memoryAgentDir: string | undefined;
 	readonly #memoryTaskDepth: number;
-	readonly #identity: EffectiveSessionIdentity;
+	readonly #parentHindsightSessionState: HindsightSessionState | undefined;
 	readonly #createMemoryTools: (() => Promise<AgentTool[]>) | undefined;
 	#memoryBackendTransition: Promise<void> = Promise.resolve();
-	#activeMemoryRuntime: MemoryBackendRuntime | undefined;
 	#localMemoryStartupAbort: AbortController | undefined;
 	#baseSystemPromptBeforeMemoryPromotion: string[] | undefined;
 
 	constructor(
 		host: SessionMemoryHost,
 		options: {
-			identity: EffectiveSessionIdentity;
 			memoryAgentDir?: string;
 			memoryTaskDepth?: number;
+			parentHindsightSessionState?: HindsightSessionState;
 			createMemoryTools?: () => Promise<AgentTool[]>;
 		},
 	) {
 		this.#host = host;
-		this.#identity = options.identity;
 		this.#memoryAgentDir = options.memoryAgentDir;
 		this.#memoryTaskDepth = options.memoryTaskDepth ?? 0;
+		this.#parentHindsightSessionState = options.parentHindsightSessionState;
 		this.#createMemoryTools = options.createMemoryTools;
 	}
 
 	/** Current serialized backend transition, used by prompt and disposal drains. */
 	get transition(): Promise<void> {
 		return this.#memoryBackendTransition;
-	}
-
-	/** Synchronous provider-owned identity for session/UI consumers. */
-	identity(): MemoryBackendIdentity | undefined {
-		return this.#activeMemoryRuntime?.identity();
-	}
-
-	#serializeMemoryTransition(action: () => Promise<void>): Promise<void> {
-		const transition = this.#memoryBackendTransition.then(action);
-		this.#memoryBackendTransition = transition.then(
-			() => undefined,
-			() => undefined,
-		);
-		return transition;
 	}
 
 	/** Base prompt captured before a per-turn memory promotion. */
@@ -87,22 +78,53 @@ export class SessionMemory {
 	restorePromotionSnapshot(prompt: string[] | undefined): void {
 		this.#baseSystemPromptBeforeMemoryPromotion = prompt;
 	}
-
-	/** Rekeys the active backend to the current provider session. */
+	/** Rekeys every active memory backend to the current provider session. */
 	rekeyForCurrentSessionId(): void {
-		const sessionId = this.#host.agent.sessionId;
-		if (sessionId) this.#activeMemoryRuntime?.rekey(sessionId);
+		this.#rekeyHindsightMemoryForCurrentSessionId();
+		this.#rekeyMnemopiMemoryForCurrentSessionId();
+	}
+
+	#rekeyHindsightMemoryForCurrentSessionId(): void {
+		if (this.#host.settings.get("memory.backend") !== "hindsight") return;
+		const sid = this.#host.agent.sessionId;
+		if (!sid) return;
+		this.#host.getHindsightSessionState()?.setSessionId(sid);
+	}
+
+	#rekeyMnemopiMemoryForCurrentSessionId(): void {
+		if (this.#host.settings.get("memory.backend") !== "mnemopi") return;
+		const sid = this.#host.agent.sessionId;
+		if (!sid) return;
+		this.#host.getMnemopiSessionState()?.setSessionId(sid);
+	}
+
+	/** New session file: reset auto-recall / retain-threshold counters for the new transcript. */
+	#resetHindsightConversationTrackingIfHindsight(): boolean {
+		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;
+		const state = this.#host.getHindsightSessionState();
+		if (!state || state.isAlias) return false;
+		state.resetConversationTracking();
+		return true;
+	}
+
+	#resetMnemopiConversationTrackingIfMnemopi(): boolean {
+		if (this.#host.settings.get("memory.backend") !== "mnemopi") return false;
+		const state = this.#host.getMnemopiSessionState();
+		if (!state) return false;
+		state.resetConversationTracking();
+		return true;
 	}
 
 	/** Resets transcript-scoped memory counters and removes a promoted prompt. */
 	async resetContextForNewTranscript(): Promise<void> {
 		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
-		const resetMemoryTracking = (await this.#activeMemoryRuntime?.resetTranscript()) ?? false;
+		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight();
+		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
 		if (hadPromotedMemoryPrompt) {
 			this.#host.setBaseSystemPrompt(this.#baseSystemPromptBeforeMemoryPromotion!);
 			this.#baseSystemPromptBeforeMemoryPromotion = undefined;
 		}
-		if (resetMemoryTracking || hadPromotedMemoryPrompt) {
+		if (resetHindsight || resetMnemopi || hadPromotedMemoryPrompt) {
 			await this.#host.refreshBaseSystemPrompt();
 		}
 	}
@@ -126,15 +148,31 @@ export class SessionMemory {
 		if (this.#localMemoryStartupAbort?.signal === signal) this.#localMemoryStartupAbort = undefined;
 	}
 
-	async #disposeMemoryBackendState(persistPending = true): Promise<void> {
+	async #disposeMemoryBackendState(consolidateMnemopi = true): Promise<void> {
 		this.cancelLocalMemoryStartup();
-		const runtime = this.#activeMemoryRuntime;
-		this.#activeMemoryRuntime = undefined;
-		if (!runtime) return;
 		try {
-			await runtime.dispose({ persistPending });
+			releaseSharpshooterSession(this.#host.memoryBackendSession());
 		} catch (error) {
-			logger.warn("Memory lifecycle: backend dispose failed", { error: String(error) });
+			logger.warn("Memory lifecycle: Sharpshooter dispose failed", { error: String(error) });
+		}
+		const hindsight = this.#host.getHindsightSessionState();
+		if (hindsight) {
+			try {
+				await hindsight.retireRetainQueue();
+			} catch (error) {
+				logger.warn("Memory lifecycle: Hindsight flush failed", { error: String(error) });
+			}
+			this.#host.setHindsightSessionState(undefined);
+			hindsight.dispose();
+		}
+
+		const mnemopi = this.#host.takeMnemopiSessionState();
+		if (mnemopi) {
+			try {
+				await mnemopi.dispose({ consolidate: consolidateMnemopi });
+			} catch (error) {
+				logger.warn("Memory lifecycle: Mnemopi dispose failed", { error: String(error) });
+			}
 		}
 	}
 
@@ -144,58 +182,43 @@ export class SessionMemory {
 	 */
 	async applyMemoryBackend(): Promise<void> {
 		if (this.#host.isDisposed()) return;
-		await this.#serializeMemoryTransition(() => this.#applyMemoryBackend());
-	}
-
-	/** Release the active provider runtime after all pending backend transitions settle. */
-	async dispose(persistPending = true): Promise<void> {
-		await this.#serializeMemoryTransition(() => this.#disposeMemoryBackendState(persistPending));
-	}
-
-	/** Start and retain the selected provider runtime for a session-owned backend. */
-	async start(options: MemoryBackendStartOptions): Promise<void> {
-		if (this.#host.isDisposed()) return;
-		await this.#serializeMemoryTransition(async () => {
-			if (this.#host.isDisposed()) return;
-			await this.#disposeMemoryBackendState();
-			try {
-				await this.#startMemoryBackend(options);
-			} catch (error) {
-				await this.#disposeMemoryBackendState(false);
-				throw error;
-			}
-		});
-	}
-
-	async #startMemoryBackend(options: MemoryBackendStartOptions): Promise<void> {
-		const backend = await resolveMemoryBackend(options.settings);
-		this.#activeMemoryRuntime = backend.runtime({
-			agentDir: options.agentDir,
-			cwd: options.settings.getCwd(),
-			session: options.session,
-		});
-		await backend.start(options);
+		const transition = this.#memoryBackendTransition.then(() => this.#applyMemoryBackend());
+		this.#memoryBackendTransition = transition.then(
+			() => undefined,
+			() => undefined,
+		);
+		await transition;
 	}
 
 	async #applyMemoryBackend(): Promise<void> {
 		if (this.#host.isDisposed()) return;
 		try {
-			await this.#disposeMemoryBackendState();
-			if (
-				this.#identity.memory.status === "enabled" &&
-				this.#memoryAgentDir &&
-				this.#memoryTaskDepth === 0 &&
-				!this.#host.isDisposed()
-			) {
-				await this.#startMemoryBackend({
+			const agentDir = this.#memoryAgentDir;
+			const canStart = this.#host.memoryEnabled() && agentDir !== undefined && !this.#host.isDisposed();
+			const selectedBackend = canStart ? await resolveMemoryBackend(this.#host.settings) : undefined;
+			const backend =
+				this.#memoryTaskDepth === 0 ||
+				(selectedBackend?.id === "hindsight" && this.#parentHindsightSessionState !== undefined)
+					? selectedBackend
+					: undefined;
+			const replaceHindsightInPlace =
+				backend?.id === "hindsight" && this.#host.getHindsightSessionState() !== undefined;
+			// Live child aliases read the parent slot, so Hindsight replaces it atomically after draining the old route.
+			if (!replaceHindsightInPlace) await this.#disposeMemoryBackendState();
+			if (backend && agentDir !== undefined && !this.#host.isDisposed()) {
+				await backend.start({
 					session: this.#host.memoryBackendSession(),
 					settings: this.#host.settings,
 					modelRegistry: this.#host.modelRegistry,
-					agentDir: this.#memoryAgentDir,
+					agentDir,
 					taskDepth: this.#memoryTaskDepth,
+					parentHindsightSessionState: this.#parentHindsightSessionState,
 				});
 			}
-			if (this.#host.isDisposed()) return;
+			if (this.#host.isDisposed()) {
+				await this.#disposeMemoryBackendState(false);
+				return;
+			}
 			await this.#refreshMemoryTools();
 			if (this.#host.isDisposed()) return;
 			await this.#host.refreshBaseSystemPrompt();
@@ -213,14 +236,11 @@ export class SessionMemory {
 	}
 
 	async #refreshMemoryTools(): Promise<void> {
-		let tools: AgentTool[] = [];
-		if (this.#identity.memory.status === "enabled") {
-			const backend = await resolveMemoryBackend(this.#host.settings);
-			const admittedNames = new Set<string>(memoryBackendToolNames(backend.capabilities));
-			tools = ((await this.#createMemoryTools?.()) ?? []).filter(tool => admittedNames.has(tool.name));
-		}
+		if (!this.#createMemoryTools) return;
+		const tools = this.#host.memoryEnabled() ? await this.#createMemoryTools() : [];
 		await this.#replaceMemoryTools(tools);
 	}
+
 	#replaceMemoryTools(tools: AgentTool[]): Promise<void> {
 		return this.#host.replaceMemoryTools(tools);
 	}

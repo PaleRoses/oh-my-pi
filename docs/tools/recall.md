@@ -5,7 +5,7 @@
 ## Source
 - Entry: `packages/coding-agent/src/tools/memory-recall.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/recall.md`
-- Runtime owner: `packages/coding-agent/src/memory-backend/types.ts` — `ToolSession.getMemoryRuntime()` exposes `MemoryRuntimeContext`, which resolves the selected `MemoryBackendRuntime`.
+
 - Hindsight collaborators:
   - packages/coding-agent/src/hindsight/state.ts — provider-owned state, recall query composition, and prompt-side auto-recall.
   - `packages/coding-agent/src/hindsight/content.ts` — result formatting and UTC timestamp formatting.
@@ -57,13 +57,13 @@ When no matches exist:
 ## Flow
 
 1. MemoryRecallTool.createIf(...) exposes the tool when memory.backend is either "hindsight" or "mnemopi".
-2. execute(...) wraps the operation in untilAborted(...), obtains MemoryRuntimeContext from ToolSession.getMemoryRuntime(), and calls recall(...) on the selected MemoryBackendRuntime.
-3. For mnemopi, that runtime resolves its provider-owned state and calls recallResultsScoped(params.query):
+2. execute(...) wraps the operation in untilAborted(...), re-reads memory.backend, and resolves the selected provider's session state.
+3. For Mnemopi, it calls session.getMnemopiSessionState() and then recallResultsScoped(params.query):
    - scoped recall queries every resolved recall bank with recallEnhanced(query, recallLimit, { includeFacts: true, channelId: bank }), merges/deduplicates results by id/content, sorts them, and truncates to recallLimit;
    - per-project modes may include safe legacy banks whose working-memory rows all belong to the active absolute cwd; startup scanning is capped at 64 candidate bank directories;
    - in per-project-tagged, the shared bank may receive one extra fallback query with project-bank literal tokens stripped so broad global memories still match;
    - results are formatted with ids for later full-row reads and memory_edit.
-4. For hindsight, that runtime resolves its provider-owned state, calls state.client.recall(...) with bank id, query, configured budget, max tokens, types, and bank-scope tag filters, then formats results through formatMemories(...).
+4. For Hindsight, it calls session.getHindsightSessionState(), then state.client.recall(...) with bank id, query, configured budget, max tokens, types, and bank-scope tag filters, and formats results through formatMemories(...).
 5. Backend failures are logged with logger.warn("recall failed", ...) and rethrown as Error instances when needed.
 
 ## Modes / Variants
@@ -78,7 +78,7 @@ When no matches exist:
   - `per-project` — recall reads the bank derived from the absolute cwd basename plus a hash of that absolute cwd.
   - `per-project-tagged` — recall reads the cwd-derived project bank and shared bank, then merges results.
   - Per-project modes may also read safely identified legacy cwd-only banks to recover memories created under the earlier git-root-derived scheme.
-- Session scope: reads cross-session memory data, using the active session's cached config and scope. Subagent aliases use the parent's backend scope.
+- Session scope: reads cross-session memory data using the active provider state. Hindsight subagents resolve through the parent's live remote route; Mnemopi is unavailable in subagents because its SQLite handles are parent-owned.
 
 ## Side Effects
 - Network
@@ -112,7 +112,7 @@ When no matches exist:
 - Non-`Error` failures caught by the tool are normalized to `new Error(String(err))` before rethrow.
 
 ## Notes
-- Shared backend details are in `docs/tools/retain.md`: storage, subagent aliasing, bank scoping, mission setup, and mental-model behavior.
+- Shared backend details are in docs/tools/retain.md: storage, child-session behavior, bank scoping, mission setup, and mental-model behavior.
 - Hindsight mental models are not fetched by this tool. They may already be present in the agent's developer instructions because the backend caches a `<mental_models>` block separately from recall results.
 - Mnemopi developer instructions may include a `<memories>` block from auto-recall; this explicit tool does not update that block.
 - The tool returns memory hits; it does not synthesize across them. Use `reflect` for remote Hindsight synthesis; Mnemopi's `reflect` variant is local recall plus formatting.

@@ -33,6 +33,7 @@ import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
+import type { HindsightSessionState } from "../hindsight/state";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { XdevState } from "../tools/xdev";
@@ -40,8 +41,12 @@ import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { EffectiveSessionIdentity } from "./identity";
 import type { SessionManager } from "./session-manager";
 
+/** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
+export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
+
 /** Options controlling session disposal. */
 export interface AgentSessionDisposeOptions {
+	mnemopiConsolidateTimeoutMs?: number;
 	/**
 	 * Deadline for the settle/drain wait before the terminal memory release
 	 * (default 5s). The bounded-teardown paths (signal handlers, tests) may
@@ -168,8 +173,10 @@ export interface AgentSessionConfig {
 	skillsSettings?: SkillsSettings;
 	/** Agent directory used when changing memory backends in a live session. */
 	memoryAgentDir?: string;
-	/** Recursion depth used to suppress live backend replacement in subagents. */
+	/** Recursion depth used to suppress non-Hindsight backends in subagents. */
 	memoryTaskDepth?: number;
+	/** Parent route used by Hindsight child aliases. */
+	parentHindsightSessionState?: HindsightSessionState;
 	/** Creates built-in memory tools for the current backend. */
 	createMemoryTools?: () => Promise<AgentTool[]>;
 	/** Creates the built-in `computer` tool for session-scoped runtime enablement (see {@link AgentSession.setComputerToolEnabled}). */

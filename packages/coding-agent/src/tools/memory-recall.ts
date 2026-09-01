@@ -1,6 +1,8 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { ensureBankExists } from "../hindsight/bank";
+import { formatCurrentTime, formatMemories } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -22,26 +24,82 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 
 	constructor(private readonly session: ToolSession) {}
 
+	static createIf(session: ToolSession): MemoryRecallTool | null {
+		const backend = session.settings.get("memory.backend");
+		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		return new MemoryRecallTool(session);
+	}
+
 	async execute(_id: string, params: MemoryRecallParams, signal?: AbortSignal): Promise<AgentToolResult> {
 		return untilAborted(signal, async () => {
-			const memory = this.session.getMemoryRuntime?.();
-			if (!memory) throw new Error("Memory backend is not initialised for this session.");
-			const result = await memory.recall(params.query, { signal });
-			if (result.count === 0) {
-				return {
-					content: [{ type: "text", text: "No relevant memories found." }],
-					details: { backend: result.backend, message: result.message },
-					useless: true,
-				};
+			const backend = this.session.settings.get("memory.backend");
+			if (backend === "mnemopi") {
+				const state = this.session.getMnemopiSessionState?.();
+				if (!state) {
+					throw new Error("Mnemopi backend is not initialised for this session.");
+				}
+				try {
+					const results = await state.recallResultsScoped(params.query);
+					if (results.length === 0) {
+						return {
+							content: [{ type: "text", text: "No relevant memories found." }],
+							details: {},
+							useless: true,
+						};
+					}
+					const formatted = state.formatScopedRecallWithIds(results);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Found ${results.length} relevant ${results.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
+							},
+						],
+						details: {},
+					};
+				} catch (err) {
+					logger.warn("recall failed", { backend: "mnemopi", bank: state.config.bank, error: String(err) });
+					throw err instanceof Error ? err : new Error(String(err));
+				}
 			}
-			const noun = result.count === 1 ? "memory" : "memories";
-			const heading = result.asOf
-				? `Found ${result.count} relevant ${noun} (as of ${result.asOf} UTC):`
-				: `Found ${result.count} relevant ${noun}:`;
-			return {
-				content: [{ type: "text", text: `${heading}\n\n${result.rendered}` }],
-				details: { backend: result.backend, items: result.items },
-			};
+
+			const state = this.session.getHindsightSessionState?.();
+			if (!state) {
+				throw new Error("Hindsight backend is not initialised for this session.");
+			}
+
+			const route = state.captureRoute();
+			try {
+				await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
+				const response = await route.client.recall(route.bankId, params.query, {
+					budget: route.config.recallBudget,
+					maxTokens: route.config.recallMaxTokens,
+					types: route.config.recallTypes.length > 0 ? route.config.recallTypes : undefined,
+					tags: route.recallTags,
+					tagsMatch: route.recallTagsMatch,
+				});
+				const results = response.results ?? [];
+				if (results.length === 0) {
+					return {
+						content: [{ type: "text", text: "No relevant memories found." }],
+						details: {},
+						useless: true,
+					};
+				}
+				const formatted = formatMemories(results);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Found ${results.length} relevant ${results.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
+						},
+					],
+					details: {},
+				};
+			} catch (err) {
+				logger.warn("recall failed", { bankId: route.bankId, error: String(err) });
+				throw err instanceof Error ? err : new Error(String(err));
+			}
 		});
 	}
 }

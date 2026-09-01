@@ -1466,6 +1466,9 @@ export interface ToolScopeOptions {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Calling session's loaded skills — lets skill:// resolve without process-global state. */
 	skills?: readonly Skill[];
+	/** Calling session's stable id and effective memory permission. */
+	sessionId?: string;
+	memoryEnabled?: boolean;
 	/** Calling session's session file — lets history:///agent:// resolve against the caller's root. */
 	sessionFile?: string;
 	/** Materialize readable external URLs to local text files before scope derivation. */
@@ -1555,6 +1558,8 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 			cwd,
 			settings: opts.settings,
 			signal: opts.signal,
+			sessionId: opts.sessionId,
+			memoryEnabled: opts.memoryEnabled,
 			sessionFile: opts.sessionFile,
 			localProtocolOptions: opts.localProtocolOptions,
 			skills: opts.skills,

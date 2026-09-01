@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getHindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import { RpcSubagentRegistry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
@@ -265,9 +265,9 @@ describe("persisted subagent revival", () => {
 			if (!reviver) throw new Error("Expected a persisted reviver");
 			revived = await reviver(ref);
 
-			const parentState = getHindsightSessionState(parent);
+			const parentState = parent.getHindsightSessionState();
 			expect(parentState).toBeDefined();
-			expect(getHindsightSessionState(revived)?.aliasOf).toBe(parentState);
+			expect(revived.getHindsightSessionState()?.aliasOf).toBe(parentState);
 			expect(revived.agent.state.tools.map(tool => tool.name)).toEqual(["recall", "yield"]);
 		} finally {
 			await revived?.dispose();
@@ -348,11 +348,13 @@ describe("persisted subagent revival", () => {
 	it("hands the owning live parent session to the revived runtime", async () => {
 		const cwd = makeTempDir("@pi-parent-session-revive-");
 		const sessionFile = await createPersistedSession(cwd);
+		const parentState = {} as HindsightSessionState;
 		const parentSession = {
 			sessionManager: {
 				getCwd: () => cwd,
 				getArtifactManager: () => undefined,
 			},
+			getHindsightSessionState: () => parentState,
 		} as unknown as AgentSession;
 		let capturedOptions: CreateAgentSessionOptions | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
@@ -365,7 +367,7 @@ describe("persisted subagent revival", () => {
 		if (!reviver) throw new Error("Expected a persisted reviver");
 		await reviver(ref);
 
-		expect(capturedOptions?.parentSession).toBe(parentSession);
+		expect(capturedOptions?.parentHindsightSessionState).toBe(parentState);
 	});
 
 	it("restores the persisted per-agent advisor opt-in on cold revival", async () => {

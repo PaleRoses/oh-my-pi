@@ -177,7 +177,7 @@ new Mnemopi({
 - `/memory clear` removes every scoped Mnemopi SQLite database and sidecar WAL/SHM files for the active configuration.
 - `/memory enqueue` forces retention of the current session, flushes pending fact extractions, and runs Mnemopi sleep/consolidation for eligible working-memory rows.
 - `/memory stats` and `/memory diagnose` render backend-specific bank statistics/diagnostics when the Mnemopi backend is active.
-- Subagents do not own separate Mnemopi retain loops; they alias the parent state when a parent Mnemopi state exists, and otherwise remain inert.
+- Subagents do not start Mnemopi or inherit its SQLite handles; Mnemopi memory tools remain unavailable in child sessions.
 - Backend startup is best-effort. If database/model initialization fails, the session continues with Mnemopi inert and logs a warning; memory tools then report that the backend is not initialized.
 
 ## Shutdown and durability
@@ -186,9 +186,9 @@ Normal interactive and print-mode exit uses a deliberately lighter path than `/m
 
 1. The primary state retains the current transcript with new fact extraction disabled.
 2. It flushes extractions that were already in flight, but does not run per-session sleep or full cross-session promotion.
-3. Only after that drain settles does it close the owned SQLite bank handles; the embedding worker shuts down after state disposal because the drain may still use it.
+3. Only after that drain settles does it close the owned SQLite bank handles; the shared embedding worker shuts down after the last Mnemopi state releases ownership because another live state may still use it.
 
-Aliased subagent states do not own or close the shared banks; the parent state owns final retention, flushing, and handle closure.
+No subagent Mnemopi state owns database handles. The parent state owns final retention, flushing, and handle closure.
 
 Interactive and print exits give this drain 1.5 seconds. If the budget expires, shutdown detaches the in-flight drain and arranges for handles to close when it settles rather than racing writes against closed databases. The process may exit first. Working-memory rows already written remain durable, but promotion or embedding for the last few turns can remain incomplete; earlier turn retention performed at agent end is unaffected.
 

@@ -1,140 +1,69 @@
 import type { AgentSession } from "../session/agent-session";
 import { resolveMemoryBackend } from "./resolve";
 import type {
-	MemoryBackendCapabilities,
-	MemoryBackendEditInput,
+	MemoryBackendId,
 	MemoryBackendOperationContext,
-	MemoryBackendReflectInput,
-	MemoryBackendRetainInput,
-	MemoryBackendRuntime,
 	MemoryBackendSaveInput,
 	MemoryBackendSearchOptions,
 	MemoryRuntimeContext,
 } from "./types";
-
-const NO_MEMORY_CAPABILITIES: MemoryBackendCapabilities = {
-	recall: false,
-	retain: false,
-	reflect: false,
-	edit: false,
-	save: false,
-};
-
-/**
- * Resolve the selected backend lazily and expose only its typed runtime.
- *
- * The cached provider runtime is invalidated when settings select a different
- * backend, so extensions and tools observe live backend changes without ever
- * reaching into provider session state.
- */
 export function createMemoryRuntimeContext(context: MemoryBackendOperationContext): MemoryRuntimeContext {
-	const settings = context.settings ?? context.session?.settings;
-	let backendId: string | undefined;
-	let runtime: MemoryBackendRuntime | undefined;
-
-	const resolveRuntime = async (): Promise<MemoryBackendRuntime | undefined> => {
-		if (!settings) return undefined;
-		const nextId = settings.get("memory.backend");
-		if (!runtime || backendId !== nextId) {
-			const backend = await resolveMemoryBackend(settings);
-			backendId = backend.id;
-			runtime = backend.runtime(context);
-		}
-		return runtime;
-	};
-
+	const settings = context.session?.settings;
 	return {
-		async capabilities() {
-			return (await resolveRuntime())?.capabilities ?? NO_MEMORY_CAPABILITIES;
-		},
-		async identity() {
-			return (await resolveRuntime())?.identity() ?? { backend: "off", status: "off" };
-		},
-		async mentalModels() {
-			return (await resolveRuntime())?.mentalModels() ?? { backend: "off", status: "unsupported" };
-		},
 		async status() {
-			return (
-				(await resolveRuntime())?.status() ?? {
-					backend: "off",
+			if (!settings) {
+				return {
+					backend: "off" as const,
 					active: false,
 					writable: false,
 					searchable: false,
 					message: "No active agent session.",
-				}
-			);
+				};
+			}
+			const backend = await resolveMemoryBackend(settings);
+			return backend.status
+				? await backend.status(context)
+				: {
+						backend: backend.id,
+						active: backend.id !== "off",
+						writable: false,
+						searchable: false,
+						message: "This memory backend does not expose structured status.",
+					};
 		},
 		async search(query: string, options?: MemoryBackendSearchOptions) {
-			return (
-				(await resolveRuntime())?.search(query, options) ?? {
-					backend: "off",
-					query,
-					count: 0,
-					items: [],
-					message: "No active agent session.",
-				}
-			);
+			if (!settings) return unavailableSearch("off", query, "No active agent session.");
+			const backend = await resolveMemoryBackend(settings);
+			return backend.search
+				? await backend.search(context, query, options)
+				: unavailableSearch(backend.id, query, `Memory search is not available for the ${backend.id} backend.`);
 		},
 		async save(input: string | MemoryBackendSaveInput) {
+			if (!settings) return unavailableSave("off", "No active agent session.");
+			const backend = await resolveMemoryBackend(settings);
 			const normalized = typeof input === "string" ? { content: input } : input;
-			return (
-				(await resolveRuntime())?.save(normalized) ?? {
-					backend: "off",
-					stored: 0,
-					message: "No active agent session.",
-				}
-			);
-		},
-		async retain(input: MemoryBackendRetainInput) {
-			return (
-				(await resolveRuntime())?.retain(input) ?? {
-					backend: "off",
-					accepted: 0,
-					stored: 0,
-					queued: false,
-					message: "No active agent session.",
-				}
-			);
-		},
-		async recall(query: string, options?: MemoryBackendSearchOptions) {
-			return (
-				(await resolveRuntime())?.recall(query, options) ?? {
-					backend: "off",
-					query,
-					count: 0,
-					items: [],
-					rendered: "",
-					message: "No active agent session.",
-				}
-			);
-		},
-		async reflect(input: MemoryBackendReflectInput) {
-			return (
-				(await resolveRuntime())?.reflect(input) ?? {
-					backend: "off",
-					text: "",
-					message: "No active agent session.",
-				}
-			);
-		},
-		async edit(input: MemoryBackendEditInput) {
-			return (
-				(await resolveRuntime())?.edit(input) ?? {
-					backend: "off",
-					status: "unsupported",
-					message: "No active agent session.",
-				}
-			);
+			return backend.save
+				? await backend.save(context, normalized)
+				: unavailableSave(backend.id, `Memory save is not available for the ${backend.id} backend.`);
 		},
 	};
 }
 
-export function createSessionMemoryRuntimeContext(session: AgentSession, agentDir: string): MemoryRuntimeContext {
-	return createMemoryRuntimeContext({
-		agentDir,
-		get cwd() {
-			return session.sessionManager.getCwd();
-		},
-		session,
-	});
+export function createSessionMemoryRuntimeContext(
+	session: AgentSession,
+	agentDir: string,
+	cwd: string,
+): MemoryRuntimeContext {
+	if (session.effectiveIdentity.memory.status !== "enabled") {
+		return createMemoryRuntimeContext({ agentDir, cwd });
+	}
+	return createMemoryRuntimeContext({ agentDir, cwd, session });
+}
+
+function unavailableSearch(backend: MemoryBackendId, query: string, message: string) {
+	return { backend, query, count: 0, items: [], message };
+}
+
+function unavailableSave(backend: MemoryBackendId, message: string) {
+	return { backend, stored: 0, message };
 }

@@ -89,6 +89,10 @@ export interface InternalUrl extends URL {
 export interface ResolveContext {
 	/** Working directory of the calling session. */
 	cwd?: string;
+	/** Stable id of the calling live session. */
+	sessionId?: string;
+	/** Effective prompt-profile memory permission; false must fail closed. */
+	memoryEnabled?: boolean;
 	/**
 	 * Calling session's session file. Handlers that resolve agent ids which may
 	 * be parked (`history://<id>`, `agent://<id>`) refresh the caller's

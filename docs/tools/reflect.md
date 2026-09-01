@@ -5,7 +5,7 @@
 ## Source
 - Entry: `packages/coding-agent/src/tools/memory-reflect.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/reflect.md`
-- Runtime owner: `packages/coding-agent/src/memory-backend/types.ts` — `ToolSession.getMemoryRuntime()` exposes `MemoryRuntimeContext`, which resolves the selected `MemoryBackendRuntime`.
+
 - Hindsight collaborators:
   - `packages/coding-agent/src/hindsight/bank.ts` — best-effort first-use bank/mission setup (`ensureBankExists`).
   - packages/coding-agent/src/hindsight/state.ts — provider-owned state, shared bank scope, recall/reflect config.
@@ -46,9 +46,9 @@ Mnemopi:
 ## Flow
 
 1. MemoryReflectTool.createIf(...) exposes the tool when memory.backend is either "hindsight" or "mnemopi".
-2. execute(...) runs under untilAborted(...), obtains MemoryRuntimeContext from ToolSession.getMemoryRuntime(), and calls reflect(...) on the selected MemoryBackendRuntime.
-3. For mnemopi, that runtime resolves its provider-owned state; if context has non-whitespace content it recalls with <query>\n\nAdditional context:\n<context>, otherwise it recalls with query, then formats any results through state.formatContextScoped(...) with the Based on recalled memories: prefix.
-4. For hindsight, that runtime resolves its provider-owned state, best-effort calls ensureBankExists(...) for the current bank/config, then calls state.client.reflect(...) with query, optional context, configured recall budget, and bank-scope tag filters. Blank responses become No relevant information found to reflect on.
+2. execute(...) runs under untilAborted(...), re-reads memory.backend, and resolves the selected provider's session state.
+3. For Mnemopi, non-empty context is appended to the query before recallResultsScoped(...); results are formatted through state.formatContextScoped(...) with the Based on recalled memories: prefix.
+4. For Hindsight, the tool best-effort calls ensureBankExists(...), then invokes state.client.reflect(...) with the query, optional context, configured recall budget, and bank-scope tag filters. Blank responses become No relevant information found to reflect on.
 5. Backend failures are logged with logger.warn("reflect failed", ...) and rethrown as Error instances when needed.
 
 ## Modes / Variants
@@ -63,7 +63,7 @@ Mnemopi:
   - `per-project` — reads the bank derived from the absolute cwd basename plus a hash of that cwd.
   - `per-project-tagged` — reads the cwd-derived project bank and shared bank, then merges results.
   - Per-project modes may also include safe cwd-matching legacy banks discovered at startup.
-- Session scope: reads cross-session memory data, but does not persist local output. Subagent aliases use the parent's backend scope.
+- Session scope: reads cross-session memory data but does not persist local output. Hindsight subagents resolve through the parent's live remote route; Mnemopi is unavailable in subagents because its SQLite handles are parent-owned.
 
 ## Side Effects
 - Network
@@ -91,7 +91,7 @@ Mnemopi:
 - Non-`Error` failures caught by the tool are normalized to `new Error(String(err))` before rethrow.
 
 ## Notes
-- Shared backend details are in `docs/tools/retain.md`: storage, subagent aliasing, bank scoping, seed mental models, and prompt injection.
+- Shared backend details are in docs/tools/retain.md: storage, child-session behavior, bank scoping, seed mental models, and prompt injection.
 - Hindsight `reflect` does not read the cached `<mental_models>` block directly. It queries the Hindsight server over bank contents. The same session may separately have mental-model context in developer instructions.
 - Hindsight reflect and retain missions are bank-level server settings, not per-request payload. The tool only ensures them best-effort before reflecting.
 - Mnemopi `reflect` is local recall plus formatting. It does not implement the synthesis promised by the generic model-facing `reflect` prompt.

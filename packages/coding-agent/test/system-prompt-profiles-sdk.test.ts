@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getHindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
-import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { formatAgentIdentityReport, snapshotAgentIdentity } from "@oh-my-pi/pi-coding-agent/session/identity";
@@ -79,6 +79,7 @@ describe("SDK system prompt profiles", () => {
 			toolNames?: string[];
 			restrictToolNames?: boolean;
 			parentSession?: AgentSession;
+			extensions?: ExtensionFactory[];
 		} = {},
 	): Promise<AgentSession> {
 		const model = createMockModel({ id: modelId, handler: () => ({ content: ["ok"] }) });
@@ -93,10 +94,11 @@ describe("SDK system prompt profiles", () => {
 			taskDepth: options.taskDepth,
 			agentKind: options.agentKind,
 			restrictToolNames: options.restrictToolNames,
-			parentSession: options.parentSession,
+			parentHindsightSessionState: options.parentSession?.getHindsightSessionState(),
 			customSystemPrompt: options.customSystemPrompt,
 			customSystemPromptSource: options.customSystemPromptSource,
 			disableExtensionDiscovery: true,
+			extensions: options.extensions,
 			enableMCP: false,
 			enableLsp: false,
 			skills: [],
@@ -185,15 +187,43 @@ describe("SDK system prompt profiles", () => {
 			restrictToolNames: true,
 			toolNames: ["recall"],
 		});
-		const parentState = getHindsightSessionState(parent);
-		const childState = getHindsightSessionState(child);
+		const parentState = parent.getHindsightSessionState();
+		const childState = child.getHindsightSessionState();
 
 		expect(child.systemPromptProfileId).toBe("worker");
 		expect(parentState).toBeDefined();
 		expect(childState?.aliasOf).toBe(parentState);
+		expect(childState?.projectLabel).toBe(parentState?.projectLabel);
 		expect(child.agent.state.tools.map(tool => tool.name)).toEqual(["recall"]);
 	});
 
+	it("rebinds Hindsight project provenance after moving the session cwd", async () => {
+		const settings = routedSettings(true);
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.apiUrl", "http://localhost:8888");
+		settings.override("hindsight.bankId", "omp");
+		settings.override("hindsight.scoping", "per-project-tagged");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		settings.override("hindsight.autoRecall", false);
+
+		const session = await create("driver-primary", settings);
+		const before = session.getHindsightSessionState();
+		const movedCwd = path.join(dir.path(), "moved-project");
+		await fs.mkdir(movedCwd, { recursive: true });
+
+		await session.moveSession(movedCwd);
+
+		const after = session.getHindsightSessionState();
+		expect(after).toBeDefined();
+		expect(after).not.toBe(before);
+		expect(after?.projectLabel).toBe("moved-project");
+		expect(after?.retainTags).toEqual(["project:moved-project"]);
+		expect(snapshotAgentIdentity(session).memory.hindsight).toMatchObject({
+			status: "active",
+			project: "moved-project",
+			tags: ["project:moved-project"],
+		});
+	});
 	it("routes a fable-named subagent to the worker profile instead of ambient SYSTEM.md", async () => {
 		const session = await create("fable-in-name", routedSettings(), {
 			taskDepth: 1,
@@ -231,11 +261,19 @@ describe("SDK system prompt profiles", () => {
 			},
 			systemPromptProfileRoutes: [{ agentKind: "sub", profile: "worker" }],
 		});
+		let extensionMemory: unknown = Symbol("not observed");
+		const captureMemory: ExtensionFactory = pi => {
+			pi.on("before_agent_start", (_event, context) => {
+				extensionMemory = context.memory;
+			});
+		};
 		const session = await create("driver-primary", settings, {
 			agentKind: "sub",
 			taskDepth: 1,
 			toolNames: ["learn", "manage_skill"],
+			extensions: [captureMemory],
 		});
+		await session.prompt("profile memory gate");
 		const prompt = session.agent.state.systemPrompt.join("\n\n");
 
 		expect(session.getToolByName("learn")).toBeUndefined();
@@ -246,6 +284,8 @@ describe("SDK system prompt profiles", () => {
 			profileId: "worker",
 		});
 		expect(snapshotAgentIdentity(session).memory.hindsight).toEqual({ status: "disabled-by-profile" });
+
+		expect(extensionMemory).toBeUndefined();
 	});
 
 	it("routes an internal session explicitly marked as a subagent to the worker profile", async () => {

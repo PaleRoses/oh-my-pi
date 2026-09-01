@@ -33,6 +33,7 @@ import { runExtensionCompact, runExtensionSetModel } from "../extensibility/exte
 import { getSessionSlashCommands } from "../extensibility/extensions/get-commands-handler";
 import type { PreparedExtension } from "../extensibility/extensions/types";
 import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
+import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { MCPManager } from "../mcp/manager";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -516,8 +517,8 @@ export interface ExecutorOptions {
 	 * artifacts directory (no per-subagent subdir).
 	 */
 	parentArtifactManager?: ArtifactManager;
-	/** Parent session whose selected memory backend may alias its runtime. */
-	parentSession?: AgentSession;
+	/** Parent Hindsight state used to bind a subagent alias to the parent's live provider slot. */
+	parentHindsightSessionState?: HindsightSessionState;
 	/** Parent agent's eval executor session id. Subagents reuse it so eval state is shared. */
 	parentEvalSessionId?: string;
 	/**
@@ -3217,7 +3218,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				// so nested lifecycle/progress/event frames reach its surfaces
 				// without leaking into another root session's traffic.
 				subagentEventBus: options.subagentEventBus,
-				parentSession: options.parentSession,
+				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentTaskPrefix: id,
 				parentAgentId: options.parentAgentId,
 				agentId: id,

@@ -5,10 +5,10 @@
 ## Source
 - Entry: `packages/coding-agent/src/tools/memory-retain.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/retain.md`
-- Runtime owner: `packages/coding-agent/src/memory-backend/types.ts` — `ToolSession.getMemoryRuntime()` exposes `MemoryRuntimeContext`, which resolves the selected `MemoryBackendRuntime`.
+
 - Hindsight collaborators:
   - packages/coding-agent/src/hindsight/state.ts — provider-owned per-session queue, flush, auto-retain.
-  - `packages/coding-agent/src/hindsight/backend.ts` — session bootstrap, prompt injection, subagent aliasing.
+  - packages/coding-agent/src/hindsight/backend.ts — session bootstrap, prompt injection, live child routes, and enqueue-time route capture.
   - `packages/coding-agent/src/hindsight/bank.ts` — bank id derivation, tag scoping, first-use bank/mission setup.
   - `packages/coding-agent/src/hindsight/client.ts` — HTTP `retain` / `retainBatch` calls.
   - `packages/coding-agent/src/session/identity.ts` — immutable effective prompt/model identity projected into retention provenance.
@@ -17,7 +17,7 @@
   - `packages/coding-agent/src/hindsight/seeds.json` — built-in mental-model seed definitions.
   - `packages/coding-agent/src/hindsight/transcript.ts` — extracts user/assistant turns for auto-retain.
 - Mnemopi collaborators:
-  - `packages/coding-agent/src/mnemopi/backend.ts` — local backend bootstrap, prompt injection, subagent aliasing, enqueue/clear.
+  - packages/coding-agent/src/mnemopi/backend.ts — local backend bootstrap, prompt injection, child-session refusal, enqueue, and clear.
   - packages/coding-agent/src/mnemopi/state.ts — provider-owned scoped recall/retain state and local writes.
   - `packages/coding-agent/src/mnemopi/config.ts` — local SQLite path, bank, scoping, provider settings.
   - `packages/mnemopi/src/core/memory.ts` — local memory runtime used by `remember(...)`.
@@ -53,9 +53,9 @@ Mnemopi:
 ## Flow
 
 1. MemoryRetainTool.createIf(...) exposes the tool when memory.backend is either "hindsight" or "mnemopi".
-2. execute(...) obtains MemoryRuntimeContext from ToolSession.getMemoryRuntime() and calls retain(...) on the selected MemoryBackendRuntime.
-3. For mnemopi, that runtime resolves its provider-owned state and calls state.rememberScoped(item.content, ...) for each item with source: "coding-agent-retain", importance: 0.75, scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact", and metadata { session_id, cwd, context, tool: "retain" }. Writes go to the scoped retain bank; exact duplicate content in the same session updates the existing working-memory row in the Mnemopi core.
-4. For hindsight, that runtime resolves its provider-owned state and hands each input item to HindsightSessionState.enqueueRetain(...). The queue flushes immediately at RETAIN_FLUSH_BATCH_SIZE or after RETAIN_FLUSH_INTERVAL_MS, then HindsightRetainQueue.#doFlush(...) verifies ownership, best-effort ensures the bank, serializes canonical item fields, and sends one async retainBatch(...) request.
+2. execute(...) re-reads memory.backend and dispatches to the selected provider's session state.
+3. For Mnemopi, it calls session.getMnemopiSessionState() and then state.rememberScoped(item.content, ...) for each item with source coding-agent-retain, importance 0.75, bank scope, extraction enabled, veracity tool, memory type fact, and session/cwd/context metadata.
+4. For Hindsight, it calls session.getHindsightSessionState() and hands each input item to HindsightSessionState.enqueueRetain(...). The queue flushes at RETAIN_FLUSH_BATCH_SIZE or after RETAIN_FLUSH_INTERVAL_MS; terminal retirement closes intake before draining every accepted item.
 
 ### Hindsight retained-item provenance
 - Tool-called items snapshot their timestamp, optional input context, and provenance when `enqueueRetain(...)` runs. A later queue flush never resamples the session identity, model, prompt profile, project, working directory, or source.
@@ -82,23 +82,23 @@ Mnemopi:
   - tool-called retains are per-session work for the active backend;
   - persisted Hindsight memories are cross-session server-side bank data;
   - persisted Mnemopi memories are local SQLite data;
-  - subagents alias parent memory state for both supported backends.
+  - Hindsight subagents resolve client, bank, tags, config, bank cache, and project label through the parent's live state; each queued retain keeps the route captured when accepted. Mnemopi is unavailable in subagents because its SQLite handles are parent-owned.
 
 ## Side Effects
 - Filesystem
   - Hindsight: none for retained memories. No local memory file is written.
   - Mnemopi: writes to local SQLite under the configured `mnemopi.dbPath`, with one database file per scoped bank when needed.
 - Network
-  - Hindsight: `POST /v1/default/banks/{bank_id}/memories` via `retainBatch(...)`, plus optional `PUT /v1/default/banks/{bank_id}` via `ensureBankExists(...)` before the first write per bank per session state (the set is created with the primary session state and shared with subagent aliases).
+  - Hindsight: POST /v1/default/banks/{bank_id}/memories via retainBatch(...), plus optional bank creation via ensureBankExists(...); a child resolves the parent's live bank cache while each queued item retains its enqueue-time cache and route.
   - Mnemopi: none unless configured embedding or LLM providers make calls during extraction.
 - Session state
-  - Hindsight: appends timestamped items to the in-memory `HindsightRetainQueue`; each item already contains its enqueue-time provenance snapshot and shares the parent state for subagents.
-  - Mnemopi: writes through the session's scoped `Mnemopi` instance, includes `session_id`, `cwd`, and optional `context`, and shares scoped resources with subagents.
+  - Hindsight: appends timestamped items to the in-memory HindsightRetainQueue; each item contains its enqueue-time provenance snapshot and fixed provider route.
+  - Mnemopi: writes through the owning session's scoped Mnemopi instance and includes session_id, cwd, and optional context. Child sessions expose no Mnemopi state.
 - User-visible prompts / interactive UI
   - Hindsight async flush failures emit `session.emitNotice("warning", ...)`; the model is not told.
   - Mnemopi write failures are logged by `rememberInScope(...)`; the tool response does not expose per-item failures.
 - Background work / cancellation
-  - Hindsight flush runs later on the debounce timer or queue-size threshold; backend `enqueue(...)` and `clear(...)` explicitly drain it. A session-ownership mismatch at flush time logs and drops the batch.
+  - Hindsight flush runs on the debounce timer or queue-size threshold. Backend enqueue(...) drains without closing; transition, clear, and terminal disposal atomically close intake, drain accepted items, then detach state.
   - Mnemopi fact/entity extraction and embedding may continue after the synchronous row write. Backend `enqueue(...)` requests full consolidation; backend clear disposes scoped instances before deleting their database files.
   - `retain.execute()` itself has no abort-signal handling.
 

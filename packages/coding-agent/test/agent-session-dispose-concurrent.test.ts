@@ -6,8 +6,8 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import * as memoryBackend from "@oh-my-pi/pi-coding-agent/memory-backend";
-import type { MemoryBackend, MemoryBackendRuntime } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
+import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { MnemopiSessionState, setMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -143,11 +143,9 @@ describe("AgentSession concurrent disposal", () => {
 	it("starts independent writers together and closes persistence after their barrier", async () => {
 		const owned = new AsyncJobManager({ maxRunningJobs: 1, retentionMs: 1_000, onJobComplete: () => {} });
 		const asyncGate = Promise.withResolvers<void>();
-		const flushGate = Promise.withResolvers<void>();
-		const disposeGate = Promise.withResolvers<void>();
+		const hindsightGate = Promise.withResolvers<void>();
+		const mnemopiGate = Promise.withResolvers<void>();
 		const asyncStarted = Promise.withResolvers<void>();
-		const flushStarted = Promise.withResolvers<void>();
-		const disposeStarted = Promise.withResolvers<void>();
 		const order: string[] = [];
 		vi.spyOn(owned, "dispose").mockImplementation(async () => {
 			order.push("async:start");
@@ -158,69 +156,22 @@ describe("AgentSession concurrent disposal", () => {
 		});
 
 		const current = createSession(owned);
-		const capabilities = { recall: false, retain: false, reflect: false, edit: false, save: false } as const;
-		const runtime: MemoryBackendRuntime = {
-			capabilities,
-			identity: () => ({ backend: "hindsight", status: "configured-not-started" }),
-			mentalModels: () => ({ backend: "hindsight", status: "inactive" }),
-			async dispose() {
-				await runtime.flush();
-				order.push("memory:dispose:start");
-				disposeStarted.resolve();
-				await disposeGate.promise;
-				order.push("memory:dispose:end");
-			},
-			async flush() {
-				order.push("memory:flush:start");
-				flushStarted.resolve();
-				await flushGate.promise;
-				order.push("memory:flush:end");
-			},
-			rekey() {},
-			async resetTranscript() {
-				return false;
-			},
-			async status() {
-				return { backend: "hindsight", active: true, writable: true, searchable: true };
-			},
-			async search(query) {
-				return { backend: "hindsight", query, count: 0, items: [] };
-			},
-			async save() {
-				return { backend: "hindsight", stored: 0 };
-			},
-			async retain(input) {
-				return { backend: "hindsight", accepted: input.items.length, stored: 0, queued: false };
-			},
-			async recall(query) {
-				return { backend: "hindsight", query, count: 0, items: [], rendered: "" };
-			},
-			async reflect() {
-				return { backend: "hindsight", text: "" };
-			},
-			async edit() {
-				return { backend: "hindsight", status: "unsupported" };
-			},
-		};
-		const backend: MemoryBackend = {
-			id: "hindsight",
-			capabilities,
-			runtime: () => runtime,
-			async start() {},
-			async buildDeveloperInstructions() {
-				return undefined;
-			},
-			async clear() {},
-			async enqueue() {},
-		};
-		vi.spyOn(memoryBackend, "resolveMemoryBackend").mockResolvedValue(backend);
-		await current.startMemoryBackend({
-			session: current,
-			settings: current.settings,
-			modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
-			agentDir: tempDir.path(),
-			taskDepth: 0,
+		const hindsight: HindsightSessionState = Object.create(HindsightSessionState.prototype);
+		vi.spyOn(hindsight, "retireRetainQueue").mockImplementation(async () => {
+			order.push("hindsight:start");
+			await hindsightGate.promise;
+			order.push("hindsight:end");
 		});
+		vi.spyOn(hindsight, "dispose").mockImplementation(() => {});
+		current.setHindsightSessionState(hindsight);
+
+		const mnemopi: MnemopiSessionState = Object.create(MnemopiSessionState.prototype);
+		vi.spyOn(mnemopi, "dispose").mockImplementation(async () => {
+			order.push("mnemopi:start");
+			await mnemopiGate.promise;
+			order.push("mnemopi:end");
+		});
+		setMnemopiSessionState(current, mnemopi);
 
 		let persistenceClosed = false;
 		vi.spyOn(current.sessionManager, "close").mockImplementation(async () => {
@@ -230,32 +181,26 @@ describe("AgentSession concurrent disposal", () => {
 
 		const dispose = current.dispose();
 		try {
-			await Promise.all([asyncStarted.promise, flushStarted.promise]);
-			expect(order).toContain("async:start");
-			expect(order).toContain("memory:flush:start");
+			await asyncStarted.promise;
+			await Promise.resolve();
+			expect(order).toContain("hindsight:start");
+			expect(order).toContain("mnemopi:start");
 			expect(order).not.toContain("async:end");
-			expect(order).not.toContain("memory:flush:end");
-			expect(order).not.toContain("memory:dispose:start");
-			expect(persistenceClosed).toBe(false);
-
-			flushGate.resolve();
-			await disposeStarted.promise;
-			expect(order).toContain("memory:flush:end");
-			expect(order).toContain("memory:dispose:start");
-			expect(order).not.toContain("memory:dispose:end");
+			expect(order).not.toContain("hindsight:end");
+			expect(order).not.toContain("mnemopi:end");
 			expect(persistenceClosed).toBe(false);
 		} finally {
 			asyncGate.resolve();
-			flushGate.resolve();
-			disposeGate.resolve();
+			hindsightGate.resolve();
+			mnemopiGate.resolve();
 		}
 		await dispose;
 		session = undefined;
 
 		const closeAt = order.indexOf("session:close");
 		expect(closeAt).toBeGreaterThan(order.indexOf("async:end"));
-		expect(closeAt).toBeGreaterThan(order.indexOf("memory:flush:end"));
-		expect(closeAt).toBeGreaterThan(order.indexOf("memory:dispose:end"));
+		expect(closeAt).toBeGreaterThan(order.indexOf("hindsight:end"));
+		expect(closeAt).toBeGreaterThan(order.indexOf("mnemopi:end"));
 	});
 
 	it("bounds post-prompt work that ignores abort", async () => {

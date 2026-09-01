@@ -1,15 +1,10 @@
 import { rm } from "node:fs/promises";
 import { logger } from "@oh-my-pi/pi-utils";
-import type {
-	MemoryBackend,
-	MemoryBackendOperationContext,
-	MemoryBackendRuntime,
-	MemoryBackendSearchItem,
-} from "../memory-backend/types";
+import type { MemoryBackend, MemoryBackendSearchItem, MemoryBackendStatus } from "../memory-backend/types";
 import { truncateApproxTokens } from "../mnemopi/config";
 import type { AgentSession } from "../session/agent-session";
 import { runSharpshooterConsolidation } from "./consolidate";
-import { flushSharpshooterExtraction, maybeStartSharpshooterExtraction, resolveSharpshooterModel } from "./extract";
+import { maybeStartSharpshooterExtraction, resolveSharpshooterModel } from "./extract";
 import {
 	readSharpshooterState,
 	sharpshooterBankDir,
@@ -77,17 +72,8 @@ function formatTimestamp(timestamp: number | undefined): string {
 	return timestamp ? new Date(timestamp).toISOString() : "never";
 }
 
-const SHARPSHOOTER_CAPABILITIES = {
-	recall: false,
-	retain: false,
-	reflect: false,
-	edit: false,
-	save: false,
-} as const;
-
 export const sharpshooterBackend: MemoryBackend = {
 	id: "sharpshooter",
-	capabilities: SHARPSHOOTER_CAPABILITIES,
 
 	start(options): void {
 		if (options.taskDepth > 0) return;
@@ -127,10 +113,6 @@ export const sharpshooterBackend: MemoryBackend = {
 		}
 	},
 
-	runtime(context): MemoryBackendRuntime {
-		return createSharpshooterRuntime(context);
-	},
-
 	async buildDeveloperInstructions(agentDir, settings): Promise<string | undefined> {
 		const files = await readMemoryFiles(agentDir, settings.getCwd());
 		const populated = files.filter(file => file.content.trim().length > 0);
@@ -158,6 +140,23 @@ export const sharpshooterBackend: MemoryBackend = {
 			modelRegistry: session.modelRegistry,
 			force: true,
 		});
+	},
+
+	async status({ agentDir, cwd }): Promise<MemoryBackendStatus> {
+		const [files, queueDepth, state] = await Promise.all([
+			readMemoryFiles(agentDir, cwd),
+			sharpshooterQueueDepth(agentDir, cwd),
+			readSharpshooterState(agentDir, cwd),
+		]);
+		const fileSummary = files.map(file => `${file.name}: ${file.lines} lines`).join(", ");
+		return {
+			backend: "sharpshooter",
+			active: true,
+			writable: false,
+			searchable: true,
+			scope: sharpshooterBankId(cwd),
+			message: `${fileSummary}; queue: ${queueDepth}; last consolidated: ${formatTimestamp(state.lastConsolidatedAt)}`,
+		};
 	},
 
 	async stats(agentDir, cwd): Promise<string> {
@@ -220,110 +219,22 @@ export const sharpshooterBackend: MemoryBackend = {
 		}
 		return lines.join("\n");
 	},
-};
 
-function createSharpshooterRuntime(context: MemoryBackendOperationContext): MemoryBackendRuntime {
-	return {
-		capabilities: SHARPSHOOTER_CAPABILITIES,
-		identity() {
-			return { backend: "sharpshooter", status: "active" };
-		},
-		mentalModels() {
-			return { backend: "sharpshooter", status: "unsupported" };
-		},
-		async dispose() {
-			if (!context.session) return;
-			try {
-				await flushSharpshooterExtraction(context.session);
-			} finally {
-				releaseSharpshooterSession(context.session);
+	async search({ agentDir, cwd }, query, options) {
+		if (options?.signal?.aborted) {
+			return { backend: "sharpshooter", query, count: 0, items: [], message: "Search aborted." };
+		}
+		const needle = query.toLowerCase();
+		if (!needle) return { backend: "sharpshooter", query, count: 0, items: [] };
+		const files = await readMemoryFiles(agentDir, cwd);
+		const items: MemoryBackendSearchItem[] = [];
+		for (const file of files) {
+			for (const line of file.content.split(/\r?\n/)) {
+				if (line.toLowerCase().includes(needle)) items.push({ content: line, source: file.name });
 			}
-		},
-		async flush() {
-			if (context.session) await flushSharpshooterExtraction(context.session);
-		},
-		rekey() {
-			// Sharpshooter has no provider-session keyed state.
-		},
-		async resetTranscript() {
-			return false;
-		},
-		async status() {
-			const [files, queueDepth, state] = await Promise.all([
-				readMemoryFiles(context.agentDir, context.cwd),
-				sharpshooterQueueDepth(context.agentDir, context.cwd),
-				readSharpshooterState(context.agentDir, context.cwd),
-			]);
-			const fileSummary = files.map(file => `${file.name}: ${file.lines} lines`).join(", ");
-			return {
-				backend: "sharpshooter",
-				active: true,
-				writable: false,
-				searchable: true,
-				scope: sharpshooterBankId(context.cwd),
-				message:
-					fileSummary +
-					"; queue: " +
-					queueDepth +
-					"; last consolidated: " +
-					formatTimestamp(state.lastConsolidatedAt),
-			};
-		},
-		async search(query, options) {
-			if (options?.signal?.aborted) {
-				return { backend: "sharpshooter", query, count: 0, items: [], message: "Search aborted." };
-			}
-			const needle = query.toLowerCase();
-			if (!needle) return { backend: "sharpshooter", query, count: 0, items: [] };
-			const files = await readMemoryFiles(context.agentDir, context.cwd);
-			const items: MemoryBackendSearchItem[] = [];
-			for (const file of files) {
-				for (const line of file.content.split(/\r?\n/)) {
-					if (line.toLowerCase().includes(needle)) items.push({ content: line, source: file.name });
-				}
-			}
-			const limited = items.slice(0, Math.max(0, options?.limit ?? items.length));
-			return { backend: "sharpshooter", query, count: limited.length, items: limited };
-		},
-		async save() {
-			return {
-				backend: "sharpshooter",
-				stored: 0,
-				message: "Memory save is not available for the sharpshooter backend.",
-			};
-		},
-		async retain() {
-			return {
-				backend: "sharpshooter",
-				accepted: 0,
-				stored: 0,
-				queued: false,
-				message: "Memory retain is not available for the sharpshooter backend.",
-			};
-		},
-		async recall(query) {
-			return {
-				backend: "sharpshooter",
-				query,
-				count: 0,
-				items: [],
-				rendered: "",
-				message: "Memory recall is not available for the sharpshooter backend.",
-			};
-		},
-		async reflect() {
-			return {
-				backend: "sharpshooter",
-				text: "",
-				message: "Memory reflect is not available for the sharpshooter backend.",
-			};
-		},
-		async edit() {
-			return {
-				backend: "sharpshooter",
-				status: "unsupported",
-				message: "Memory editing is not available for the sharpshooter backend.",
-			};
-		},
-	};
-}
+		}
+		const limit = Math.max(0, options?.limit ?? items.length);
+		const limited = items.slice(0, limit);
+		return { backend: "sharpshooter", query, count: limited.length, items: limited };
+	},
+};

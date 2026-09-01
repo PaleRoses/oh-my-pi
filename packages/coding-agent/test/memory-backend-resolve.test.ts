@@ -43,13 +43,6 @@ describe("resolveMemoryBackend", () => {
 			writable: true,
 			searchable: false,
 		});
-		await expect(memory.capabilities()).resolves.toEqual({
-			recall: false,
-			retain: false,
-			reflect: false,
-			edit: false,
-			save: true,
-		});
 		await expect(memory.search("project preference")).resolves.toMatchObject({
 			backend: "local",
 			count: 0,

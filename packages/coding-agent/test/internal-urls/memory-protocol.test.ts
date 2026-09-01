@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
+import { MemoryProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/memory-protocol";
 import { getMemoryRoot } from "@oh-my-pi/pi-coding-agent/memories";
 import type { MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -22,6 +23,17 @@ import { getAgentDir, removeWithRetries, setAgentDir, TempDir } from "@oh-my-pi/
 // Mnemopi state is loaded lazily; preload so `new MnemopiSessionState(...)` can
 // resolve the module synchronously in the fixtures below.
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);
+function memorySessionFields(backend: "off" | "local" | "hindsight" | "mnemopi", memoryEnabled = true) {
+	return {
+		settings: Settings.isolated({ "memory.backend": backend }),
+		effectiveIdentity: {
+			memory: memoryEnabled
+				? { status: "enabled" as const }
+				: { status: "disabled-by-profile" as const, profileId: "isolated" },
+		},
+	};
+}
+
 interface MemoryFixture {
 	cwd: string;
 	memoryRoot: string;
@@ -50,7 +62,7 @@ async function withMemoryFixture(fn: (fixture: MemoryFixture) => Promise<void>):
 					getArtifactsDir: () => null,
 					getSessionId: () => "test",
 				},
-				memoryIdentity: () => ({ backend: "local", status: "active" }),
+				...memorySessionFields("local"),
 			} as unknown as AgentSession,
 			sessionFile: null,
 		});
@@ -67,6 +79,8 @@ function createGlobTool(cwd: string): GlobTool {
 		hasUI: false,
 		settings: Settings.isolated({ "memory.backend": "local" }),
 		getSessionFile: () => null,
+		getSessionId: () => "test",
+		memoryEnabled: () => true,
 		getSessionSpawns: () => null,
 	};
 	return new GlobTool(session);
@@ -95,7 +109,7 @@ describe("MemoryProtocolHandler", () => {
 					getArtifactsDir: () => null,
 					getSessionId: () => "test-off",
 				},
-				memoryIdentity: () => ({ backend: "off", status: "off" }),
+				...memorySessionFields("off"),
 			} as unknown as AgentSession,
 			sessionFile: null,
 		});
@@ -104,6 +118,128 @@ describe("MemoryProtocolHandler", () => {
 
 		await expect(router.resolve("memory://", { cwd, settings })).rejects.toThrow("Unknown protocol: memory://");
 		await expect(router.resolve("memory://root", { cwd, settings })).rejects.toThrow("Unknown protocol: memory://");
+	});
+
+	it("denies memory URLs and completions when the prompt profile disables a configured backend", async () => {
+		const cwd = path.join(os.tmpdir(), "memory-protocol-profile-disabled");
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		AgentRegistry.global().register({
+			id: "profile-disabled",
+			displayName: "profile-disabled",
+			kind: "main",
+			session: {
+				sessionManager: {
+					getCwd: () => cwd,
+					getArtifactsDir: () => null,
+					getSessionId: () => "profile-disabled",
+				},
+				...memorySessionFields("local", false),
+			} as unknown as AgentSession,
+			sessionFile: null,
+		});
+
+		await expect(InternalUrlRouter.instance().resolve("memory://root", { cwd, settings })).rejects.toThrow(
+			"Unknown protocol: memory://",
+		);
+		expect(await new MemoryProtocolHandler().complete("", { cwd, settings })).toEqual([]);
+	});
+
+	it("matches the caller by stable session-manager id without falling back to a same-cwd peer", async () => {
+		const cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "memory-protocol-stable-id-"));
+		const previousAgentDir = getAgentDir();
+		try {
+			const agentDir = path.join(cleanupRoot, "agent");
+			const cwd = path.join(cleanupRoot, "shared-project");
+			await fs.mkdir(cwd, { recursive: true });
+			setAgentDir(agentDir);
+			const memoryRoot = getMemoryRoot(agentDir, cwd);
+			await fs.mkdir(memoryRoot, { recursive: true });
+			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "enabled peer summary");
+
+			AgentRegistry.global().register({
+				id: "enabled-peer",
+				displayName: "enabled-peer",
+				kind: "main",
+				session: {
+					sessionId: "provider-facing-enabled",
+					sessionManager: {
+						getCwd: () => cwd,
+						getArtifactsDir: () => null,
+						getSessionId: () => "stable-enabled",
+					},
+					...memorySessionFields("local"),
+				} as unknown as AgentSession,
+				sessionFile: null,
+			});
+			AgentRegistry.global().register({
+				id: "denied-caller",
+				displayName: "denied-caller",
+				kind: "main",
+				session: {
+					sessionId: "provider-facing-denied",
+					sessionManager: {
+						getCwd: () => cwd,
+						getArtifactsDir: () => null,
+						getSessionId: () => "stable-denied",
+					},
+					...memorySessionFields("local", false),
+				} as unknown as AgentSession,
+				sessionFile: null,
+			});
+
+			await expect(
+				InternalUrlRouter.instance().resolve("memory://root", {
+					cwd,
+					sessionId: "stable-denied",
+					settings: Settings.isolated({ "memory.backend": "local" }),
+				}),
+			).rejects.toThrow("Unknown protocol: memory://");
+		} finally {
+			setAgentDir(previousAgentDir);
+			await removeWithRetries(cleanupRoot);
+		}
+	});
+
+	it("fails closed when a denied caller has no current registry binding", async () => {
+		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
+		await expect(
+			InternalUrlRouter.instance().resolve("memory://root", {
+				cwd: "/shared/project",
+				sessionId: "denied-in-memory-session",
+				sessionFile: "/stale/session.jsonl",
+				memoryEnabled: false,
+				settings,
+			}),
+		).rejects.toThrow("Unknown protocol: memory://");
+	});
+
+	it("fails closed when an enabled exact caller identity is no longer registered", async () => {
+		const cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "memory-protocol-stale-enabled-"));
+		const previousAgentDir = getAgentDir();
+		try {
+			const agentDir = path.join(cleanupRoot, "agent");
+			const cwd = path.join(cleanupRoot, "project");
+			await fs.mkdir(cwd, { recursive: true });
+			setAgentDir(agentDir);
+			const memoryRoot = getMemoryRoot(agentDir, cwd);
+			await fs.mkdir(memoryRoot, { recursive: true });
+			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "must not leak through stale identity");
+			const context = {
+				cwd,
+				sessionId: "stale-enabled-session",
+				sessionFile: path.join(cleanupRoot, "stale.jsonl"),
+				memoryEnabled: true,
+				settings: Settings.isolated({ "memory.backend": "local" }),
+			};
+
+			await expect(InternalUrlRouter.instance().resolve("memory://root", context)).rejects.toThrow(
+				"Unknown protocol: memory://",
+			);
+			expect(await new MemoryProtocolHandler().complete("", context)).toEqual([]);
+		} finally {
+			setAgentDir(previousAgentDir);
+			await removeWithRetries(cleanupRoot);
+		}
 	});
 
 	it("advertises memory URLs only while a memory backend is enabled", () => {
@@ -167,7 +303,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "first-session",
 					},
-					memoryIdentity: () => ({ backend: "local", status: "active" }),
+					...memorySessionFields("local"),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -181,7 +317,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "second-session",
 					},
-					memoryIdentity: () => ({ backend: "local", status: "active" }),
+					...memorySessionFields("local"),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -243,7 +379,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "test-first",
 					},
-					memoryIdentity: () => ({ backend: "local", status: "active" }),
+					...memorySessionFields("local"),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -257,7 +393,7 @@ describe("MemoryProtocolHandler", () => {
 						getArtifactsDir: () => null,
 						getSessionId: () => "test-second",
 					},
-					memoryIdentity: () => ({ backend: "local", status: "active" }),
+					...memorySessionFields("local"),
 				} as unknown as AgentSession,
 				sessionFile: null,
 			});
@@ -451,7 +587,7 @@ async function withMnemopiSession(fn: (fixture: MnemopiFixture) => Promise<void>
 				getSessionId: () => "test-mnemopi",
 			},
 			emitNotice: () => {},
-			memoryIdentity: () => ({ backend: "mnemopi", status: "active", banks: ["test-bank"] }),
+			...memorySessionFields("mnemopi"),
 		} as unknown as AgentSession;
 		const state = new MnemopiSessionState({ sessionId: "test-mnemopi", config, session });
 		setMnemopiSessionState(session, state);
@@ -583,7 +719,7 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 						getSessionId: () => "other-mnemopi",
 					},
 					emitNotice: () => {},
-					memoryIdentity: () => ({ backend: "mnemopi", status: "active", banks: ["other-bank"] }),
+					...memorySessionFields("mnemopi"),
 				} as unknown as AgentSession;
 				otherState = new MnemopiSessionState({
 					sessionId: "other-mnemopi",
@@ -637,14 +773,7 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 					getArtifactsDir: () => null,
 					getSessionId: () => "hindsight-child",
 				},
-				memoryIdentity: () => ({
-					backend: "hindsight",
-					status: "active",
-					bank: "child-bank",
-					project: "child-project",
-					scope: "per-project",
-					tags: [],
-				}),
+				...memorySessionFields("hindsight"),
 			} as unknown as AgentSession;
 			AgentRegistry.global().register({
 				id: "hindsight-child",
@@ -689,14 +818,7 @@ function withHindsightSession(fn: () => Promise<void>): Promise<void> {
 			getArtifactsDir: () => null,
 			getSessionId: () => "test-hindsight",
 		},
-		memoryIdentity: () => ({
-			backend: "hindsight",
-			status: "active",
-			bank: "test-bank",
-			project: "test-project",
-			scope: "per-project",
-			tags: [],
-		}),
+		...memorySessionFields("hindsight"),
 	} as unknown as AgentSession;
 	AgentRegistry.global().register({
 		id: "test-hindsight",

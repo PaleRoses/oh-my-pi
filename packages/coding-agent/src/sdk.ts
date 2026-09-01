@@ -119,6 +119,7 @@ import {
 	setActiveSkills,
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
+import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
 import { setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
@@ -133,7 +134,7 @@ import {
 	parseMCPToolName,
 } from "./mcp";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
-import { createSessionMemoryRuntimeContext, type MemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
+import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
@@ -562,8 +563,8 @@ export interface CreateAgentSessionOptions {
 	requireYieldTool?: boolean;
 	/** Task recursion depth (for subagent sessions). Default: 0 */
 	taskDepth?: number;
-	/** Parent session whose selected memory backend may alias its runtime. */
-	parentSession?: AgentSession;
+	/** Parent Hindsight state used to bind a subagent alias to the parent's live provider slot. */
+	parentHindsightSessionState?: HindsightSessionState;
 	/** Pre-allocated agent identity for IRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
 	agentId?: string;
 	/** Session role when taskDepth/parentTaskPrefix inference is unavailable. */
@@ -1699,12 +1700,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let agent: Agent;
 	let session!: AgentSession;
 	let hasSession = false;
-	let memoryRuntime: MemoryRuntimeContext | undefined;
-	const getMemoryRuntime = (): MemoryRuntimeContext | undefined => {
-		if (!hasSession) return undefined;
-		memoryRuntime ??= createSessionMemoryRuntimeContext(session, agentDir);
-		return memoryRuntime;
-	};
 	let hasRegistered = false;
 	const restrictToolNames = options.restrictToolNames === true;
 	const enableLsp =
@@ -1822,8 +1817,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
 			isDisposed: () => session?.isDisposed ?? false,
-			getAgentSession: () => (hasSession ? session : undefined),
-			getMemoryRuntime,
+			memoryEnabled: () => session?.effectiveIdentity.memory.status === "enabled",
+			getHindsightSessionState: () => session?.getHindsightSessionState(),
+			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
 			getAgentId: () => resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
@@ -2833,7 +2829,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			cwd,
 			sessionManager,
 			modelRegistry,
-			getMemoryRuntime,
+			() =>
+				hasSession && profileMemoryEnabled
+					? createSessionMemoryRuntimeContext(session, agentDir, session.sessionManager.getCwd())
+					: undefined,
 			settings,
 			localProtocolOptions,
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
@@ -3805,6 +3804,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			toolRegistry,
 			memoryAgentDir: agentDir,
 			memoryTaskDepth: taskDepth,
+			parentHindsightSessionState: options.parentHindsightSessionState,
 			createMemoryTools:
 				restrictToolNames || !profileMemoryEnabled
 					? undefined
@@ -4175,15 +4175,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const startMemoryBackend = async () => {
 			if (!profileMemoryEnabled) return;
-			await session.startMemoryBackend({
-				session,
-				settings,
-				modelRegistry,
-				agentDir,
-				taskDepth,
-				parentSession: options.parentSession,
-			});
-			if (settings.get("memory.backend") === "hindsight") await session.refreshBaseSystemPrompt();
+			await session.applyMemoryBackend();
 		};
 
 		const runAutoLearnCapture = createAutoLearnCaptureRunner({
@@ -4246,8 +4238,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Auto-learn can immediately trigger a private capture after the first real
 		// stop. Hindsight also installs synchronously because its active bank,
 		// project, and scope are part of the provider-facing identity prompt. Other
-		// sessions keep memory startup in the background to preserve the existing
-		// startup profile.
+		// sessions keep the serialized SessionMemory startup in the background;
+		// disposal and cwd/backend transitions still await that same owner.
 		//
 		// Gated on `autolearn.enabled` to match the tools: `createTools` builds the
 		// `learn`/`manage_skill` registry ONCE at session start and no settings

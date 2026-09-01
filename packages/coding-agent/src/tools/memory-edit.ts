@@ -25,17 +25,25 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 
 	constructor(private readonly session: ToolSession) {}
 
+	static createIf(session: ToolSession): MemoryEditTool | null {
+		const backend = session.settings.get("memory.backend");
+		if (backend !== "mnemopi") return null;
+		return new MemoryEditTool(session);
+	}
+
 	async execute(_id: string, params: MemoryEditParams): Promise<AgentToolResult> {
+		const state = this.session.getMnemopiSessionState?.();
+		if (!state) {
+			throw new Error("Mnemopi backend is not initialised for this session.");
+		}
 		if (params.op === "update" && params.content === undefined && params.importance === undefined) {
 			throw new Error("memory_edit update requires content or importance.");
 		}
-		const memory = this.session.getMemoryRuntime?.();
-		if (!memory) throw new Error("Memory backend is not initialised for this session.");
-		const result = await memory.edit({
-			op: params.op,
-			id: params.id,
+
+		const importance = params.importance === undefined ? undefined : Math.max(0, Math.min(1, params.importance));
+		const result = state.editScopedMemory(params.op, params.id, {
 			content: params.content,
-			importance: params.importance,
+			importance,
 			replacementId: params.replacement_id,
 		});
 		const location = result.bank ? ` in bank ${result.bank}${result.store ? ` (${result.store})` : ""}` : "";
@@ -44,9 +52,7 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 				? `Memory ${params.id} was not found${location}.`
 				: result.status === "not_editable"
 					? `Memory ${params.id} is a read-only fact${location}; it cannot be edited. Read it with memory://${params.id}.`
-					: result.status === "unsupported"
-						? (result.message ?? "Memory editing is not available for this backend.")
-						: `Memory ${params.id} ${result.status}${location}.`;
+					: `Memory ${params.id} ${result.status}${location}.`;
 		return {
 			content: [{ type: "text", text }],
 			details: result,
