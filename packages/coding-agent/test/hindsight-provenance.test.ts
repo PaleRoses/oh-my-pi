@@ -96,7 +96,6 @@ function createState(
 	runtime: MutableRuntime,
 	options: { config?: HindsightConfig; projectLabel?: string; retainTags?: string[] } = {},
 ): HindsightSessionState {
-	let state: HindsightSessionState;
 	let installed: HindsightSessionState | undefined;
 	const session = {
 		effectiveIdentity: identity,
@@ -117,7 +116,7 @@ function createState(
 		},
 		getMnemopiSessionState: () => undefined,
 	} as unknown as AgentSession;
-	state = new HindsightSessionState({
+	const state = new HindsightSessionState({
 		sessionId: "session-42",
 		client,
 		bankId: "test-bank",

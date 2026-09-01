@@ -1665,7 +1665,7 @@ export async function compact(
 						}),
 					{ signal },
 				);
-				preserveData = { ...(preserveData ?? {}), ...storeCompactionV2PreserveData(remote, model) };
+				preserveData = { ...preserveData, ...storeCompactionV2PreserveData(remote, model) };
 				usedRemoteCompaction = true;
 			} catch (err) {
 				// A user/session abort is a cancellation, not a remote failure —

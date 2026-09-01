@@ -101,6 +101,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 			await transition;
 		},
 		emit(event: Parameters<AgentSessionEventListener>[0]) {
+			// oxlint-disable-next-line unicorn/no-useless-spread -- listeners may change during dispatch
 			for (const l of [...listeners]) l(event);
 		},
 		listenerCount: () => listeners.size,
