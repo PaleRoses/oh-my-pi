@@ -21,7 +21,6 @@ import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
 import type {
-	AnthropicCompactionContent,
 	AnthropicFallbackContent,
 	AnthropicServerToolContent,
 	Api,
@@ -47,13 +46,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types";
-import {
-	getAnthropicCompactionHistoryPayload,
-	isRecord,
-	normalizeSystemPrompts,
-	normalizeToolCallId,
-	resolveCacheRetention,
-} from "../utils";
+import { isRecord, normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import {
 	clearStreamingPartialJson,
@@ -82,7 +75,6 @@ import {
 } from "./anthropic-client";
 import {
 	type ToolInputSchema as AnthropicToolInputSchema,
-	type UsageIteration as AnthropicUsageIteration,
 	type Tool as AnthropicWireTool,
 	type Usage as AnthropicWireUsage,
 	type ContentBlockParam,
@@ -155,16 +147,13 @@ export function buildBetaHeader(baseBetas: readonly string[], extraBetas: readon
  * attach a required beta to injected SDK clients that bypass the client-level
  * beta construction.
  */
-function mergeAnthropicBetaHeaders(
-	callerHeaders: Record<string, string>,
-	betas: readonly string[],
-): Record<string, string> {
+function mergeAnthropicBetaHeader(callerHeaders: Record<string, string>, beta: string): Record<string, string> {
 	for (const key in callerHeaders) {
 		if (key.toLowerCase() === "anthropic-beta") {
-			return { [key]: buildBetaHeader(normalizeExtraBetas(callerHeaders[key]), betas) };
+			return { [key]: buildBetaHeader(normalizeExtraBetas(callerHeaders[key]), [beta]) };
 		}
 	}
-	return { "anthropic-beta": buildBetaHeader([], betas) };
+	return { "anthropic-beta": beta };
 }
 const oauthAuthBeta = "oauth-2025-04-20";
 const midConversationSystemBeta = "mid-conversation-system-2026-04-07";
@@ -197,8 +186,6 @@ const fastModeBeta = "fast-mode-2026-02-01";
 const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
-const serverCompactionBeta = "compact-2026-01-12";
-export const ANTHROPIC_SERVER_COMPACTION_MIN_TRIGGER_TOKENS = 50_000;
 
 function buildCoworkBetas({
 	agentRequest,
@@ -1147,8 +1134,6 @@ export interface AnthropicOptions extends StreamOptions {
 	 * undefined preserves the pre-fallback behavior on every code path.
 	 */
 	fallbacks?: FallbackParam[];
-	/** Official Anthropic server-side compaction request. */
-	anthropicServerCompaction?: SimpleStreamOptions["anthropicServerCompaction"];
 }
 
 export type AnthropicClientOptionsArgs = {
@@ -1631,14 +1616,12 @@ function createEmptyUsage(premiumRequests?: number): Usage {
 export type AnthropicUsageLike = {
 	cache_creation?: { ephemeral_5m_input_tokens?: number | null; ephemeral_1h_input_tokens?: number | null } | null;
 	server_tool_use?: { web_search_requests?: number | null; web_fetch_requests?: number | null } | null;
-	iterations?: AnthropicUsageIteration[] | null;
 };
 
 /**
- * Capture Anthropic's optional cache-creation TTL breakdown, server-tool-use
- * counters, and provider-side compaction iterations into the harness Usage shape.
- * Omitted/null fields are no-ops; explicit zero-valued objects clear prior extras
- * from earlier stream usage snapshots.
+ * Capture Anthropic's optional cache-creation TTL breakdown and server-tool-use
+ * counters into the harness Usage shape. Omitted/null fields are no-ops; explicit
+ * zero-valued objects clear prior extras from earlier stream usage snapshots.
  */
 export function applyAnthropicUsageExtras(usage: Usage, source: AnthropicUsageLike): void {
 	const cacheCreation = source.cache_creation;
@@ -1667,34 +1650,6 @@ export function applyAnthropicUsageExtras(usage: Usage, source: AnthropicUsageLi
 			delete usage.server;
 		}
 	}
-
-	if (source.iterations != null) {
-		const compaction = source.iterations.filter(iteration => iteration.type === "compaction");
-		const input = compaction.reduce((total, iteration) => total + (iteration.input_tokens ?? 0), 0);
-		const output = compaction.reduce((total, iteration) => total + (iteration.output_tokens ?? 0), 0);
-		const cacheRead = compaction.reduce((total, iteration) => total + (iteration.cache_read_input_tokens ?? 0), 0);
-		if (input > 0 || output > 0 || cacheRead > 0) {
-			usage.orchestration = {
-				...(input > 0 ? { input } : {}),
-				...(output > 0 ? { output } : {}),
-				...(cacheRead > 0 ? { cacheRead } : {}),
-			};
-		} else {
-			delete usage.orchestration;
-		}
-	}
-}
-
-function refreshAnthropicTotalTokens(usage: Usage): void {
-	const orchestration = usage.orchestration;
-	usage.totalTokens =
-		usage.input +
-		usage.output +
-		usage.cacheRead +
-		usage.cacheWrite +
-		(orchestration?.input ?? 0) +
-		(orchestration?.output ?? 0) +
-		(orchestration?.cacheRead ?? 0);
 }
 
 function parseAnthropicWireUsage(value: unknown): AnthropicWireUsage | undefined {
@@ -1908,24 +1863,6 @@ const streamAnthropicOnce = (
 			let forceDemoteUnsignedThinking = providerSessionState?.replayUnsignedThinkingDisabled ?? false;
 			const mergedCallerHeaders = mergeHeaders(model.headers, options?.headers);
 			const umansGatewayWebSearchHeader = getUmansWebSearchHeader(model, mergedCallerHeaders);
-			const officialServerCompaction = model.provider === "anthropic" && model.compat.officialEndpoint;
-			const requestedServerCompaction = officialServerCompaction ? options?.anthropicServerCompaction : undefined;
-			const replaysServerCompaction =
-				officialServerCompaction &&
-				context.messages.some(message => {
-					if (
-						"providerPayload" in message &&
-						getAnthropicCompactionHistoryPayload(message.providerPayload, model.provider)
-					) {
-						return true;
-					}
-					return (
-						message.role === "assistant" &&
-						message.provider === model.provider &&
-						message.content.some(block => block.type === "anthropicCompaction")
-					);
-				});
-			const usesServerCompaction = requestedServerCompaction !== undefined || replaysServerCompaction;
 			// Keep fallback payloads aligned with the top-level Vertex effort gate:
 			// no nested effort field means the fallback scan cannot re-add its beta.
 			let fallbacks = options?.fallbacks;
@@ -1962,9 +1899,6 @@ const streamAnthropicOnce = (
 				}
 				if (options?.taskBudget && !extraBetas.includes(taskBudgetBeta)) {
 					extraBetas.push(taskBudgetBeta);
-				}
-				if (usesServerCompaction && !extraBetas.includes(serverCompactionBeta)) {
-					extraBetas.push(serverCompactionBeta);
 				}
 				// `output_config.effort` ships on thinking-on requests, explicit
 				// thinking-off adaptive pins, and forced-tool adaptive pins. The beta
@@ -2142,7 +2076,8 @@ const streamAnthropicOnce = (
 				output.usage.cacheRead = wireUsage.cache_read_input_tokens ?? 0;
 				output.usage.cacheWrite = wireUsage.cache_creation_input_tokens ?? 0;
 				applyAnthropicUsageExtras(output.usage, wireUsage);
-				refreshAnthropicTotalTokens(output.usage);
+				output.usage.totalTokens =
+					output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 				calculateCost(model, output.usage);
 				output.duration = performance.now() - startTime;
 				stream.push({ type: "start", partial: output });
@@ -2156,9 +2091,7 @@ const streamAnthropicOnce = (
 			// server-side-fallback beta chain. Leaving `fallbacks` unset preserves
 			// the pre-fallback stream shape on every event.
 			const serverSideFallback = !!fallbacks?.length;
-			const serverSideCompaction = requestedServerCompaction !== undefined;
 			type Block = (
-				| AnthropicCompactionContent
 				| ThinkingContent
 				| RedactedThinkingContent
 				| TextContent
@@ -2250,20 +2183,14 @@ const streamAnthropicOnce = (
 				// (already used for the gateway web-search header), so merge the beta with
 				// any caller-provided `anthropic-beta` (deduped) and attach it there. Vertex
 				// never carries the effort field (dropped in buildParams), so it is unaffected.
-				const requiredRequestBetas = [
-					...(options?.client !== undefined &&
+				const injectedClientEffortHeaders =
+					options?.client !== undefined &&
 					(params.output_config as AnthropicOutputConfig | undefined)?.effort !== undefined
-						? [effortBeta]
-						: []),
-					...(usesServerCompaction ? [serverCompactionBeta] : []),
-				];
-				const requiredBetaHeaders =
-					requiredRequestBetas.length > 0
-						? mergeAnthropicBetaHeaders(mergedCallerHeaders, requiredRequestBetas)
+						? mergeAnthropicBetaHeader(mergedCallerHeaders, effortBeta)
 						: undefined;
 				const perRequestHeaders =
-					umansGatewayWebSearchHeader || requiredBetaHeaders
-						? { ...umansGatewayWebSearchHeader, ...requiredBetaHeaders }
+					umansGatewayWebSearchHeader || injectedClientEffortHeaders
+						? { ...umansGatewayWebSearchHeader, ...injectedClientEffortHeaders }
 						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
@@ -2322,7 +2249,6 @@ const streamAnthropicOnce = (
 								| "thinking"
 								| "redactedThinking"
 								| "fallback"
-								| "anthropicCompaction"
 								| "anthropicServerTool"
 								| "toolCall"
 								| "ignored";
@@ -2389,7 +2315,8 @@ const streamAnthropicOnce = (
 								output.usage.output = startUsage.output_tokens || 0;
 								output.usage.cacheRead = startUsage.cache_read_input_tokens || 0;
 								output.usage.cacheWrite = startUsage.cache_creation_input_tokens || 0;
-								refreshAnthropicTotalTokens(output.usage);
+								output.usage.totalTokens =
+									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 								if (serverSideFallback) {
 									const served = fallbackServedModelFromUsage(startUsage);
 									if (served) output.model = served;
@@ -2463,22 +2390,7 @@ const streamAnthropicOnce = (
 								output.model = fallback.to.model;
 								continue;
 							}
-							if (event.content_block.type === "compaction") {
-								if (!serverSideCompaction) {
-									openBlocks.set(event.index, { contentIndex: -1, kind: "ignored" });
-									continue;
-								}
-								const block: Block = {
-									type: "anthropicCompaction",
-									content: event.content_block.content ?? "",
-									[kStreamingBlockIndex]: event.index,
-								};
-								output.content.push(block);
-								openBlocks.set(event.index, {
-									contentIndex: output.content.length - 1,
-									kind: "anthropicCompaction",
-								});
-							} else if (event.content_block.type === "text") {
+							if (event.content_block.type === "text") {
 								streamedReplayUnsafeContent = true;
 								const block: Block = {
 									type: "text",
@@ -2604,13 +2516,6 @@ const streamAnthropicOnce = (
 									delta: event.delta.text,
 									partial: output,
 								});
-							} else if (event.delta.type === "compaction_delta") {
-								if (openBlock.kind !== "anthropicCompaction" || block?.type !== "anthropicCompaction") {
-									reportAnthropicEnvelopeAnomaly(`received compaction_delta for ${openBlock.kind} block`);
-									continue;
-								}
-								streamedReplayUnsafeContent = true;
-								block.content += event.delta.content;
 							} else if (event.delta.type === "thinking_delta") {
 								if (openBlock.kind !== "thinking" || block?.type !== "thinking") {
 									reportAnthropicEnvelopeAnomaly(`received thinking_delta for ${openBlock.kind} block`);
@@ -2734,7 +2639,8 @@ const streamAnthropicOnce = (
 									output.usage.cacheWrite = deltaUsage.cache_creation_input_tokens;
 								}
 								applyAnthropicUsageExtras(output.usage, deltaUsage);
-								refreshAnthropicTotalTokens(output.usage);
+								output.usage.totalTokens =
+									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 								if (serverSideFallback) {
 									const served = fallbackServedModelFromUsage(deltaUsage);
 									if (served) output.model = served;
@@ -3522,29 +3428,9 @@ function buildParams(
 		model.provider !== "opencode-zen" &&
 		model.compat.supportsContextManagement !== false &&
 		(thinking?.type === "adaptive" || thinking?.type === "enabled");
-	const contextManagementEdits: NonNullable<MessageCreateParamsStreaming["context_management"]>["edits"] = [];
-	if (shouldKeepThinkingContext) {
-		contextManagementEdits.push({ type: "clear_thinking_20251015", keep: "all" });
-	}
-	const serverCompaction =
-		model.provider === "anthropic" && model.compat.officialEndpoint ? options?.anthropicServerCompaction : undefined;
-	if (serverCompaction) {
-		if (
-			!Number.isInteger(serverCompaction.triggerTokens) ||
-			serverCompaction.triggerTokens < ANTHROPIC_SERVER_COMPACTION_MIN_TRIGGER_TOKENS
-		) {
-			throw new RangeError(
-				`Anthropic server compaction trigger must be an integer >= ${ANTHROPIC_SERVER_COMPACTION_MIN_TRIGGER_TOKENS}`,
-			);
-		}
-		contextManagementEdits.push({
-			type: "compact_20260112",
-			trigger: { type: "input_tokens", value: serverCompaction.triggerTokens },
-			pause_after_compaction: serverCompaction.pauseAfterCompaction,
-			...(serverCompaction.instructions ? { instructions: serverCompaction.instructions } : {}),
-		});
-	}
-	const contextManagement = contextManagementEdits.length > 0 ? { edits: contextManagementEdits } : undefined;
+	const contextManagement = shouldKeepThinkingContext
+		? { edits: [{ type: "clear_thinking_20251015" as const, keep: "all" as const }] }
+		: undefined;
 
 	// Pre-compute output_config. Skip `effort` on Vertex rawPredict: it requires
 	// the `effort-2025-11-24` beta, which that adapter can only accept in the body
@@ -3760,14 +3646,6 @@ export function convertAnthropicMessages(
 		const msg = transformedMessages[i];
 
 		if (msg.role === "user" || msg.role === "developer") {
-			const compactionPayload = getAnthropicCompactionHistoryPayload(msg.providerPayload, model.provider);
-			if (compactionPayload && model.compat.officialEndpoint) {
-				params.push({
-					role: "assistant",
-					content: [{ type: "compaction", content: compactionPayload.content }],
-				});
-				continue;
-			}
 			if (!msg.content) continue;
 
 			let content: string | ContentBlockParam[];
@@ -3846,9 +3724,6 @@ export function convertAnthropicMessages(
 					});
 				} else if (block.type === "anthropicServerTool") {
 					blocks.push(block.block);
-				} else if (block.type === "anthropicCompaction") {
-					if (!model.compat.officialEndpoint || block.content.trim().length === 0) continue;
-					blocks.push({ type: "compaction", content: block.content });
 				} else if (block.type === "fallback") {
 					// Replay ONLY when both sides are aligned: the current
 					// request opted into the beta chain, and the target is
@@ -4527,7 +4402,6 @@ function mapStopReason(reason: string): StopReason {
 		case "refusal":
 			return "error";
 		case "pause_turn": // Stop is good enough -> resubmit
-		case "compaction": // Native compaction side requests intentionally pause here.
 			return "stop";
 		case "stop_sequence":
 			return "stop"; // A caller-supplied stop_sequences entry matched; the turn completed normally.

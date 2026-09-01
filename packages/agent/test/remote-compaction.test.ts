@@ -5,19 +5,15 @@ import {
 	compact,
 	createFileOps,
 	DEFAULT_COMPACTION_SETTINGS,
-	getPreservedAnthropicRemoteCompactionData,
 	NativeCompactionError,
 	prepareCompaction,
-	remotePreserveReusable,
 	type SessionEntry,
-	shouldUseAnthropicRemoteCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	buildCompactionV2Request,
 	buildOpenAiNativeHistory,
 	CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE,
 	getCompactionV2PreserveData,
-	getPreservedOpenAiRemoteCompactionData,
 	requestCompactionV2Streaming,
 	requestOpenAiRemoteCompaction,
 	requestRemoteCompaction,
@@ -1886,112 +1882,6 @@ describe("compact() remote compaction failure handling", () => {
 			settings: { ...DEFAULT_COMPACTION_SETTINGS, remoteStreamingV2Enabled: false },
 		};
 	}
-
-	function makeAnthropicModel(provider = "anthropic"): Model<"anthropic-messages"> {
-		return buildModel({
-			id: "claude-fable-5",
-			name: "Claude Fable 5",
-			api: "anthropic-messages",
-			provider,
-			baseUrl: provider === "anthropic" ? "https://api.anthropic.com" : "https://anthropic.example.test",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 200_000,
-			maxTokens: 32_000,
-		});
-	}
-
-	test("uses official Anthropic server compaction and preserves its replay block", async () => {
-		const model = makeAnthropicModel();
-		const identity = "Anthropic profile compaction identity";
-		let requestMessages = 0;
-		const preparation = makePreparation();
-		preparation.previousPreserveData = {
-			anthropicRemoteCompaction: { provider: "anthropic", content: "previous native summary" },
-		};
-		const result = await compact(preparation, model, "test-key", undefined, undefined, {
-			identity,
-			completeImpl: async (_model, ctx, options) => {
-				requestMessages = ctx.messages.length;
-				expect(ctx.systemPrompt).toContain(identity);
-				const previous = ctx.messages[0];
-				expect(previous?.role === "user" ? previous.providerPayload : undefined).toEqual({
-					type: "anthropicCompactionHistory",
-					provider: "anthropic",
-					content: "previous native summary",
-				});
-				expect(options.anthropicServerCompaction).toEqual({
-					triggerTokens: 50_000,
-					pauseAfterCompaction: true,
-				});
-				return {
-					role: "assistant",
-					content: [{ type: "anthropicCompaction", content: "native compacted history" }],
-					provider: "anthropic",
-					model: model.id,
-					api: "anthropic-messages",
-					timestamp: 3,
-					stopReason: "stop",
-					usage: { ...ZERO_USAGE, orchestration: { input: 100, output: 20 } },
-				};
-			},
-		});
-
-		expect(requestMessages).toBe(3);
-		expect(getPreservedAnthropicRemoteCompactionData(result.preserveData)).toEqual({
-			provider: "anthropic",
-			content: "native compacted history",
-		});
-		expect(result.shortSummary).toBe("Remote compaction");
-		expect(remotePreserveReusable(result.preserveData, model, makePreparation().settings)).toBe(true);
-		expect(remotePreserveReusable(result.preserveData, makeOpenAiModel(), makePreparation().settings)).toBe(false);
-	});
-
-	test("replaces Anthropic preserve data with an OpenAI V1 replay payload", async () => {
-		const preparation = makePreparation();
-		preparation.previousPreserveData = {
-			anthropicRemoteCompaction: { provider: "anthropic", content: "previous native summary" },
-		};
-
-		const result = await compact(preparation, makeOpenAiModel(), "test-key", undefined, undefined, {
-			fetch: async () =>
-				Response.json({ output: [{ type: "compaction", encrypted_content: "openai-native-summary" }] }),
-		});
-
-		expect(getPreservedOpenAiRemoteCompactionData(result.preserveData)).toMatchObject({
-			provider: "openai",
-			compactionItem: { type: "compaction", encrypted_content: "openai-native-summary" },
-		});
-		expect(getPreservedAnthropicRemoteCompactionData(result.preserveData)).toBeUndefined();
-		expect(result.preserveData).not.toHaveProperty("anthropicRemoteCompaction");
-	});
-
-	test("uses OpenAI replay precedence for legacy dual-provider preserve data", () => {
-		const preserveData = {
-			openaiRemoteCompaction: {
-				provider: "openai",
-				replacementHistory: [],
-				compactionItem: { type: "compaction", encrypted_content: "openai-native-summary" },
-			},
-			anthropicRemoteCompaction: { provider: "anthropic", content: "legacy native summary" },
-		};
-		const settings = makePreparation().settings;
-
-		expect(remotePreserveReusable(preserveData, makeOpenAiModel(), settings)).toBe(true);
-		expect(remotePreserveReusable(preserveData, makeAnthropicModel(), settings)).toBe(false);
-	});
-
-	test("rejects compatible gateways and surfaces a missing compaction block for ordered fallback", async () => {
-		const compatible = makeAnthropicModel("umans");
-		expect(shouldUseAnthropicRemoteCompaction(compatible)).toBe(false);
-
-		const error = await compact(makePreparation(), makeAnthropicModel(), "test-key", undefined, undefined, {
-			completeImpl: async (_model, _ctx, _options) => localSummaryMessage("not a compaction block"),
-		}).catch(cause => cause);
-		expect(error).toBeInstanceOf(NativeCompactionError);
-		expect(String(error)).toContain("returned 0 non-empty compaction blocks");
-	});
 
 	test("streams V2 compaction before V1 when both settings and model opt in", async () => {
 		const completeSpy = vi.spyOn(ai, "completeSimple").mockResolvedValue(localSummaryMessage("local summary"));

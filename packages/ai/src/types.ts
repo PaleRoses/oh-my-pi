@@ -591,15 +591,6 @@ export interface StreamOptions {
 }
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
-export interface AnthropicServerCompactionRequest {
-	/** Input-token threshold; Anthropic currently requires at least 50,000. */
-	triggerTokens: number;
-	/** Stop after emitting the provider-native compaction block. */
-	pauseAfterCompaction: boolean;
-	/** Optional replacement instructions for the server-generated compacted history. */
-	instructions?: string;
-}
-
 export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	/**
 	 * API key for the request: either a static bearer string, or an
@@ -610,8 +601,6 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	 */
 	apiKey?: ApiKey;
 	reasoning?: Effort;
-	/** Official Anthropic Messages server-side compaction request. Ignored by other APIs. */
-	anthropicServerCompaction?: AnthropicServerCompactionRequest;
 	/**
 	 * Force-disable reasoning for the request even when the model supports it.
 	 * Takes precedence over `reasoning`. Useful for fast utility calls
@@ -732,12 +721,6 @@ export interface AnthropicFallbackContent {
 	type: "fallback";
 	from: { model: string };
 	to: { model: string };
-}
-
-/** Provider-native server compaction boundary returned by the Anthropic Messages API. */
-export interface AnthropicCompactionContent {
-	type: "anthropicCompaction";
-	content: string;
 }
 
 /**
@@ -873,14 +856,7 @@ export interface OpenAIResponsesHistoryPayload {
 	items: Array<Record<string, unknown>>;
 }
 
-/** Typed replay boundary for one Anthropic provider-native compaction block. */
-export interface AnthropicCompactionHistoryPayload {
-	type: "anthropicCompactionHistory";
-	provider?: string;
-	content: string;
-}
-
-export type ProviderPayload = OpenAIResponsesHistoryPayload | AnthropicCompactionHistoryPayload;
+export type ProviderPayload = OpenAIResponsesHistoryPayload;
 
 export interface UserMessage {
 	role: "user";
@@ -959,7 +935,6 @@ export interface AssistantMessage {
 		| ThinkingContent
 		| RedactedThinkingContent
 		| AnthropicFallbackContent
-		| AnthropicCompactionContent
 		| AnthropicServerToolContent
 		| ImageContent
 		| ToolCall

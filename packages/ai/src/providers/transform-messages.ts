@@ -758,13 +758,6 @@ export function transformMessages<TApi extends Api>(
 					return [];
 				}
 
-				if (block.type === "anthropicCompaction") {
-					if (isAnthropicReplay && assistantMsg.provider === model.provider && model.compat.officialEndpoint) {
-						return block;
-					}
-					return [];
-				}
-
 				if (block.type === "fallback") {
 					// Server-side-fallback boundary marker (Anthropic beta
 					// `server-side-fallback-2026-06-01`). Only the official

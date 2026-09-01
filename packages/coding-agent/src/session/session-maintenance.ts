@@ -86,7 +86,7 @@ import {
 	resolveRoleModelFull,
 } from "./role-models";
 import type { SessionContext } from "./session-context";
-import { getLatestCompactionEntry, getRemoteCompactionProviderPayload } from "./session-context";
+import { getLatestCompactionEntry, getOpenAiRemoteCompactionPayload } from "./session-context";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
@@ -673,7 +673,7 @@ export class SessionMaintenance {
 		const artifactId = await this.#saveShakeArtifact(regions);
 		const replacements = regions.map((region, index) => this.#shakeElidePlaceholder(region, index, artifactId));
 
-		const hasRemoteReplacementHistory = getRemoteCompactionProviderPayload(latestCompaction) !== undefined;
+		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		let anchorIndex = -1;
 		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
@@ -3084,11 +3084,9 @@ export class SessionMaintenance {
 					fromExtension: false,
 					codexCompaction: armedSpec.codexCompaction,
 					method: armedSpec.method,
-					providerReplayThroughEntryId:
-						armedSpec.result.preserveData?.openaiRemoteCompaction ||
-						armedSpec.result.preserveData?.anthropicRemoteCompaction
-							? armedSpec.snapshotLeafId
-							: undefined,
+					providerReplayThroughEntryId: armedSpec.result.preserveData?.openaiRemoteCompaction
+						? armedSpec.snapshotLeafId
+						: undefined,
 					action,
 					reason,
 					willRetry,

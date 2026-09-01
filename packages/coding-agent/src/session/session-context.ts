@@ -1,4 +1,4 @@
-import { type AgentMessage, getAnthropicRemoteCompactionProviderPayload } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { coerceServiceTierByFamily, type ProviderPayload, type ServiceTierByFamily } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import {
@@ -156,25 +156,19 @@ function snapcompactHistoryBlocksForContext(
 	return snapcompact.historyBlocks(archive, snapcompactHistoryBlockOptions(archive, options));
 }
 
-export function getRemoteCompactionProviderPayload(
+export function getOpenAiRemoteCompactionPayload(
 	compaction: CompactionEntry | null | undefined,
 ): ProviderPayload | undefined {
 	const candidate = compaction?.preserveData?.openaiRemoteCompaction;
-	if (candidate && typeof candidate === "object") {
-		const remote = candidate as { provider?: unknown; replacementHistory?: unknown };
-		if (
-			typeof remote.provider === "string" &&
-			remote.provider.length > 0 &&
-			Array.isArray(remote.replacementHistory)
-		) {
-			return {
-				type: "openaiResponsesHistory",
-				provider: remote.provider,
-				items: remote.replacementHistory as Array<Record<string, unknown>>,
-			};
-		}
-	}
-	return getAnthropicRemoteCompactionProviderPayload(compaction?.preserveData);
+	if (!candidate || typeof candidate !== "object") return undefined;
+	const remote = candidate as { provider?: unknown; replacementHistory?: unknown };
+	if (typeof remote.provider !== "string" || remote.provider.length === 0) return undefined;
+	if (!Array.isArray(remote.replacementHistory)) return undefined;
+	return {
+		type: "openaiResponsesHistory",
+		provider: remote.provider,
+		items: remote.replacementHistory as Array<Record<string, unknown>>,
+	};
 }
 
 function resolveSessionPath(
@@ -404,7 +398,7 @@ export function buildSessionContext(
 			appendMessage(path[i]);
 		}
 	} else if (compaction) {
-		const providerPayload = getRemoteCompactionProviderPayload(compaction);
+		const providerPayload = getOpenAiRemoteCompactionPayload(compaction);
 		const hasRemoteReplacementHistory = providerPayload !== undefined;
 
 		// Re-attach any archived snapcompact frames so the model can keep

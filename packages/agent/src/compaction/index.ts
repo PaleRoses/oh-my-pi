@@ -2,7 +2,6 @@
  * Compaction and summarization utilities.
  */
 
-export * from "./anthropic";
 export * from "./branch-summarization";
 export * from "./compaction";
 export * from "./entries";

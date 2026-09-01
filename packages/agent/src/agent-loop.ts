@@ -355,7 +355,6 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 		case "thinking":
 			return { ...block };
 		case "redactedThinking":
-		case "anthropicCompaction":
 			return { ...block };
 		case "anthropicServerTool":
 			return { ...block, block: structuredCloneJSON(block.block) };

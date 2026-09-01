@@ -1,12 +1,7 @@
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ResponseInput, ResponseInputItem } from "./providers/openai-responses-wire";
 import { redactSensitiveCredentials } from "./providers/transform-messages";
-import type {
-	AnthropicCompactionHistoryPayload,
-	CacheRetention,
-	OpenAIResponsesHistoryPayload,
-	ProviderPayload,
-} from "./types";
+import type { CacheRetention, OpenAIResponsesHistoryPayload, ProviderPayload } from "./types";
 
 type OpenAIResponsesReplayItem = ResponseInput[number];
 const NON_WHITESPACE_RE = /\S/;
@@ -479,28 +474,6 @@ export function getOpenAIResponsesHistoryItems(
 	fallbackProvider?: string,
 ): Array<Record<string, unknown>> | undefined {
 	return getOpenAIResponsesHistoryPayload(providerPayload, currentProvider, fallbackProvider)?.items;
-}
-
-export function createAnthropicCompactionHistoryPayload(
-	provider: string,
-	content: string,
-): AnthropicCompactionHistoryPayload {
-	if (provider.trim().length === 0) throw new Error("Anthropic compaction payload requires a provider");
-	if (content.trim().length === 0) throw new Error("Anthropic compaction payload requires non-empty content");
-	return { type: "anthropicCompactionHistory", provider, content };
-}
-
-export function getAnthropicCompactionHistoryPayload(
-	providerPayload: ProviderPayload | undefined,
-	currentProvider: string,
-	fallbackProvider?: string,
-): AnthropicCompactionHistoryPayload | undefined {
-	if (providerPayload?.type !== "anthropicCompactionHistory" || providerPayload.content.trim().length === 0) {
-		return undefined;
-	}
-	const payloadProvider = providerPayload.provider ?? fallbackProvider ?? currentProvider;
-	if (payloadProvider !== currentProvider) return undefined;
-	return { ...providerPayload, provider: payloadProvider };
 }
 
 /**

@@ -38,13 +38,6 @@ import { ThinkingLevel } from "../thinking";
 import { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import {
-	getAnthropicRemoteCompactionProviderPayload,
-	getPreservedAnthropicRemoteCompactionData,
-	requestAnthropicRemoteCompaction,
-	shouldUseAnthropicRemoteCompaction,
-	withAnthropicRemoteCompactionPreserveData,
-} from "./anthropic";
-import {
 	buildCompactionV2Request,
 	getCompactionV2PreserveData,
 	requestCompactionV2Streaming,
@@ -232,7 +225,6 @@ export function shouldUseProviderNativeCompaction(
 ): boolean {
 	if (settings.remoteEnabled === false) return false;
 	return (
-		shouldUseAnthropicRemoteCompaction(model) ||
 		shouldUseOpenAiRemoteCompaction(model) ||
 		(settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(model))
 	);
@@ -1301,18 +1293,12 @@ export function remotePreserveReusable(
 	activeModel: Model,
 	settings: CompactionSettings,
 ): boolean {
-	const openAiRemote =
-		getCompactionV2PreserveData(preserveData) ?? getPreservedOpenAiRemoteCompactionData(preserveData);
-	if (openAiRemote) {
-		if (settings.remoteEnabled === false || openAiRemote.provider !== activeModel.provider) return false;
-		const v2Ok = settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(activeModel);
-		return v2Ok || shouldUseOpenAiRemoteCompaction(activeModel);
-	}
-
-	const anthropicRemote = getPreservedAnthropicRemoteCompactionData(preserveData);
-	if (!anthropicRemote) return true;
-	if (settings.remoteEnabled === false || anthropicRemote.provider !== activeModel.provider) return false;
-	return shouldUseAnthropicRemoteCompaction(activeModel);
+	const remote = getCompactionV2PreserveData(preserveData) ?? getPreservedOpenAiRemoteCompactionData(preserveData);
+	if (!remote) return true;
+	if (settings.remoteEnabled === false) return false;
+	if (remote.provider !== activeModel.provider) return false;
+	const v2Ok = settings.remoteStreamingV2Enabled !== false && shouldUseCompactionV2Streaming(activeModel);
+	return v2Ok || shouldUseOpenAiRemoteCompaction(activeModel);
 }
 
 /**
@@ -1614,10 +1600,7 @@ export async function compact(
 		? createSnapcompactArchiveMigrationMessage(previousSnapcompactArchiveText)
 		: undefined;
 
-	let preserveData = withAnthropicRemoteCompactionPreserveData(
-		withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined),
-		undefined,
-	);
+	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
 	const remoteMessages: AgentMessage[] = [
 		...(snapcompactArchiveMigrationMessage ? [snapcompactArchiveMigrationMessage] : []),
 		...messagesToSummarize,
@@ -1743,55 +1726,6 @@ export async function compact(
 				if (signal?.aborted) throw err;
 				nativeCompactionError = selectNativeCompactionError(nativeCompactionError, err);
 				logger.warn("OpenAI remote compaction failed", {
-					error: err instanceof Error ? err.message : String(err),
-					model: model.id,
-					provider: model.provider,
-				});
-			}
-		}
-	}
-
-	if (!usedRemoteCompaction && settings.remoteEnabled !== false && shouldUseAnthropicRemoteCompaction(model)) {
-		const previousProviderPayload = getAnthropicRemoteCompactionProviderPayload(previousPreserveData);
-		const previousNativeHistory: Message[] =
-			previousProviderPayload?.type === "anthropicCompactionHistory" &&
-			previousProviderPayload.provider === model.provider
-				? [
-						{
-							role: "user",
-							content: "Remote compaction preserved provider-native history for this session.",
-							providerPayload: previousProviderPayload,
-							timestamp: 0,
-						},
-					]
-				: [];
-		const remoteHistory = [
-			...previousNativeHistory,
-			...(summaryOptions.convertToLlm ?? defaultConvertToLlm)(remoteMessages),
-		];
-		if (remoteHistory.length > 0) {
-			try {
-				const remote = await withAuth(
-					apiKey,
-					key =>
-						requestAnthropicRemoteCompaction(model, key, remoteHistory, summarizationSystemPrompt(summaryOptions), {
-							signal,
-							fetch: summaryOptions.fetch,
-							sessionId: summaryOptions.sessionId,
-							providerSessionState: summaryOptions.providerSessionState,
-							metadata: summaryOptions.metadata,
-							instructions: summaryOptions.remoteInstructions,
-							telemetry: summaryOptions.telemetry,
-							completeImpl: summaryOptions.completeImpl,
-						}),
-					{ signal },
-				);
-				preserveData = withAnthropicRemoteCompactionPreserveData(preserveData, remote);
-				usedRemoteCompaction = true;
-			} catch (err) {
-				if (signal?.aborted) throw err;
-				nativeCompactionError = selectNativeCompactionError(nativeCompactionError, err);
-				logger.warn("Anthropic remote compaction failed", {
 					error: err instanceof Error ? err.message : String(err),
 					model: model.id,
 					provider: model.provider,
