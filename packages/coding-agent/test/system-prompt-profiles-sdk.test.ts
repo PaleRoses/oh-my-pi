@@ -435,6 +435,11 @@ describe("SDK system prompt profiles", () => {
 		const incompatible = createMockModel({ id: "fable-in-name", handler: () => ({ content: ["ok"] }) });
 
 		await session.setModel(compatible);
+		// The identity block's memory-provider segment settles asynchronously
+		// after session construction; force the rebuild to land so the
+		// comparison below observes the settled prompt on both sides of the
+		// rejected transition rather than whichever await happened to flush it.
+		await session.refreshBaseSystemPrompt();
 		const compatiblePrompt = session.agent.state.systemPrompt.join("\n\n");
 		const compatibleCacheKey = session.agent.promptCacheKey;
 		expect(session.systemPromptProfileId).toBe("fable-driver");

@@ -4,13 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
-import { usesCodexTaskPrompt } from "@oh-my-pi/pi-coding-agent/task/prompt-policy";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
@@ -164,26 +164,18 @@ describe("AgentSession model-change prompt refresh", () => {
 		const second = all.find(
 			model =>
 				(model.provider !== first.provider || model.id !== first.id) &&
-				usesCodexTaskPrompt(model.id) === usesCodexTaskPrompt(first.id),
+				resolveDelegationBias(model) === resolveDelegationBias(first),
 		);
-		if (!first || !second) throw new Error("Expected two distinct models with the same prompt policy");
+		if (!first || !second) throw new Error("Expected two distinct models with the same delegation bias");
 		return [first, second];
 	}
 
 	function pickModelsAcrossTaskPolicies(): [Model, Model] {
 		const all = modelRegistry.getAll();
-		const defaultPolicy = all.find(model => !usesCodexTaskPrompt(model.id));
-		const codexPolicy = all.find(model => usesCodexTaskPrompt(model.id));
-		if (!defaultPolicy || !codexPolicy) throw new Error("Expected default-policy and GPT-5.6 models");
-		return [defaultPolicy, codexPolicy];
-	}
-
-	function pickModelsAcrossImageCapability(): [Model, Model] {
-		const all = modelRegistry.getAll();
-		const imageModel = all.find(model => model.input?.includes("image"));
-		const textModel = all.find(model => !model.input?.includes("image"));
-		if (!imageModel || !textModel) throw new Error("Expected image-capable and text-only models");
-		return [imageModel, textModel];
+		const eager = all.find(model => resolveDelegationBias(model) === "eager");
+		const restrained = all.find(model => resolveDelegationBias(model) === "restrained");
+		if (!eager || !restrained) throw new Error("Expected eager and restrained delegation models");
+		return [eager, restrained];
 	}
 
 	function newSession(
@@ -268,13 +260,13 @@ describe("AgentSession model-change prompt refresh", () => {
 	});
 
 	it("rolls back model, prompt, tools, and cache when model-dependent tool sync fails", async () => {
-		const [modelA, modelB] = pickModelsAcrossImageCapability();
+		const [modelA, modelB] = pickModelsAcrossTaskPolicies();
 		authStorage.setRuntimeApiKey(modelA.provider, "key-a");
 		authStorage.setRuntimeApiKey(modelB.provider, "key-b");
-		const inspectImageTool = {
-			name: "inspect_image",
-			label: "Inspect image",
-			description: "Inspect an image",
+		const modelDependentTool = {
+			name: "model_dependent",
+			label: "Model dependent",
+			description: "A model-dependent tool",
 			parameters: {},
 			execute: async () => ({ content: [], details: {} }),
 		} as never;
@@ -283,38 +275,43 @@ describe("AgentSession model-change prompt refresh", () => {
 			initialState: { model: modelA, systemPrompt: ["initial"], tools: [], messages: [] },
 		});
 		let rebuildCount = 0;
-		let failInspectRebuild = true;
+		// Armed only for the transition under test: session construction may
+		// rebuild the prompt any number of times, so keying the injected
+		// failure on a call ordinal is brittle.
+		let failToolRebuild = false;
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false, "inspect_image.mode": "auto" }),
+			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
-			toolRegistry: new Map([["inspect_image", inspectImageTool]]),
-			builtInToolNames: ["inspect_image"],
+			toolRegistry: new Map([["model_dependent", modelDependentTool]]),
+			builtInToolNames: ["model_dependent"],
 			rebuildSystemPrompt: async () => {
 				rebuildCount++;
-				if (failInspectRebuild && rebuildCount === 2) throw new Error("model tool rebuild failed");
+				if (failToolRebuild) throw new Error("model tool rebuild failed");
 				return { systemPrompt: [`rebuilt:${rebuildCount}`] };
 			},
 		});
 		session.agent.promptCacheKey = "cache-before";
+		const promptBefore = [...session.agent.state.systemPrompt];
+		const toolsBefore = session.getActiveToolNames();
 		let modelChangedEvents = 0;
 		const unsubscribe = session.subscribe(event => {
 			if (event.type === "model_changed") modelChangedEvents++;
 		});
 
+		failToolRebuild = true;
 		await expect(session.setModel(modelB)).rejects.toThrow("model tool rebuild failed");
 
 		expect(session.model).toEqual(modelA);
-		expect(session.agent.state.systemPrompt).toEqual(["initial"]);
-		expect(session.getActiveToolNames()).toEqual([]);
+		expect(session.agent.state.systemPrompt).toEqual(promptBefore);
+		expect(session.getActiveToolNames()).toEqual(toolsBefore);
 		expect(session.agent.promptCacheKey).toBe("cache-before");
 		expect(modelChangedEvents).toBe(0);
 
-		failInspectRebuild = false;
+		failToolRebuild = false;
 		await session.setModel(modelB);
 		expect(session.model).toEqual(modelB);
-		expect(session.getActiveToolNames()).toContain("inspect_image");
 		expect(modelChangedEvents).toBe(1);
 		unsubscribe();
 	});

@@ -8,6 +8,7 @@ import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
+import type { DelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import {
 	$env,
 	getAgentDir,
@@ -36,7 +37,6 @@ import projectPromptTemplate from "./prompts/system/project-prompt.md" with { ty
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import type { SystemPromptProfile } from "./system-prompt-profiles";
 import { normalizeConcurrencyLimit } from "./task/parallel";
-import { usesCodexTaskPrompt } from "./task/prompt-policy";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
@@ -639,6 +639,8 @@ export interface BuildSystemPromptOptions {
 	taskIrcEnabled?: boolean;
 	/** Whether the read-only `scout` subagent is spawnable (not disabled, allowed by spawn policy). Defaults to true. */
 	scoutAvailable?: boolean;
+	/** Active model's delegation appetite (catalog `delegation-bias` axis); selects the Delegation section's wording. Default: `eager`. */
+	delegationBias?: DelegationBias;
 
 	/** Rules with alwaysApply=true — their full content is injected into the prompt. */
 	alwaysApplyRules?: AlwaysApplyRule[];
@@ -650,9 +652,13 @@ export interface BuildSystemPromptOptions {
 	memoryRootEnabled?: boolean;
 	/** Whether the read-only security:// resource namespace is active. */
 	securityEnabled?: boolean;
-	/** Active model identifier (e.g. "anthropic/claude-opus-4") used by prompt policy and optionally surfaced. */
+	/** Whether the browser eval prelude is enabled for this session. */
+	browserEnabled?: boolean;
+	/** Whether the computer eval prelude is enabled for this session. */
+	computerEnabled?: boolean;
+	/** Active model identifier (e.g. "anthropic/claude-opus-4") surfaced in the workstation block. */
 	model?: string;
-	/** Whether to surface `model` in the workstation block. Model-specific prompt policy still uses it. Default: true. */
+	/** Whether to surface `model` in the workstation block. Default: true. */
 	includeModelInPrompt?: boolean;
 	/** Compiled profile selected by the ordered system-prompt routes. */
 	systemPromptProfile?: SystemPromptProfile;
@@ -662,6 +668,8 @@ export interface BuildSystemPromptOptions {
 	includeWorkspaceTree?: boolean;
 	/** Whether Mermaid fenced blocks render as terminal ASCII diagrams. Default: true */
 	renderMermaid?: boolean;
+	/** Whether the TUI lifts an opening emoji into a reaction badge on the user's message. Default: false */
+	reactions?: boolean;
 	/** Pre-resolved nested active repo context. Undefined resolves from cwd. */
 	activeRepoContext?: ActiveRepoContext | null;
 	/** Tools mounted under `xd://`; renders the protocol section when non-empty. `dynamic` marks external devices whose summary is third-party metadata. */
@@ -722,14 +730,18 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
 		scoutAvailable = true,
+		delegationBias = "eager",
 		memoryRootEnabled = false,
 		securityEnabled = false,
+		browserEnabled = false,
+		computerEnabled = false,
 		model,
 		includeModelInPrompt = true,
 		systemPromptProfile,
 		personality = "default",
 		includeWorkspaceTree = false,
 		renderMermaid = true,
+		reactions = false,
 		xdevTools = [],
 		xdevDocs = "",
 		autoQaEnabled = false,
@@ -1010,7 +1022,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cwd: promptCwd,
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
-		useCodexTaskPrompt: usesCodexTaskPrompt(model),
+		delegationBias,
 		fableSession: systemPromptProfile?.constitution === "fable",
 		personality: personalityBlock ? prompt.render(personalityBlock, { userTitle, userTitleCap }).trim() : "",
 		intentTracing: !!intentField,
@@ -1024,9 +1036,12 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		secretsEnabled,
 		hasMemoryRoot: memoryRootEnabled,
 		securityEnabled,
+		browserEnabled,
+		computerEnabled,
 		hasObsidian: hasObsidian(),
 		includeWorkspaceTree,
 		renderMermaid,
+		reactions,
 		xdevTools,
 		hasDynamicXdevTools: xdevTools.some(mounted => mounted.dynamic === true),
 		xdevDocs,
@@ -1037,7 +1052,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];
-	if (toolNames.includes("computer")) {
+	if (computerEnabled) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}
 	// Custom prompt templates already render context files and append text; the

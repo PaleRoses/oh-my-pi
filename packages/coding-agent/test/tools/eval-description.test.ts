@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { EvalPreludeDefinition } from "@oh-my-pi/pi-coding-agent/eval/preludes";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool, getEvalToolDescription, getEvalToolManual } from "@oh-my-pi/pi-coding-agent/tools/eval";
 
@@ -9,6 +10,7 @@ function makeSession(opts: {
 	spawns?: string | null;
 	backends?: Record<string, boolean>;
 	xdev?: boolean;
+	preludes?: () => readonly EvalPreludeDefinition[];
 }): ToolSession {
 	const settings = Settings.isolated();
 	for (const [key, value] of Object.entries(opts.backends ?? {})) settings.set(key as never, value);
@@ -17,6 +19,7 @@ function makeSession(opts: {
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => opts.spawns ?? "*",
+		...(opts.preludes ? { getEvalPreludes: opts.preludes } : {}),
 		settings,
 		...(opts.xdev
 			? { xdev: { tools: new Map(), mountedNames: new Set(), builtInNames: new Set(), isActive: () => false } }
@@ -84,12 +87,42 @@ describe("eval tool description", () => {
 		const denied = new EvalTool(makeSession({ spawns: "" }));
 		expect(denied.description).not.toContain("agent(prompt");
 	});
+
+	it("hides eval-defined tool guidance when eval.tools.enabled is off", () => {
+		// The maintained fork splits the inline contract from the full manual;
+		// `@tool` guidance lives in the manual served at `xd://eval`.
+		const enabled = getEvalToolManual({ evalTools: true });
+		const disabled = getEvalToolManual({ evalTools: false });
+		expect(enabled).toContain("@tool");
+		expect(enabled).toContain("tools?=None");
+		expect(disabled).not.toContain("@tool");
+		expect(disabled).not.toContain("tools?=None");
+	});
+
+	it("composes only current enabled prelude documentation", () => {
+		let enabled = true;
+		const prelude: EvalPreludeDefinition = {
+			name: "fixture",
+			documentation: "CURRENT PRELUDE DOCUMENTATION",
+			javascript: "",
+			python: "",
+			exports: [],
+			enabled: () => enabled,
+			async invoke() {
+				return { content: [] };
+			},
+		};
+		const tool = new EvalTool(makeSession({ preludes: () => [prelude] }));
+		expect(tool.description).toContain("CURRENT PRELUDE DOCUMENTATION");
+		enabled = false;
+		expect(tool.description).not.toContain("CURRENT PRELUDE DOCUMENTATION");
+	});
 });
 
 describe("eval tool dynamic schema", () => {
 	// resolveEvalBackends lets PI_* env flags override settings; neutralize them per-test
 	// so the schema is driven purely by the isolated settings (and restore to avoid leaks).
-	const EVAL_ENV_FLAGS = ["PI_PY", "PI_JS", "PI_RB", "PI_JL"] as const;
+	const EVAL_ENV_FLAGS = ["PI_PY", "PI_JS"] as const;
 	let savedEnv: Record<string, string | undefined>;
 	beforeEach(() => {
 		savedEnv = {};
@@ -106,45 +139,15 @@ describe("eval tool dynamic schema", () => {
 		}
 	});
 
-	it("hides rb/jl from the wire schema, summary, description, and examples by default", () => {
+	it("advertises exactly py and js in the wire schema", () => {
 		const tool = new EvalTool(makeSession({}));
 		const fields = wireCellFields(tool);
-		// Default config: rb/jl off → the wire schema is byte-identical to the pre-feature py/js one.
 		expect(fields.languages).toEqual(["js", "py"]);
 		expect(fields.languageDescription).toBe('runtime: "py" for the IPython kernel, "js" for the persistent JS VM');
 		expect(fields.codeDescription).toBe("code to run in this eval call, verbatim. Use top-level await freely.");
 		expect(tool.summary).toBe("Execute Python or JavaScript code in an in-process eval backend");
 		expect(tool.description).not.toMatch(/ruby|julia/i);
-		// Examples must not advertise a disabled backend.
 		const exampleLangs = tool.examples.map(ex => ("call" in ex ? ex.call.language : null));
 		expect(exampleLangs).toEqual(["py", "py", "py"]);
-		expect(tool.examples.some(ex => "call" in ex && ex.call.language === "rb")).toBe(false);
-	});
-
-	it("advertises rb/jl across enum, descriptions, summary, and prelude once enabled", () => {
-		const tool = new EvalTool(makeSession({ backends: { "eval.rb": true, "eval.jl": true } }));
-		const fields = wireCellFields(tool);
-		expect(fields.languages).toEqual(["jl", "js", "py", "rb"]);
-		expect(fields.languageDescription).toBe(
-			'runtime: "py" for the IPython kernel, "js" for the persistent JS VM, "rb" for the persistent Ruby kernel, "jl" for the persistent Julia kernel',
-		);
-		expect(fields.codeDescription).toContain(
-			"code to run in this eval call, verbatim. Top-level `await` is available in py/js; rb/jl auto-display the last expression like a REPL.",
-		);
-		expect(tool.summary).toBe("Execute Python, JavaScript, Ruby, or Julia code in a persistent eval backend");
-		expect(tool.description).toMatch(/ruby/i);
-		expect(tool.description).toMatch(/julia/i);
-		// Ruby examples appear once rb is enabled.
-		const rbExampleLangs = tool.examples.filter(ex => "call" in ex && ex.call.language === "rb");
-		expect(rbExampleLangs.length).toBe(2);
-	});
-
-	it("advertises only the enabled subset of optional backends", () => {
-		const tool = new EvalTool(makeSession({ backends: { "eval.rb": true } }));
-		const fields = wireCellFields(tool);
-		expect(fields.languages).toEqual(["js", "py", "rb"]);
-		expect(tool.summary).toBe("Execute Python, JavaScript, or Ruby code in a persistent eval backend");
-		expect(tool.description).toMatch(/ruby/i);
-		expect(tool.description).not.toMatch(/julia/i);
 	});
 });
