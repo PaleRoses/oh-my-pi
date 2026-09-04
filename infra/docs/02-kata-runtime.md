@@ -292,9 +292,9 @@ static_sandbox_resource_mgmt = false
 sandbox_cgroup_only = false
 ```
 
-### Boot artifacts: `path` / `eval` / `image`
+### Boot artifacts: `path` / `kernel` / `image`
 
-`path` is the bundled QEMU 10.2.1; `eval` is the guest kernel
+`path` is the bundled QEMU 10.2.1; `kernel` is the guest kernel
 (`vmlinux.container -> vmlinux-6.18.28-194`); `image` is the guest rootfs
 (`kata-containers.img -> kata-ubuntu-noble.image`, an Ubuntu Noble rootfs with
 `kata-agent` baked in as PID 1's manager). These three are the entire guest —

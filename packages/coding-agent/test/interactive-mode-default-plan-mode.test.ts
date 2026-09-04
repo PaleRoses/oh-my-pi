@@ -219,7 +219,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		// Plan approval is a top-level `write` to `xd://propose`. Code Mode demotes
 		// every non-direct tool behind `eval`, and the partition only keeps `write`
 		// direct while a transport needs it — so plan mode state must be visible
-		// before the entry partition runs, or approval strands inside an kernel result.
+		// before the entry partition runs, or approval strands inside an eval result.
 		const evalTool = { ...makeTool("eval"), supportsCodeModeTransport: () => true };
 		const created = createHarness(
 			Settings.isolated({

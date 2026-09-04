@@ -392,7 +392,7 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 		// `settings.*`, so the global Settings singleton is intentionally left
 		// untouched here. Resetting/initialising it in `beforeEach` raced with
 		// parallel test files that do the same dance (issue #2582), flipping the
-		// proxy under us and timing the kernel test out.
+		// proxy under us and timing the eval test out.
 		await initTheme();
 	});
 	function renderPending(toolName: string, args: unknown): { lines: readonly string[]; text: string } {
@@ -472,7 +472,7 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 			code: longLines.map(line => `const ${line} = 1;`).join("\n"),
 		});
 
-		expect(lines.length, "kernel code preview should stay bounded").toBeLessThan(window + 10);
+		expect(lines.length, "eval code preview should stay bounded").toBeLessThan(window + 10);
 		const renderedLines = getRenderedLines(lines);
 		expect(renderedLines).toContain(`const line_${total - 1} = 1;`);
 		expect(renderedLines).toContain(`const line_${hidden} = 1;`);

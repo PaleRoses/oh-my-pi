@@ -526,7 +526,7 @@ describe("system prompt tool inventory", () => {
 		expect(inventory).not.toContain("- `eval`");
 	});
 
-	it("omits kernel prompt guidance when every eval backend is disabled", async () => {
+	it("omits eval prompt guidance when every eval backend is disabled", async () => {
 		const settings = Settings.isolated({
 			"eval.py": false,
 			"eval.js": false,
@@ -539,7 +539,7 @@ describe("system prompt tool inventory", () => {
 		expect(toolNames).toContain("bash");
 		expect(toolNames).not.toContain("eval");
 		expect(bash?.description).toContain("purpose-built tool");
-		expect(bash?.description).not.toContain("kernel` cell");
+		expect(bash?.description).not.toContain("eval` cell");
 		expect(bash?.description).not.toContain("use `eval` cells");
 		expect(bash?.description).not.toContain("Prefer `eval`");
 		expect(bash?.description).not.toContain("`grep` tool");

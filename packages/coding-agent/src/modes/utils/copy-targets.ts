@@ -185,7 +185,7 @@ export function commandFromToolCall(tc: ToolCall): LastCommand | undefined {
 	return undefined;
 }
 
-/** Walk the transcript backwards for the most recent bash command or kernel code. */
+/** Walk the transcript backwards for the most recent bash command or eval code. */
 export function extractLastCommand(messages: readonly AgentMessage[]): LastCommand | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
