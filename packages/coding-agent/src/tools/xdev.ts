@@ -121,9 +121,23 @@ function schemaDeclaresIntentField(schema: unknown): boolean {
 	return !!props && typeof props === "object" && "i" in props;
 }
 
-function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string {
+/**
+ * Render a tool's docs + schema. `docSource` picks the text body: on-demand
+ * reads and help dispatches serve the full `manual` when one exists, while
+ * system-prompt inlining (`xdevDocsAll`/`xdevDocsFor`) stays on the short
+ * always-on `description` contract.
+ */
+function renderDocs(
+	inst: Tool,
+	heading = "#",
+	descriptionCap?: number,
+	docSource: "contract" | "manual" = "manual",
+): string {
 	const schema = jsonSchemaToTypeScript(toolWireSchema(inst as AiTool));
-	let description = inst.description ?? "";
+	let description = (docSource === "manual" ? (inst.manual ?? inst.description) : inst.description) ?? "";
+	if (docSource === "contract" && inst.manual && !description.includes(`${XD_URL_PREFIX}${inst.name}`)) {
+		description = `${description}\n\nFull manual: read ${XD_URL_PREFIX}${inst.name}.`;
+	}
 	if (descriptionCap !== undefined && description.length > descriptionCap) {
 		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: read ${XD_URL_PREFIX}${inst.name})`;
 	}
@@ -343,7 +357,7 @@ export function xdevDocsAll(
 			continue;
 		}
 		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-		const docs = renderDocs(tool, "##", descriptionCap);
+		const docs = renderDocs(tool, "##", descriptionCap, "contract");
 		if (docs.length > XDEV_DOCS_PER_DEVICE_CAP || used + docs.length > XDEV_DOCS_TOTAL_BUDGET) {
 			overflow.push(tool);
 			continue;
@@ -381,7 +395,7 @@ export function xdevDocsFor(
 		const tool = resolveMountedXdevTool(state, name);
 		if (!tool || !shouldInlineXdevTool(state, tool, mode, inlineGlobs)) continue;
 		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-		const docs = renderDocs(tool, "##", descriptionCap);
+		const docs = renderDocs(tool, "##", descriptionCap, "contract");
 		if (docs.length > XDEV_DOCS_PER_DEVICE_CAP || used + docs.length > XDEV_DOCS_TOTAL_BUDGET) continue;
 		used += docs.length;
 		sections.push(docs);

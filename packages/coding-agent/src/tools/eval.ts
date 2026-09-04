@@ -16,8 +16,13 @@ import { getEnabledEvalPreludes } from "../eval/preludes";
 import type { BackendProbeOptions } from "../eval/probe";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
-import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+// `eval.md` is upstream's file, unmodified: it is the full manual, and leaving
+// it untouched means upstream prompt changes arrive with no merge action and
+// cannot silently rot behind a fork copy. Only the short always-on contract is
+// fork-owned.
+import evalManual from "../prompts/tools/eval.md" with { type: "text" };
 import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
+import evalContract from "../prompts/tools/eval-contract.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { sessionDelegationBias } from "../task/prompt-policy";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
@@ -172,13 +177,11 @@ export interface EvalToolDescriptionOptions {
 	preludeDocumentation?: string;
 }
 
-export function getEvalToolDescription(options: EvalToolDescriptionOptions = {}): string {
-	const py = options.py ?? true;
-	const js = options.js ?? true;
+function renderEvalDoc(template: string, options: EvalToolDescriptionOptions): string {
 	const spawnPolicy = resolveSpawnPolicy(options.spawns ?? true);
-	return prompt.render(evalDescription, {
-		py,
-		js,
+	return prompt.render(template, {
+		py: options.py ?? true,
+		js: options.js ?? true,
 		evalTools: options.evalTools ?? true,
 		eagerDelegation: options.eagerDelegation ?? true,
 		autoBackgroundEnabled: options.autoBackgroundEnabled ?? false,
@@ -187,6 +190,16 @@ export function getEvalToolDescription(options: EvalToolDescriptionOptions = {})
 		spawnAllowedAgentsText: spawnPolicy.allowedPromptText,
 		preludeDocumentation: options.preludeDocumentation,
 	});
+}
+
+/** Short always-on contract; the full manual stays reachable via `read xd://eval`. */
+export function getEvalToolDescription(options: EvalToolDescriptionOptions = {}): string {
+	return renderEvalDoc(evalContract, options);
+}
+
+/** Full reference manual (prelude signatures, call conventions, DAG rules). */
+export function getEvalToolManual(options: EvalToolDescriptionOptions = {}): string {
+	return renderEvalDoc(evalManual, options);
 }
 
 export interface EvalToolOptions {
@@ -273,28 +286,34 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	}
 	readonly loadMode = "essential";
 	readonly label = "Eval";
+	#docOptions(): EvalToolDescriptionOptions {
+		if (!this.session) return {};
+		const backends = resolveEvalBackends(this.session);
+		const preludeDocumentation = getEnabledEvalPreludes(this.session.getEvalPreludes?.() ?? [])
+			.map(definition => definition.documentation.trim())
+			.filter(Boolean)
+			.join("\n\n");
+		return {
+			py: backends.python,
+			js: backends.js,
+			spawns: this.session.getSessionSpawns?.() ?? "*",
+			autoBackgroundEnabled: this.session.settings.get("eval.autoBackground.enabled"),
+			evalTools: this.session.settings.get("eval.tools.enabled"),
+			eagerDelegation: sessionDelegationBias(this.session) === "eager",
+			preludeDocumentation,
+		};
+	}
 	get description(): string {
-		let base: string;
-		if (!this.session) {
-			base = getEvalToolDescription();
-		} else {
-			const backends = resolveEvalBackends(this.session);
-			const sessionSpawns = this.session.getSessionSpawns?.() ?? "*";
-			const preludeDocumentation = getEnabledEvalPreludes(this.session.getEvalPreludes?.() ?? [])
-				.map(definition => definition.documentation.trim())
-				.filter(Boolean)
-				.join("\n\n");
-			base = getEvalToolDescription({
-				py: backends.python,
-				js: backends.js,
-				spawns: sessionSpawns,
-				autoBackgroundEnabled: this.session.settings.get("eval.autoBackground.enabled"),
-				evalTools: this.session.settings.get("eval.tools.enabled"),
-				eagerDelegation: sessionDelegationBias(this.session) === "eager",
-				preludeDocumentation,
-			});
-		}
+		// Without a session-verified xd:// transport the on-demand manual is
+		// unreachable, so such sessions keep the full manual inline. Only
+		// transport-bearing sessions get the slim contract.
+		const base = !this.session?.xdev
+			? getEvalToolManual(this.#docOptions())
+			: getEvalToolDescription(this.#docOptions());
 		return this.#codeModeDescription(base) ?? base;
+	}
+	get manual(): string {
+		return getEvalToolManual(this.#docOptions());
 	}
 
 	/**
