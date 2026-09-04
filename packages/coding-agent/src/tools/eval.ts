@@ -16,9 +16,13 @@ import { getEnabledEvalPreludes } from "../eval/preludes";
 import type { BackendProbeOptions } from "../eval/probe";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
-import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+// `eval.md` is upstream's file, unmodified: it is the full manual, and leaving
+// it untouched means upstream prompt changes arrive with no merge action and
+// cannot silently rot behind a fork copy. Only the short always-on contract is
+// fork-owned.
+import evalManual from "../prompts/tools/eval.md" with { type: "text" };
 import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
-import evalManualTemplate from "../prompts/tools/eval-manual.md" with { type: "text" };
+import evalContract from "../prompts/tools/eval-contract.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { sessionDelegationBias } from "../task/prompt-policy";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
@@ -190,12 +194,12 @@ function renderEvalDoc(template: string, options: EvalToolDescriptionOptions): s
 
 /** Short always-on contract; the full manual stays reachable via `read xd://eval`. */
 export function getEvalToolDescription(options: EvalToolDescriptionOptions = {}): string {
-	return renderEvalDoc(evalDescription, options);
+	return renderEvalDoc(evalContract, options);
 }
 
 /** Full reference manual (prelude signatures, call conventions, DAG rules). */
 export function getEvalToolManual(options: EvalToolDescriptionOptions = {}): string {
-	return renderEvalDoc(evalManualTemplate, options);
+	return renderEvalDoc(evalManual, options);
 }
 
 export interface EvalToolOptions {
