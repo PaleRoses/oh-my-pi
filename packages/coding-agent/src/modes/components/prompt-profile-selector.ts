@@ -1,3 +1,4 @@
+import { errorMessage } from "../../slash-commands/helpers/parse";
 import {
 	type Component,
 	Container,
@@ -126,10 +127,6 @@ function reducePromptProfileSelectorState(
 		case "operationFailed":
 			return { ...state, notice: { type: "error", message: event.message }, busy: false };
 	}
-}
-
-function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function profileFieldValue(
@@ -282,7 +279,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 			const receipt = await this.#callbacks.onApply(operation);
 			this.#dispatch({ type: "operationSucceeded", receipt, screen: successScreen });
 		} catch (error) {
-			this.#dispatch({ type: "operationFailed", message: errorText(error) });
+			this.#dispatch({ type: "operationFailed", message: errorMessage(error) });
 		}
 	}
 
@@ -304,7 +301,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 				screen: { type: "profile", profileId: screen.profileId },
 			});
 		} catch (error) {
-			this.#dispatch({ type: "operationFailed", message: errorText(error) });
+			this.#dispatch({ type: "operationFailed", message: errorMessage(error) });
 		}
 	}
 

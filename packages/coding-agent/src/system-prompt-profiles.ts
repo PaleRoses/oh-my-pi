@@ -1,5 +1,4 @@
-import * as os from "node:os";
-import * as path from "node:path";
+import { resolvePath } from "./extensibility/utils";
 import { type } from "arktype";
 import {
 	SYSTEM_PROMPT_PROFILE_CONSTITUTION_VALUES,
@@ -104,10 +103,10 @@ function requireProfileId(value: unknown, label: string): string {
 	return profileId;
 }
 
+/** Profile file paths resolve through upstream's shared path owner, which also
+ *  expands `~`, normalizes, and rejects the `local://` scheme with a real message. */
 export function resolveSystemPromptProfileFilePath(source: string, cwd: string): string {
-	const expanded =
-		source === "~" ? os.homedir() : source.startsWith("~/") ? path.join(os.homedir(), source.slice(2)) : source;
-	return path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+	return resolvePath(source, cwd);
 }
 
 async function loadPromptFile(profileId: string, source: string, cwd: string): Promise<string> {
