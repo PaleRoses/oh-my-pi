@@ -185,11 +185,12 @@ async function gitRevListCount(checkout: string, range: string): Promise<number>
 	return Number(raw);
 }
 
-async function runCommand(cwd: string, argv: readonly string[]): Promise<void> {
+async function runCommand(cwd: string, argv: readonly string[], env?: Record<string, string>): Promise<void> {
 	let exitCode: number;
 	try {
 		const child = Bun.spawn([...argv], {
 			cwd,
+			env: env ? { ...process.env, ...env } : undefined,
 			stdin: "inherit",
 			stdout: "inherit",
 			stderr: "inherit",
@@ -205,6 +206,12 @@ async function validateSourceCheckout(checkout: string): Promise<void> {
 	const codingAgent = path.join(checkout, "packages", "coding-agent");
 	await runCommand(checkout, ["bun", "install", "--frozen-lockfile"]);
 	await runCommand(checkout, ["bun", "run", "build:native"]);
+	// `build:native` runs `cargo build`, which never compiles `#[cfg(test)]`, and
+	// `run-rs-task.ts` self-skips unless CI is set or `git status` reports an
+	// uncommitted .rs file. After a merge the tree is clean, so a Rust test that
+	// stopped compiling in a *committed* change is invisible to every other gate
+	// here. CI=1 forces the lane; it is the only step that observes Rust tests.
+	await runCommand(checkout, ["bun", "scripts/run-rs-task.ts", "test:rs"], { CI: "1" });
 	await runCommand(codingAgent, ["bun", "run", "check"]);
 	await runCommand(path.join(checkout, "packages", "natives"), ["bun", "test", "test/file-lock.test.ts"]);
 	await runCommand(codingAgent, ["bun", "test", ...FORK_VALIDATION_TESTS]);

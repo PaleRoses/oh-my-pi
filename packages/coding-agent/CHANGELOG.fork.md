@@ -44,6 +44,8 @@ destined for upstream. Kept out of `CHANGELOG.md` so that file stays byte-identi
 
 ### Fixed
 
+- Source-checkout update validation now runs the Rust test lane with `CI=1`. `build:native` only runs `cargo build`, which never compiles `#[cfg(test)]`, and `run-rs-task.ts` self-skips unless CI is set or `git status` reports an uncommitted `.rs` file — so after a merge, on a clean tree, a Rust test broken by a committed change was invisible to every gate.
+
 - Fixed an issue where custom model overrides were lost during configuration updates
 - Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration
 - Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
