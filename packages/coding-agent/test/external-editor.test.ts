@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { getEditorCommand, openInEditor, resolveEditorSpawnCommand } from "../src/utils/external-editor";
+import {
+	getEditorCommand,
+	getFileEditorCommand,
+	openFileInEditor,
+	openInEditor,
+	resolveEditorSpawnCommand,
+} from "../src/utils/external-editor";
 
 interface MutableProcess {
 	platform: NodeJS.Platform;
@@ -63,10 +69,36 @@ describe("getEditorCommand", () => {
 		setPlatform("linux");
 		expect(getEditorCommand()).toBeUndefined();
 	});
+
+	it("uses the macOS desktop file opener when no terminal editor is configured", () => {
+		delete Bun.env.VISUAL;
+		delete Bun.env.EDITOR;
+		setPlatform("darwin");
+		expect(getFileEditorCommand()).toBe("/usr/bin/open");
+	});
+});
+
+describe("openFileInEditor", () => {
+	it("hands the actual file path to the configured editor", async () => {
+		const root = TempDir.createSync("@omp-external-editor-");
+		const target = path.join(root.path(), "prompt.md");
+		const editorDir = path.join(root.path(), "Editor App");
+		const editor = path.join(editorDir, "editor.ts");
+		try {
+			await fs.promises.mkdir(editorDir);
+			await Bun.write(target, "before\n");
+			await Bun.write(editor, 'await Bun.write(Bun.argv.at(-1)!, "after\\n");\n');
+
+			expect(await openFileInEditor(`"${process.execPath}" "${editor}"`, target)).toBe(true);
+			expect(await Bun.file(target).text()).toBe("after\n");
+		} finally {
+			await root.remove();
+		}
+	});
 });
 
 describe("openInEditor", () => {
-	it("always inherits the pane stdio", async () => {
+	it("uses caller-supplied pane stdio", async () => {
 		const spawn = spyOn(Bun, "spawn").mockReturnValue({
 			exited: Promise.resolve(1),
 		} as never);
@@ -78,9 +110,9 @@ describe("openInEditor", () => {
 
 			expect(spawn).toHaveBeenCalledTimes(1);
 			expect(spawn.mock.calls[0]?.[1]).toMatchObject({
-				stdin: "inherit",
-				stdout: "inherit",
-				stderr: "inherit",
+				stdin: 0,
+				stdout: 1,
+				stderr: 2,
 			});
 		} finally {
 			spawn.mockRestore();

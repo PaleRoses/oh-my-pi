@@ -24,7 +24,16 @@ export function getEditorCommand(): string | undefined {
 	return undefined;
 }
 
-export interface OpenInEditorOptions {
+export function getFileEditorCommand(): string | undefined {
+	return getEditorCommand() ?? (process.platform === "darwin" ? "/usr/bin/open" : undefined);
+}
+
+export interface OpenFileInEditorOptions {
+	/** Custom stdio configuration (default: all "inherit"). */
+	stdio?: [number | "inherit", number | "inherit", number | "inherit"];
+}
+
+export interface OpenInEditorOptions extends OpenFileInEditorOptions {
 	/** File extension for the temp file (default: ".md"). */
 	extension?: string;
 	/** Keep the file's trailing newline instead of trimming it from the returned text. */
@@ -52,6 +61,21 @@ export function resolveEditorSpawnCommand(
 	return { cmd, windowsVerbatimArguments: windows };
 }
 
+export async function openFileInEditor(
+	editorCmd: string,
+	filePath: string,
+	options?: OpenFileInEditorOptions,
+): Promise<boolean> {
+	const spawnCommand = resolveEditorSpawnCommand(editorCmd, filePath);
+	const [stdin, stdout, stderr] = options?.stdio ?? ["inherit", "inherit", "inherit"];
+	const child = Bun.spawn(spawnCommand.cmd, {
+		stdin,
+		stdout,
+		stderr,
+		windowsVerbatimArguments: spawnCommand.windowsVerbatimArguments,
+	});
+	return (await child.exited) === 0;
+}
 /**
  * Opens `content` in the user's external editor and returns the edited text.
  * Returns `null` if the editor exits with a non-zero code.
@@ -69,24 +93,14 @@ export async function openInEditor(
 	try {
 		await Bun.write(tmpFile, content);
 
-		const spawnCommand = resolveEditorSpawnCommand(editorCmd, tmpFile);
-		// Inherit the real pane pty so terminal editors (including emacsclient,
-		// which resolves the device via ttyname) render into the visible pane.
-		const child = Bun.spawn(spawnCommand.cmd, {
-			stdin: "inherit",
-			stdout: "inherit",
-			stderr: "inherit",
-			windowsVerbatimArguments: spawnCommand.windowsVerbatimArguments,
-		});
-		const exitCode = await child.exited;
-		if (exitCode === 0) {
-			const text = await Bun.file(tmpFile).text();
-			if (options?.trimTrailingNewline === false) {
-				return text;
-			}
-			return text.replace(/\n$/, "");
+		const completed = await openFileInEditor(editorCmd, tmpFile, { stdio: options?.stdio });
+
+		if (!completed) return null;
+		const text = await Bun.file(tmpFile).text();
+		if (options?.trimTrailingNewline === false) {
+			return text;
 		}
-		return null;
+		return text.replace(/\n$/, "");
 	} finally {
 		try {
 			await fs.rm(tmpFile, { force: true });

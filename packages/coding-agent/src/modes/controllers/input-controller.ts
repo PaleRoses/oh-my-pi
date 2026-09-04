@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
@@ -38,7 +39,7 @@ import {
 } from "../../utils/clipboard";
 import { getSlashCommandUsage, loadSlashCommandUsage, recordSlashCommandUsage } from "../../utils/command-usage";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
-import { getEditorCommand, openInEditor } from "../../utils/external-editor";
+import { getEditorCommand, getFileEditorCommand, openFileInEditor, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import {
 	VideoError,
@@ -2184,28 +2185,76 @@ export class InputController {
 		this.ctx.showStatus(`Thinking blocks: ${this.ctx.hideThinkingBlock ? "hidden" : "visible"}`);
 	}
 
-	async openExternalEditor(): Promise<void> {
-		const editorCmd = getEditorCommand();
+	#getEditorTerminalPath(): string | null {
+		if (process.platform === "win32") {
+			return null;
+		}
+		return "/dev/tty";
+	}
+
+	async #openEditorTerminalHandle(): Promise<fs.FileHandle | null> {
+		const terminalPath = this.#getEditorTerminalPath();
+		if (!terminalPath) {
+			return null;
+		}
+		try {
+			return await fs.open(terminalPath, "r+");
+		} catch {
+			return null;
+		}
+	}
+
+	async #withExternalEditor<T>(
+		run: (editorCmd: string, stdio: [number | "inherit", number | "inherit", number | "inherit"]) => Promise<T>,
+		editorCmd: string | undefined = getEditorCommand(),
+	): Promise<T | undefined> {
 		if (!editorCmd) {
 			this.ctx.showWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.");
-			return;
+			return undefined;
 		}
 
-		const currentText = this.ctx.editor.getExpandedText?.() ?? this.ctx.editor.getText();
-
+		let ttyHandle: fs.FileHandle | null = null;
 		try {
+			ttyHandle = await this.#openEditorTerminalHandle();
 			this.ctx.ui.stop();
-			const result = await openInEditor(editorCmd, currentText, { extension: ".omp.md" });
-			if (result !== null) {
-				this.ctx.editor.setText(result);
-			}
+			const stdio: [number | "inherit", number | "inherit", number | "inherit"] = ttyHandle
+				? [ttyHandle.fd, ttyHandle.fd, ttyHandle.fd]
+				: ["inherit", "inherit", "inherit"];
+			return await run(editorCmd, stdio);
 		} catch (error) {
 			this.ctx.showWarning(
 				`Failed to open external editor: ${error instanceof Error ? error.message : String(error)}`,
 			);
+			return undefined;
 		} finally {
+			if (ttyHandle) {
+				await ttyHandle.close();
+			}
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender();
+		}
+	}
+
+	async editMarkdown(content: string): Promise<string | null | undefined> {
+		return this.#withExternalEditor((editorCmd, stdio) =>
+			openInEditor(editorCmd, content, { extension: ".md", stdio, trimTrailingNewline: false }),
+		);
+	}
+
+	async openMarkdownFile(filePath: string): Promise<boolean | undefined> {
+		return this.#withExternalEditor(
+			(editorCmd, stdio) => openFileInEditor(editorCmd, filePath, { stdio }),
+			getFileEditorCommand(),
+		);
+	}
+
+	async openExternalEditor(): Promise<void> {
+		const currentText = this.ctx.editor.getExpandedText?.() ?? this.ctx.editor.getText();
+		const result = await this.#withExternalEditor((editorCmd, stdio) =>
+			openInEditor(editorCmd, currentText, { extension: ".omp.md", stdio }),
+		);
+		if (result !== null && result !== undefined) {
+			this.ctx.editor.setText(result);
 		}
 	}
 
