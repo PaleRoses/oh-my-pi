@@ -10,9 +10,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { hindsightBackend, reloadMentalModelsForSession } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
+import {
+	hindsightBackend,
+	rebindMemoryBackendForCwd,
+	reloadMentalModelsForSession,
+} from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
-import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { HindsightRetainQueue, type HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 interface FakeSessionDeps {
@@ -847,6 +851,95 @@ describe("hindsightBackend live bank routing", () => {
 			expect(bankIdx).toBeLessThan(mmIdx);
 		}
 		void listMentalSpy;
+	});
+});
+
+describe("hindsightBackend cwd rebind", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	// A cwd move used to leave the rebuild queued as a bare microtask, so the
+	// prompt that follows `/move` could still recall and retain against the
+	// source project's bank. `rebindMemoryBackendForCwd` must have installed
+	// the destination route by the time it resolves — no extra yields.
+	it("routes the destination project's bank before the move completes", async () => {
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "per-project");
+		// The fake session reads `deps.cwd` on every `getCwd()`, so moving the
+		// session manager's cwd is a mutation of this object.
+		const deps: FakeSessionDeps = { sessionId: "s-cwd-move", cwd: "/work/source", settings };
+		const session = makeFakeSession(deps);
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		expect(session.getHindsightSessionState()?.bankId).toBe("omp-source");
+
+		deps.cwd = "/work/destination";
+		await rebindMemoryBackendForCwd(session as never);
+
+		const next = session.getHindsightSessionState();
+		expect(next?.bankId).toBe("omp-destination");
+
+		next!.enqueueRetain("fact from the destination project");
+		await next!.flushRetainQueue();
+		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
+		expect(retainBatchSpy.mock.calls[0][0]).toBe("omp-destination");
+	});
+
+	// The rebuild loop is the only owner of queued rebuild requests, so a
+	// request that arrives while one is mid-flight must still be applied —
+	// otherwise the move settles on the route of the superseded request.
+	it("honors a rebuild requested while the previous one is still in flight", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const parked = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
+		let flushes = 0;
+		vi.spyOn(HindsightRetainQueue.prototype, "flush").mockImplementation(async () => {
+			flushes++;
+			if (flushes > 1) return;
+			parked.resolve();
+			await gate.promise;
+		});
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "global");
+		const deps: FakeSessionDeps = { sessionId: "s-cwd-inflight", cwd: "/work/source", settings };
+		const session = makeFakeSession(deps);
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		settings.set("hindsight.bankId", "first");
+		// The first rebuild is now parked inside the outgoing state's flush.
+		await parked.promise;
+		settings.set("hindsight.bankId", "second");
+		gate.resolve();
+
+		await rebindMemoryBackendForCwd(session as never);
+
+		expect(session.getHindsightSessionState()?.bankId).toBe("second");
 	});
 });
 
