@@ -341,10 +341,13 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 	const next = computeBankScope(config, session.sessionManager.getCwd());
 	if (bankScopesEqual(next, current) && hindsightConfigsEqual(current.config, config)) return;
 
-	// Preserve the banksSet across a same-server rebuild so we don't re-PUT
-	// banks we've already confirmed; another server has its own bank set.
-	const sameServer = current.config.hindsightApiUrl === config.hindsightApiUrl;
-	await installPrimaryState(session, settings, sameServer ? current.banksSet : new Set());
+	// A confirmed bank includes its mission metadata, not just its server/id.
+	// Reuse confirmations only while the effective PUT payload is unchanged.
+	const sameBankConfig =
+		current.config.hindsightApiUrl === config.hindsightApiUrl &&
+		current.config.bankMission.trim() === config.bankMission.trim() &&
+		(current.config.retainMission?.trim() || "") === (config.retainMission?.trim() || "");
+	await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set());
 }
 
 /**

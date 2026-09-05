@@ -901,6 +901,54 @@ describe("hindsightBackend cwd rebind", () => {
 		expect(retainBatchSpy.mock.calls[0][0]).toBe("omp-destination");
 	});
 
+	it.each(["hindsight.bankMission", "hindsight.retainMission"] as const)(
+		"updates a confirmed bank when %s changes",
+		async missionSetting => {
+			const createBank = vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+			vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+			const settings = Settings.isolated({
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.scoping": "global",
+				"hindsight.bankMission": "original reflect mission",
+				"hindsight.retainMission": "original retain mission",
+				"hindsight.mentalModelsEnabled": false,
+			});
+			const session = makeFakeSession({ sessionId: "mission-move", cwd: "/work/source", settings });
+			try {
+				await hindsightBackend.start({
+					session: session as never,
+					settings,
+					modelRegistry: {} as never,
+					agentDir: "/tmp",
+					taskDepth: 0,
+				});
+				const initial = session.getHindsightSessionState();
+				if (!initial) throw new Error("Hindsight fixture did not start");
+				initial.enqueueRetain("source fact");
+				await initial.flushRetainQueue();
+				expect(createBank).toHaveBeenCalledTimes(1);
+
+				settings.override(missionSetting, "destination mission");
+				await rebindMemoryBackendForCwd(session as never);
+				const rebound = session.getHindsightSessionState();
+				if (!rebound) throw new Error("Hindsight fixture lost its state");
+				rebound.enqueueRetain("destination fact");
+				await rebound.flushRetainQueue();
+
+				expect(createBank).toHaveBeenCalledTimes(2);
+				expect(createBank).toHaveBeenLastCalledWith(initial.bankId, {
+					reflectMission:
+						missionSetting === "hindsight.bankMission" ? "destination mission" : "original reflect mission",
+					retainMission:
+						missionSetting === "hindsight.retainMission" ? "destination mission" : "original retain mission",
+				});
+			} finally {
+				session.getHindsightSessionState()?.dispose();
+			}
+		},
+	);
+
 	// The rebuild loop is the only owner of queued rebuild requests, so a
 	// request that arrives while one is mid-flight must still be applied —
 	// otherwise the move settles on the route of the superseded request.
