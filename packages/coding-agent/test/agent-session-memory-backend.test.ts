@@ -190,4 +190,31 @@ describe("AgentSession memory backend lifecycle", () => {
 
 		await expect(rebindMemoryBackendForCwd(current)).rejects.toThrow("destination memory tools unavailable");
 	});
+
+	// `Settings.reloadForCwd` fires the memory scope hooks synchronously, so the
+	// move's own rebind coalesces onto a rebuild that is already in flight. When
+	// the first attempt fails after `applyMemoryBackend` already tore the
+	// outgoing state down, the coalesced retry finds a runtime that matches the
+	// destination settings and no-ops — which must not launder the half-applied
+	// move into a success.
+	it("keeps a failed rebind failed when the coalesced retry has nothing left to move", async () => {
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		let failToolBuild = false;
+		const current = createSession(async () => {
+			if (failToolBuild) throw new Error("destination memory tools unavailable");
+			return settings.get("memory.backend") === "hindsight" ? [createTool("recall")] : [];
+		});
+
+		await current.applyMemoryBackend();
+		expect(current.getHindsightSessionState()).toBeDefined();
+
+		// Destination project settings, as `settings.reloadForCwd` would leave
+		// them; the reload then queues the rebuild the move awaits.
+		settings.override("memory.backend", "off");
+		failToolBuild = true;
+		await settings.reloadForCwd(path.join(tempDir.path(), "destination"));
+
+		await expect(rebindMemoryBackendForCwd(current)).rejects.toThrow("destination memory tools unavailable");
+	});
 });

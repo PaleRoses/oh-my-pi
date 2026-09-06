@@ -151,7 +151,7 @@ interface PrimaryRebuildTask {
 	pending: boolean;
 	/** Whether the loop is still able to consume a new request. */
 	running: boolean;
-	/** Failure from the last iteration, re-raised to whoever awaits the task. */
+	/** Last failed transition; only a completed transition, never a no-op, clears it. */
 	error?: unknown;
 	/** Settles once the loop has drained every request queued so far. */
 	completion: Promise<void>;
@@ -184,9 +184,8 @@ function schedulePrimaryStateRebuild(session: AgentSession): PrimaryRebuildTask 
 			try {
 				while (nextTask.pending) {
 					nextTask.pending = false;
-					nextTask.error = undefined;
 					try {
-						await rebuildPrimaryStateOnScopeChange(session);
+						if (await rebuildPrimaryStateOnScopeChange(session)) nextTask.error = undefined;
 					} catch (err) {
 						nextTask.error = err;
 						logger.warn("Hindsight: scope rebuild failed", { error: String(err) });
@@ -319,10 +318,14 @@ async function installPrimaryState(
  * current settings select and make the runtime match it. No-op when nothing
  * moved, when this session hosts a subagent alias (the parent owns the route),
  * or when Hindsight is neither live nor selected.
+ *
+ * Resolves true only when the runtime actually moved — the backend owner
+ * re-applied the selection, or a fresh primary state was installed — so the
+ * scheduler can tell a completed transition from a no-op.
  */
-async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<void> {
+async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<boolean> {
 	const current = session.getHindsightSessionState();
-	if (current?.aliasOf) return;
+	if (current?.aliasOf) return false;
 
 	const settings = session.settings;
 	const config = loadHindsightConfig(settings);
@@ -334,12 +337,12 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 	// and it flushes the outgoing state's queued retains on the way out.
 	if (selected !== (current !== undefined)) {
 		await session.applyMemoryBackend();
-		return;
+		return true;
 	}
-	if (!current) return;
+	if (!current) return false;
 
 	const next = computeBankScope(config, session.sessionManager.getCwd());
-	if (bankScopesEqual(next, current) && hindsightConfigsEqual(current.config, config)) return;
+	if (bankScopesEqual(next, current) && hindsightConfigsEqual(current.config, config)) return false;
 
 	// A confirmed bank includes its mission metadata, not just its server/id.
 	// Reuse confirmations only while the effective PUT payload is unchanged.
@@ -347,7 +350,7 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 		current.config.hindsightApiUrl === config.hindsightApiUrl &&
 		current.config.bankMission.trim() === config.bankMission.trim() &&
 		(current.config.retainMission?.trim() || "") === (config.retainMission?.trim() || "");
-	await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set());
+	return (await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set())) !== undefined;
 }
 
 /**

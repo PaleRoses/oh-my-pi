@@ -989,6 +989,54 @@ describe("hindsightBackend cwd rebind", () => {
 
 		expect(session.getHindsightSessionState()?.bankId).toBe("second");
 	});
+
+	// A preserved failure must not be sticky either: when the request that
+	// coalesced onto the failed attempt does complete the transition, the
+	// session really is rebound and the move has to report success.
+	it("clears a failed attempt once a coalesced retry completes the transition", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const parked = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
+		let flushes = 0;
+		vi.spyOn(HindsightRetainQueue.prototype, "flush").mockImplementation(async () => {
+			flushes++;
+			if (flushes > 1) return;
+			parked.resolve();
+			await gate.promise;
+			// Fails before the outgoing state is replaced, so the destination
+			// route is still unbuilt when the next request runs.
+			throw new Error("outgoing flush failed");
+		});
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.mentalModelsEnabled": false,
+		});
+		settings.set("hindsight.scoping", "global");
+		const session = makeFakeSession({ sessionId: "s-cwd-retry", cwd: "/work/source", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		try {
+			settings.set("hindsight.bankId", "destination");
+			await parked.promise;
+			// Requested while the doomed attempt is still in flight, so it
+			// coalesces onto the same task and inherits its failure.
+			const move = rebindMemoryBackendForCwd(session as never);
+			gate.resolve();
+			await move;
+
+			expect(session.getHindsightSessionState()?.bankId).toBe("destination");
+		} finally {
+			session.getHindsightSessionState()?.dispose();
+		}
+	});
 });
 
 describe("hindsightBackend retain queue flush on session teardown", () => {
