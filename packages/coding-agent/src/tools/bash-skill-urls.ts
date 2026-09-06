@@ -43,9 +43,10 @@ export interface InternalUrlExpansionOptions {
 	internalRouter?: InternalUrlResolver;
 	localOptions?: LocalProtocolOptions;
 	cwd?: string;
-	sessionId?: string;
 	memoryEnabled?: boolean;
 	sessionFile?: string;
+	sessionId?: string;
+	agentRegistry?: ResolveContext["agentRegistry"];
 	ensureLocalParentDirs?: boolean;
 	/** Calling session's agent-scoped applicable rules — lets rule:// resolve without process-global state. */
 	rules?: readonly Rule[];
@@ -265,8 +266,9 @@ async function resolveInternalUrlToPath(
 	ensureLocalParentDirs?: boolean,
 	cwd?: string,
 	sessionFile?: string,
-	rules?: readonly Rule[],
 	sessionId?: string,
+	agentRegistry?: ResolveContext["agentRegistry"],
+	rules?: readonly Rule[],
 	memoryEnabled?: boolean,
 ): Promise<string> {
 	const url = normalizeLocalScheme(rawUrl);
@@ -313,8 +315,9 @@ async function resolveInternalUrlToPath(
 			cwd,
 			pathOnly: true,
 			sessionFile,
-			rules,
 			sessionId,
+			agentRegistry,
+			rules,
 			memoryEnabled,
 		});
 	} catch (error) {
@@ -379,8 +382,9 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 				options.ensureLocalParentDirs,
 				options.cwd,
 				options.sessionFile,
-				options.rules,
 				options.sessionId,
+				options.agentRegistry,
+				options.rules,
 				options.memoryEnabled,
 			);
 		} catch {

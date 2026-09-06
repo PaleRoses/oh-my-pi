@@ -780,9 +780,10 @@ async function resolveInternalSearchInputs(opts: {
 	localProtocolOptions?: LocalProtocolOptions;
 	skills?: ResolveContext["skills"];
 	rules?: ResolveContext["rules"];
-	sessionId?: string;
 	memoryEnabled?: boolean;
 	sessionFile?: string;
+	sessionId?: string;
+	agentRegistry?: ResolveContext["agentRegistry"];
 }): Promise<InternalSearchInputResolution> {
 	const internalRouter = InternalUrlRouter.instance();
 	const paths = opts.resolvedPaths.slice();
@@ -795,9 +796,10 @@ async function resolveInternalSearchInputs(opts: {
 		cwd: opts.cwd,
 		settings: opts.settings,
 		signal: opts.signal,
-		sessionId: opts.sessionId,
 		memoryEnabled: opts.memoryEnabled,
 		sessionFile: opts.sessionFile,
+		sessionId: opts.sessionId,
+		agentRegistry: opts.agentRegistry,
 		localProtocolOptions: opts.localProtocolOptions,
 		skills: opts.skills,
 		rules: opts.rules,
@@ -1012,9 +1014,10 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					localProtocolOptions: this.session.localProtocolOptions,
 					skills: this.session.skills,
 					rules: this.session.activeRules,
-					sessionId: this.session.getSessionId?.() ?? undefined,
 					memoryEnabled: this.session.memoryEnabled?.() ?? false,
 					sessionFile: this.session.getSessionFile() ?? undefined,
+					sessionId: this.session.sessionManager?.getSessionId?.() ?? this.session.getSessionId?.() ?? undefined,
+					agentRegistry: this.session.agentRegistry,
 				});
 				const searchablePaths = internalResolution.paths;
 				const { virtualResources, virtualPathSet, virtualInputIndexes } = internalResolution;
@@ -1057,9 +1060,11 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						localProtocolOptions: this.session.localProtocolOptions,
 						skills: this.session.skills,
 						rules: this.session.activeRules,
-						sessionId: this.session.getSessionId?.() ?? undefined,
 						memoryEnabled: this.session.memoryEnabled?.() ?? false,
 						sessionFile: this.session.getSessionFile() ?? undefined,
+						sessionId:
+							this.session.sessionManager?.getSessionId?.() ?? this.session.getSessionId?.() ?? undefined,
+						agentRegistry: this.session.agentRegistry,
 						resolveExternalUrl: materializeExternalUrlForSearch,
 						trackImmutableSources: true,
 						surfaceExactFilePaths: true,
