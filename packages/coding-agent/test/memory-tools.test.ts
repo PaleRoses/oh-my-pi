@@ -218,8 +218,11 @@ describe("Hindsight tool factories", () => {
 		expect(MemoryReflectTool.createIf(session)).toBeNull();
 	});
 
-	it("retain/recall/reflect factories return tool instances when memory.backend === hindsight", () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+	it("retain/recall/reflect factories return tool instances when Hindsight is configured", () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
 		const session = makeSession(settings);
 		expect(MemoryRetainTool.createIf(session)).toBeInstanceOf(MemoryRetainTool);
 		expect(MemoryRecallTool.createIf(session)).toBeInstanceOf(MemoryRecallTool);

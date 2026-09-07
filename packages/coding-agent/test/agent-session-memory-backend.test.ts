@@ -8,11 +8,13 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
+import { MEMORY_BACKEND_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/memory-backend/tool-names";
 import { computeMnemopiBankScope } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import { getMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { BUILTIN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -91,6 +93,40 @@ describe("AgentSession memory backend lifecycle", () => {
 		});
 		return session;
 	}
+
+	it("removes unusable Hindsight tools after a cwd reload clears the URL and restores them when configured", async () => {
+		const apiUrl = "http://127.0.0.1:1";
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.apiUrl", apiUrl);
+		settings.override("hindsight.mentalModelsEnabled", false);
+		settings.override("autolearn.enabled", true);
+		const toolSession = {
+			cwd: tempDir.path(),
+			hasUI: false,
+			settings,
+			getHindsightSessionState: () => session?.getHindsightSessionState(),
+		} as ToolSession;
+		const current = createSession(async () => {
+			const tools = await Promise.all(MEMORY_BACKEND_TOOL_NAMES.map(name => BUILTIN_TOOLS[name](toolSession)));
+			return tools.filter((tool): tool is AgentTool => tool !== null);
+		});
+		await current.applyMemoryBackend();
+		expect(current.getActiveToolNames()).toEqual(expect.arrayContaining(["recall", "retain", "reflect", "learn"]));
+
+		settings.override("hindsight.apiUrl", "");
+		await settings.reloadForCwd(path.join(tempDir.path(), "destination"));
+		await rebindMemoryBackendForCwd(current);
+
+		expect(current.getHindsightSessionState()).toBeUndefined();
+		expect(current.getAllToolNames()).toEqual(["read"]);
+		expect(current.getActiveToolNames()).toEqual(["read"]);
+
+		settings.override("hindsight.apiUrl", apiUrl);
+		await settings.reloadForCwd(path.join(tempDir.path(), "source"));
+		await rebindMemoryBackendForCwd(current);
+		expect(current.getHindsightSessionState()).toBeDefined();
+		expect(current.getActiveToolNames()).toEqual(expect.arrayContaining(["recall", "retain", "reflect", "learn"]));
+	});
 
 	it("switches runtime state, memory tools, and prompt in one apply", async () => {
 		const current = createSession(async () =>
