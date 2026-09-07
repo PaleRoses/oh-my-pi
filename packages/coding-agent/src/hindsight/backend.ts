@@ -207,6 +207,7 @@ function schedulePrimaryStateRebuild(session: AgentSession): PrimaryRebuildTask 
  * Hindsight.
  */
 export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<void> {
+	if (!session.memoryEnabled) return;
 	// Other backends have no Hindsight scope subscription. Reapply them on an
 	// explicit cwd move, but let an in-flight Hindsight transition finish (or
 	// fail) rather than retrying a partially torn-down backend outside its task.
