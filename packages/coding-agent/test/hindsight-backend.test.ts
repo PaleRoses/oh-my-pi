@@ -863,10 +863,7 @@ describe("hindsightBackend cwd rebind", () => {
 		vi.restoreAllMocks();
 	});
 
-	// A cwd move used to leave the rebuild queued as a bare microtask, so the
-	// prompt that follows `/move` could still recall and retain against the
-	// source project's bank. `rebindMemoryBackendForCwd` must have installed
-	// the destination route by the time it resolves — no extra yields.
+	// No extra yield after rebind: the next retain must already use the destination.
 	it("routes the destination project's bank before the move completes", async () => {
 		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
@@ -875,8 +872,6 @@ describe("hindsightBackend cwd rebind", () => {
 			"hindsight.apiUrl": "http://localhost:8888",
 		});
 		settings.set("hindsight.scoping", "per-project");
-		// The fake session reads `deps.cwd` on every `getCwd()`, so moving the
-		// session manager's cwd is a mutation of this object.
 		const deps: FakeSessionDeps = { sessionId: "s-cwd-move", cwd: "/work/source", settings };
 		const session = makeFakeSession(deps);
 
@@ -949,9 +944,6 @@ describe("hindsightBackend cwd rebind", () => {
 		},
 	);
 
-	// The rebuild loop is the only owner of queued rebuild requests, so a
-	// request that arrives while one is mid-flight must still be applied —
-	// otherwise the move settles on the route of the superseded request.
 	it("honors a rebuild requested while the previous one is still in flight", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const parked = Promise.withResolvers<void>();
@@ -991,8 +983,8 @@ describe("hindsightBackend cwd rebind", () => {
 
 		const settledState = session.getHindsightSessionState();
 		vi.spyOn(session, "getHindsightSessionState").mockImplementationOnce(() => {
-			// Queue after the no-op loop exits, but before its completion settles.
-			queueMicrotask(() => queueMicrotask(() => settings.set("hindsight.bankId", "third")));
+			// Three microtasks land after loop retirement but before rebind resolves.
+			queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => settings.set("hindsight.bankId", "third"))));
 			return settledState;
 		});
 		await rebindMemoryBackendForCwd(session as never);
@@ -1000,9 +992,6 @@ describe("hindsightBackend cwd rebind", () => {
 		session.getHindsightSessionState()?.dispose();
 	});
 
-	// A preserved failure must not be sticky either: when the request that
-	// coalesced onto the failed attempt does complete the transition, the
-	// session really is rebound and the move has to report success.
 	it("clears a failed attempt once a coalesced retry completes the transition", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const parked = Promise.withResolvers<void>();

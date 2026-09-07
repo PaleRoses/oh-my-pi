@@ -14,9 +14,10 @@ import { getMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state"
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { BUILTIN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { getProjectAgentDir, getProjectDir, setProjectDir, TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 function createTool(name: string): AgentTool {
@@ -185,12 +186,26 @@ describe("AgentSession memory backend lifecycle", () => {
 		}
 	});
 
-	it.each([false, true])("does not auto-retain during cwd rebind teardown (rollback: %s)", async rollback => {
-		settings.override("memory.backend", "mnemopi");
-		settings.override("mnemopi.scoping", "per-project");
+	it.each([false, true])("headless /move suppresses teardown retention (rollback: %s)", async rollback => {
 		const sourceCwd = tempDir.path();
 		const destinationCwd = path.join(sourceCwd, "destination");
-		await settings.reloadForCwd(sourceCwd);
+		await Promise.all(
+			[sourceCwd, destinationCwd].map(cwd =>
+				Bun.write(
+					path.join(getProjectAgentDir(cwd), "config.yml"),
+					Bun.YAML.stringify({
+						memory: { backend: "mnemopi" },
+						mnemopi: {
+							scoping: "per-project",
+							autoRetain: true,
+							noEmbeddings: true,
+							llmMode: "none",
+						},
+					}),
+				),
+			),
+		);
+		settings = await Settings.loadIsolated({ cwd: sourceCwd, agentDir: path.join(sourceCwd, "agent") });
 		const current = createSession(async () => []);
 		await current.applyMemoryBackend();
 		current.sessionManager.appendMessage({
@@ -198,46 +213,56 @@ describe("AgentSession memory backend lifecycle", () => {
 			content: "The source project uses a dedicated release branch for production deployments.",
 			timestamp: Date.now(),
 		});
-		const sourceState = getMnemopiSessionState(current)!;
-		expect(sourceState.config.autoRetain).toBe(true);
-		const sourceDbPath = sourceState.memory.dbPath!;
-
-		current.sessionManager.setCwdWithoutRelocation(destinationCwd);
-		await settings.reloadForCwd(destinationCwd);
-		await rebindMemoryBackendForCwd(current);
-		const destinationDbPath = getMnemopiSessionState(current)!.memory.dbPath!;
-		if (rollback) {
-			current.sessionManager.setCwdWithoutRelocation(sourceCwd);
-			await settings.reloadForCwd(sourceCwd);
-			await rebindMemoryBackendForCwd(current);
-		}
-
-		const db = new Database(rollback ? destinationDbPath : sourceDbPath, { readonly: true });
+		const sourceDbPath = getMnemopiSessionState(current)!.memory.dbPath!;
+		let destinationDbPath: string | undefined;
+		const output: string[] = [];
+		const originalProjectDir = getProjectDir();
 		try {
-			expect(
-				db.query("SELECT metadata_json FROM working_memory WHERE source = 'coding-agent-transcript'").all(),
-			).toEqual([]);
+			await executeAcpBuiltinSlashCommand("/move " + destinationCwd, {
+				session: current,
+				sessionManager: current.sessionManager,
+				settings,
+				cwd: sourceCwd,
+				output: text => {
+					output.push(text);
+				},
+				refreshCommands: () => {},
+				reloadPlugins: async () => {
+					if (current.sessionManager.getCwd() !== destinationCwd) return;
+					destinationDbPath = getMnemopiSessionState(current)!.memory.dbPath!;
+					if (rollback) throw new Error("destination plugin rescope failed");
+				},
+			});
 		} finally {
-			db.close();
+			setProjectDir(originalProjectDir);
 		}
-
-		// Ordinary backend changes must still retain the current transcript.
-		const activeState = getMnemopiSessionState(current)!;
-		const activeDbPath = activeState.memory.dbPath!;
-		settings.override("memory.backend", "off");
-		await current.applyMemoryBackend();
-		const retainedDb = new Database(activeDbPath, { readonly: true });
-		try {
-			expect(
-				retainedDb
+		const committedCwd = rollback ? sourceCwd : destinationCwd;
+		expect(current.sessionManager.getCwd()).toBe(committedCwd);
+		expect(output).toContainEqual(
+			expect.stringContaining(rollback ? "destination plugin rescope failed" : destinationCwd),
+		);
+		expect(destinationDbPath).toBeDefined();
+		expect(destinationDbPath).not.toBe(sourceDbPath);
+		const transcriptRows = (dbPath: string) => {
+			const db = new Database(dbPath, { readonly: true });
+			try {
+				return db
 					.query(
 						"SELECT json_extract(metadata_json, '$.cwd') AS cwd FROM working_memory WHERE source = 'coding-agent-transcript'",
 					)
-					.all(),
-			).toEqual([{ cwd: rollback ? sourceCwd : destinationCwd }]);
-		} finally {
-			retainedDb.close();
-		}
+					.all();
+			} finally {
+				db.close();
+			}
+		};
+		expect(transcriptRows(sourceDbPath)).toEqual([]);
+		expect(transcriptRows(destinationDbPath!)).toEqual([]);
+
+		// Ordinary backend changes still retain once, in the committed project.
+		settings.override("memory.backend", "off");
+		await current.applyMemoryBackend();
+		expect(transcriptRows(sourceDbPath)).toEqual(rollback ? [{ cwd: sourceCwd }] : []);
+		expect(transcriptRows(destinationDbPath!)).toEqual(rollback ? [] : [{ cwd: destinationCwd }]);
 	});
 
 	it("cancels a displaced local startup generation", async () => {
@@ -279,11 +304,6 @@ describe("AgentSession memory backend lifecycle", () => {
 		expect(calls).toBe(2);
 	});
 
-	// A cwd move re-scopes Settings, so the destination project's
-	// `memory.backend` is what the session must run. The Hindsight scope
-	// rebuild alone only re-derives an already-active Hindsight bank, so a
-	// destination project that turns memory off used to keep the source
-	// project's backend, memory tools, and prompt for the rest of the session.
 	it("applies the destination project's memory backend on a cwd move", async () => {
 		settings.override("memory.backend", "hindsight");
 		settings.override("hindsight.mentalModelsEnabled", false);
@@ -295,7 +315,6 @@ describe("AgentSession memory backend lifecycle", () => {
 		expect(current.getHindsightSessionState()).toBeDefined();
 		expect(current.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "recall", "retain"]));
 
-		// Destination project settings, as `settings.reloadForCwd` would leave them.
 		settings.override("memory.backend", "off");
 		await rebindMemoryBackendForCwd(current);
 
@@ -303,31 +322,8 @@ describe("AgentSession memory backend lifecycle", () => {
 		expect(current.getActiveToolNames()).toEqual(["read"]);
 	});
 
-	// A rebind that fails must fail the move instead of being logged and
-	// dropped, which used to leave a half-rebound session reporting success.
-	it("surfaces a failed destination rebind to the caller", async () => {
-		settings.override("memory.backend", "hindsight");
-		settings.override("hindsight.mentalModelsEnabled", false);
-		let failToolBuild = false;
-		const current = createSession(async () => {
-			if (failToolBuild) throw new Error("destination memory tools unavailable");
-			return settings.get("memory.backend") === "hindsight" ? [createTool("recall")] : [];
-		});
-
-		await current.applyMemoryBackend();
-		settings.override("memory.backend", "off");
-		failToolBuild = true;
-
-		await expect(rebindMemoryBackendForCwd(current)).rejects.toThrow("destination memory tools unavailable");
-	});
-
-	// `Settings.reloadForCwd` fires the memory scope hooks synchronously, so the
-	// move's own rebind coalesces onto a rebuild that is already in flight. When
-	// the first attempt fails after `applyMemoryBackend` already tore the
-	// outgoing state down, the coalesced retry finds a runtime that matches the
-	// destination settings and no-ops — which must not launder the half-applied
-	// move into a success.
-	it("keeps a failed rebind failed when the coalesced retry has nothing left to move", async () => {
+	// A hook-triggered retry may find teardown already done; that no-op must preserve the failure.
+	it.each([false, true])("reports destination rebind failures (coalesced no-op: %s)", async coalesced => {
 		settings.override("memory.backend", "hindsight");
 		settings.override("hindsight.mentalModelsEnabled", false);
 		let failToolBuild = false;
@@ -338,12 +334,9 @@ describe("AgentSession memory backend lifecycle", () => {
 
 		await current.applyMemoryBackend();
 		expect(current.getHindsightSessionState()).toBeDefined();
-
-		// Destination project settings, as `settings.reloadForCwd` would leave
-		// them; the reload then queues the rebuild the move awaits.
 		settings.override("memory.backend", "off");
 		failToolBuild = true;
-		await settings.reloadForCwd(path.join(tempDir.path(), "destination"));
+		if (coalesced) await settings.reloadForCwd(path.join(tempDir.path(), "destination"));
 
 		await expect(rebindMemoryBackendForCwd(current)).rejects.toThrow("destination memory tools unavailable");
 	});
