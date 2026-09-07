@@ -265,6 +265,97 @@ describe("AgentSession memory backend lifecycle", () => {
 		expect(transcriptRows(destinationDbPath!)).toEqual(rollback ? [] : [{ cwd: destinationCwd }]);
 	});
 
+	it.each(["mnemopi", "hindsight"] as const)(
+		"headless /move rolls back from %s when destination Mnemopi cannot open its database",
+		async source => {
+			const sourceCwd = tempDir.path();
+			const destinationCwd = path.join(sourceCwd, "destination");
+			const sourceDbPath = path.join(sourceCwd, "source.db");
+			const destinationConfig = path.join(getProjectAgentDir(destinationCwd), "config.yml");
+			const mnemopi = { scoping: "global", autoRetain: false, noEmbeddings: true, llmMode: "none" };
+			await Bun.write(
+				path.join(getProjectAgentDir(sourceCwd), "config.yml"),
+				Bun.YAML.stringify({
+					memory: { backend: source },
+					mnemopi: { ...mnemopi, dbPath: sourceDbPath },
+					hindsight: { apiUrl: "http://127.0.0.1:1", mentalModelsEnabled: false },
+				}),
+			);
+			// An existing directory is not a SQLite database, regardless of filesystem permissions.
+			await Bun.write(
+				destinationConfig,
+				Bun.YAML.stringify({ memory: { backend: "mnemopi" }, mnemopi: { ...mnemopi, dbPath: sourceCwd } }),
+			);
+			settings = await Settings.loadIsolated({ cwd: sourceCwd, agentDir: path.join(sourceCwd, "agent") });
+			const toolSession = {
+				cwd: sourceCwd,
+				hasUI: false,
+				settings,
+				getHindsightSessionState: () => session?.getHindsightSessionState(),
+				getMnemopiSessionState: () => session?.getMnemopiSessionState(),
+			} as ToolSession;
+			const current = createSession(async () => {
+				const tools = await Promise.all(MEMORY_BACKEND_TOOL_NAMES.map(name => BUILTIN_TOOLS[name](toolSession)));
+				return tools.filter((tool): tool is AgentTool => tool !== null);
+			});
+			await current.applyMemoryBackend();
+			const sourceTools = current.getActiveToolNames();
+			const sourcePrompt = current.systemPrompt;
+			const sourceBank = source === "hindsight" ? current.getHindsightSessionState()!.bankId : undefined;
+			const output: string[] = [];
+			const runtime = {
+				session: current,
+				sessionManager: current.sessionManager,
+				settings,
+				cwd: sourceCwd,
+				output: (text: string) => {
+					output.push(text);
+				},
+				refreshCommands: () => {},
+				reloadPlugins: async () => {},
+			};
+			const originalProjectDir = getProjectDir();
+			try {
+				await executeAcpBuiltinSlashCommand("/move " + destinationCwd, runtime);
+				expect(output).toContainEqual(expect.stringMatching(/Move failed:.*Mnemopi/));
+				expect(current.sessionManager.getCwd()).toBe(sourceCwd);
+				expect(settings.get("memory.backend")).toBe(source);
+				expect(current.getActiveToolNames()).toEqual(sourceTools);
+				expect(current.systemPrompt).toEqual(sourcePrompt);
+				if (source === "mnemopi") {
+					expect(current.getMnemopiSessionState()?.memory.dbPath).toBe(sourceDbPath);
+				} else {
+					expect(current.getHindsightSessionState()?.bankId).toBe(sourceBank);
+				}
+
+				// Repair the destination and retry the same command; the installed tool must really write there.
+				const destinationDbPath = path.join(destinationCwd, "memory.db");
+				await Bun.write(
+					destinationConfig,
+					Bun.YAML.stringify({
+						memory: { backend: "mnemopi" },
+						mnemopi: { ...mnemopi, dbPath: destinationDbPath },
+					}),
+				);
+				await executeAcpBuiltinSlashCommand("/move " + destinationCwd, runtime);
+				expect(current.sessionManager.getCwd()).toBe(destinationCwd);
+				await current.getToolByName("retain")!.execute("after-move", {
+					items: [{ content: "The destination project deploys from its release branch." }],
+				});
+				const db = new Database(destinationDbPath, { readonly: true });
+				try {
+					expect(
+						db.query("SELECT content FROM working_memory WHERE source = 'coding-agent-retain'").all(),
+					).toEqual([{ content: "The destination project deploys from its release branch." }]);
+				} finally {
+					db.close();
+				}
+			} finally {
+				setProjectDir(originalProjectDir);
+			}
+		},
+	);
+
 	it("cancels a displaced local startup generation", async () => {
 		const current = createSession(async () => []);
 		const localStartup = current.beginLocalMemoryStartup();

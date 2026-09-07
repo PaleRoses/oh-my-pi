@@ -225,6 +225,11 @@ export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<
 		// not rebound until the last one has settled.
 		task = primaryRebuildTasks.get(session);
 	}
+
+	// Startup is best-effort, but a move must not commit an unusable memory backend.
+	if (session.settings.get("memory.backend") === "mnemopi" && !session.getMnemopiSessionState()) {
+		throw new Error("Mnemopi backend failed to initialise for the destination cwd.");
+	}
 }
 
 /**
