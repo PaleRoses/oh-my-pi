@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { getProjectAgentDir, getProjectDir, setProjectDir, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -30,6 +33,113 @@ describe("createAgentSession cwd after /move", () => {
 			removeSyncWithRetries(tempDir);
 		}
 	});
+
+	it.each(["disabled", "empty", "failed"] as const)(
+		"drops source Hindsight context after cwd rebind when destination recall is %s",
+		async destinationRecall => {
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sdk-memory-prompt-move-"));
+			tempDirs.push(tempDir);
+			const cwdA = path.join(tempDir, "cwd-a");
+			const cwdB = path.join(tempDir, "cwd-b");
+			const agentDir = path.join(tempDir, "agent");
+			let moved = false;
+			const recalledBanks: string[] = [];
+			const server = Bun.serve({
+				hostname: "127.0.0.1",
+				port: 0,
+				fetch(request) {
+					const pathname = new URL(request.url).pathname;
+					if (request.method === "PUT") return Response.json({});
+					if (pathname.endsWith("/mental-models")) {
+						return Response.json({
+							items: [{ id: "source-model", name: "Source model", content: "SOURCE-MODEL-CANARY" }],
+						});
+					}
+					if (pathname.endsWith("/memories/recall")) {
+						recalledBanks.push(pathname.split("/")[4]!);
+						if (moved && destinationRecall === "failed") return new Response("unavailable", { status: 503 });
+						return Response.json({ results: moved ? [] : [{ id: "source-fact", text: "SOURCE-RECALL-CANARY" }] });
+					}
+					return new Response("Unexpected request", { status: 404 });
+				},
+			});
+			const authStorage = createInMemoryAuthStorage();
+			let session: AgentSession | undefined;
+			try {
+				// The failed-recall case keeps the bank but changes configuration.
+				const destinationBank = destinationRecall === "failed" ? "source" : "destination";
+				await Promise.all(
+					[cwdA, cwdB].map(cwd =>
+						Bun.write(
+							path.join(getProjectAgentDir(cwd), "config.yml"),
+							Bun.YAML.stringify({
+								memory: { backend: "hindsight" },
+								hindsight: {
+									apiUrl: server.url.href,
+									bankId: cwd === cwdA ? "source" : destinationBank,
+									autoRecall: cwd === cwdA || destinationRecall !== "disabled",
+									autoRetain: false,
+									mentalModelsEnabled: cwd === cwdA,
+									mentalModelAutoSeed: false,
+								},
+							}),
+						),
+					),
+				);
+				const settings = await Settings.loadIsolated({ cwd: cwdA, agentDir });
+				const sessionManager = SessionManager.create(cwdA, path.join(tempDir, "sessions"));
+				authStorage.setRuntimeApiKey("openai", "test-key");
+				({ session } = await createAgentSession({
+					cwd: cwdA,
+					agentDir,
+					sessionManager,
+					authStorage,
+					modelRegistry: new ModelRegistry(authStorage, path.join(tempDir, "models.yml")),
+					settings,
+					model: getBundledModel("openai", "gpt-4o-mini"),
+					toolNames: ["read"],
+					disableExtensionDiscovery: true,
+					skills: [],
+					contextFiles: [],
+					promptTemplates: [],
+					slashCommands: [],
+					enableMCP: false,
+					enableLsp: false,
+					skipPythonPreflight: true,
+					rules: [],
+					preloadedCustomToolPaths: [],
+				}));
+				const model = createMockModel({ handler: { content: ["ok"] } });
+				session.agent.streamFn = model.stream;
+				await session.getHindsightSessionState()?.mentalModelsLoadPromise;
+				await session.prompt("Summarize this project.");
+				const sourcePrompt = model.calls[0]!.context.systemPrompt!.join("\n");
+				expect(sourcePrompt).toContain("SOURCE-RECALL-CANARY");
+				expect(sourcePrompt).toContain("SOURCE-MODEL-CANARY");
+
+				moved = true;
+				await sessionManager.moveTo(cwdB);
+				await settings.reloadForCwd(cwdB);
+				// Rebinding must clear memory without depending on a later skill/tool refresh.
+				await rebindMemoryBackendForCwd(session);
+				expect(session.getHindsightSessionState()?.bankId).toBe(destinationBank);
+				const movedPrompt = session.agent.state.systemPrompt.join("\n");
+				await session.prompt("Summarize the destination project.");
+				expect(model.calls).toHaveLength(2);
+				const destinationPrompt = model.calls[1]!.context.systemPrompt!.join("\n");
+				expect(recalledBanks).toEqual(destinationRecall === "disabled" ? ["source"] : ["source", destinationBank]);
+				for (const prompt of [movedPrompt, destinationPrompt]) {
+					expect(prompt).not.toContain("SOURCE-RECALL-CANARY");
+					expect(prompt).not.toContain("SOURCE-MODEL-CANARY");
+					expect(prompt).toContain("# Memory");
+				}
+			} finally {
+				await session?.dispose();
+				authStorage.close();
+				await server.stop(true);
+			}
+		},
+	);
 
 	it("runs tools from the moved session directory", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-move-cwd-${Snowflake.next()}-`));

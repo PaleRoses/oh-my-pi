@@ -352,7 +352,11 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 		current.config.hindsightApiUrl === config.hindsightApiUrl &&
 		current.config.bankMission.trim() === config.bankMission.trim() &&
 		(current.config.retainMission?.trim() || "") === (config.retainMission?.trim() || "");
-	return (await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set())) !== undefined;
+	const state = await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set());
+	if (!state) return false;
+	// A destination with no recall injection must not reuse the source bank's prompt.
+	await session.refreshBaseSystemPrompt();
+	return true;
 }
 
 /**
