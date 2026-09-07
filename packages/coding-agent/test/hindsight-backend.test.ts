@@ -988,6 +988,16 @@ describe("hindsightBackend cwd rebind", () => {
 		await rebindMemoryBackendForCwd(session as never);
 
 		expect(session.getHindsightSessionState()?.bankId).toBe("second");
+
+		const settledState = session.getHindsightSessionState();
+		vi.spyOn(session, "getHindsightSessionState").mockImplementationOnce(() => {
+			// Queue after the no-op loop exits, but before its completion settles.
+			queueMicrotask(() => queueMicrotask(() => settings.set("hindsight.bankId", "third")));
+			return settledState;
+		});
+		await rebindMemoryBackendForCwd(session as never);
+		expect(session.getHindsightSessionState()?.bankId).toBe("third");
+		session.getHindsightSessionState()?.dispose();
 	});
 
 	// A preserved failure must not be sticky either: when the request that

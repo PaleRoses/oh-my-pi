@@ -149,8 +149,6 @@ export const hindsightBackend: MemoryBackend = {
 interface PrimaryRebuildTask {
 	/** A rebuild was requested and the loop has not consumed it yet. */
 	pending: boolean;
-	/** Whether the loop is still able to consume a new request. */
-	running: boolean;
 	/** Last failed transition; only a completed transition, never a no-op, clears it. */
 	error?: unknown;
 	/** Settles once the loop has drained every request queued so far. */
@@ -170,40 +168,29 @@ const primaryRebuildTasks = new WeakMap<AgentSession, PrimaryRebuildTask>();
  */
 function schedulePrimaryStateRebuild(session: AgentSession): PrimaryRebuildTask {
 	const task = primaryRebuildTasks.get(session);
-	// Only a task whose loop can still consume the request may absorb it: a
-	// task that already left its loop would never run the rebuild.
-	if (task?.running) {
+	if (task) {
 		task.pending = true;
 		return task;
 	}
 
-	const nextTask: PrimaryRebuildTask = { pending: true, running: true, completion: Promise.resolve() };
+	const nextTask: PrimaryRebuildTask = { pending: true, completion: Promise.resolve() };
 	primaryRebuildTasks.set(session, nextTask);
-	nextTask.completion = Promise.resolve()
-		.then(async () => {
-			try {
-				while (nextTask.pending) {
-					nextTask.pending = false;
-					try {
-						if (await rebuildPrimaryStateOnScopeChange(session)) nextTask.error = undefined;
-					} catch (err) {
-						nextTask.error = err;
-						logger.warn("Hindsight: scope rebuild failed", { error: String(err) });
-					}
+	nextTask.completion = Promise.resolve().then(async () => {
+		try {
+			while (nextTask.pending) {
+				nextTask.pending = false;
+				try {
+					if (await rebuildPrimaryStateOnScopeChange(session)) nextTask.error = undefined;
+				} catch (err) {
+					nextTask.error = err;
+					logger.warn("Hindsight: scope rebuild failed", { error: String(err) });
 				}
-			} finally {
-				// Retire in the same synchronous step the loop exits in.
-				// Deferring this to the promise's own `finally` would leave a
-				// microtask window where a request coalesces onto a loop that
-				// has already stopped consuming, dropping the rebuild.
-				nextTask.running = false;
 			}
-		})
-		.finally(() => {
-			if (primaryRebuildTasks.get(session) === nextTask) {
-				primaryRebuildTasks.delete(session);
-			}
-		});
+		} finally {
+			// Only loops that can consume requests remain registered; retire before yielding.
+			primaryRebuildTasks.delete(session);
+		}
+	});
 	return nextTask;
 }
 
@@ -226,8 +213,7 @@ export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<
 		if (task.error !== undefined) throw task.error;
 		// A hook that fired while we waited installs a fresh task; the move is
 		// not rebound until the last one has settled.
-		const next = primaryRebuildTasks.get(session);
-		task = next === task ? undefined : next;
+		task = primaryRebuildTasks.get(session);
 	}
 }
 
