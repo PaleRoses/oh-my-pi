@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -145,6 +146,61 @@ describe("AgentSession memory backend lifecycle", () => {
 			expect(current.getActiveToolNames()).toEqual(["read"]);
 			expect(current.getAllToolNames()).toEqual(["read"]);
 			expect(current.systemPrompt).toEqual(["backend:off;tools:read"]);
+		}
+	});
+
+	it.each([false, true])("does not auto-retain during cwd rebind teardown (rollback: %s)", async rollback => {
+		settings.override("memory.backend", "mnemopi");
+		settings.override("mnemopi.scoping", "per-project");
+		const sourceCwd = tempDir.path();
+		const destinationCwd = path.join(sourceCwd, "destination");
+		await settings.reloadForCwd(sourceCwd);
+		const current = createSession(async () => []);
+		await current.applyMemoryBackend();
+		current.sessionManager.appendMessage({
+			role: "user",
+			content: "The source project uses a dedicated release branch for production deployments.",
+			timestamp: Date.now(),
+		});
+		const sourceState = getMnemopiSessionState(current)!;
+		expect(sourceState.config.autoRetain).toBe(true);
+		const sourceDbPath = sourceState.memory.dbPath!;
+
+		current.sessionManager.setCwdWithoutRelocation(destinationCwd);
+		await settings.reloadForCwd(destinationCwd);
+		await rebindMemoryBackendForCwd(current);
+		const destinationDbPath = getMnemopiSessionState(current)!.memory.dbPath!;
+		if (rollback) {
+			current.sessionManager.setCwdWithoutRelocation(sourceCwd);
+			await settings.reloadForCwd(sourceCwd);
+			await rebindMemoryBackendForCwd(current);
+		}
+
+		const db = new Database(rollback ? destinationDbPath : sourceDbPath, { readonly: true });
+		try {
+			expect(
+				db.query("SELECT metadata_json FROM working_memory WHERE source = 'coding-agent-transcript'").all(),
+			).toEqual([]);
+		} finally {
+			db.close();
+		}
+
+		// Ordinary backend changes must still retain the current transcript.
+		const activeState = getMnemopiSessionState(current)!;
+		const activeDbPath = activeState.memory.dbPath!;
+		settings.override("memory.backend", "off");
+		await current.applyMemoryBackend();
+		const retainedDb = new Database(activeDbPath, { readonly: true });
+		try {
+			expect(
+				retainedDb
+					.query(
+						"SELECT json_extract(metadata_json, '$.cwd') AS cwd FROM working_memory WHERE source = 'coding-agent-transcript'",
+					)
+					.all(),
+			).toEqual([{ cwd: rollback ? sourceCwd : destinationCwd }]);
+		} finally {
+			retainedDb.close();
 		}
 	});
 

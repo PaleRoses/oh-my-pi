@@ -5198,9 +5198,9 @@ export class AgentSession {
 		this.#memory.endLocalMemoryStartup(signal);
 	}
 
-	/** Applies the selected memory backend to runtime state, tools, and prompt. */
-	applyMemoryBackend(): Promise<void> {
-		return this.#memory.applyMemoryBackend();
+	/** Apply the backend; cwd rebinding can skip Mnemopi auto-retention while still draining writes. */
+	applyMemoryBackend(options: { retainMnemopi?: boolean } = {}): Promise<void> {
+		return this.#memory.applyMemoryBackend(options);
 	}
 
 	/** Rebuilds the stable base prompt for the current tools and model. */

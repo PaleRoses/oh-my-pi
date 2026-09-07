@@ -211,7 +211,10 @@ export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<
 	// explicit cwd move, but let an in-flight Hindsight transition finish (or
 	// fail) rather than retrying a partially torn-down backend outside its task.
 	if (!session.getHindsightSessionState() && !primaryRebuildTasks.has(session)) {
-		await session.applyMemoryBackend();
+		// The manager already has the new cwd, and this may also be rollback
+		// from a destination that never committed. Drain existing writes without
+		// capturing the transcript under either transient scope.
+		await session.applyMemoryBackend({ retainMnemopi: false });
 	}
 
 	let task: PrimaryRebuildTask | undefined = schedulePrimaryStateRebuild(session);
