@@ -7,6 +7,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
+import { computeMnemopiBankScope } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import { getMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -110,6 +111,43 @@ describe("AgentSession memory backend lifecycle", () => {
 		expect(current.getAllToolNames()).toEqual(["read"]);
 		expect(current.systemPrompt).toEqual(["backend:off;tools:read"]);
 	});
+	it.each([
+		["mnemopi", "mnemopi"],
+		["mnemopi", "off"],
+		["off", "mnemopi"],
+	] as const)("rebinds %s to %s on a cwd move without Hindsight", async (source, destination) => {
+		settings.override("memory.backend", source);
+		await settings.reloadForCwd(path.join(tempDir.path(), "source"));
+		const current = createSession(async () =>
+			settings.get("memory.backend") === "mnemopi" ? [createTool("retain")] : [],
+		);
+		await current.applyMemoryBackend();
+
+		const destinationCwd = path.join(tempDir.path(), "destination");
+		current.sessionManager.setCwdWithoutRelocation(destinationCwd);
+		settings.override("memory.backend", destination);
+		await settings.reloadForCwd(destinationCwd);
+		await rebindMemoryBackendForCwd(current);
+
+		const state = getMnemopiSessionState(current);
+		if (destination === "mnemopi") {
+			const scope = computeMnemopiBankScope(
+				settings.get("mnemopi.bank"),
+				destinationCwd,
+				settings.get("mnemopi.scoping"),
+			);
+			expect(state?.config.retainBank).toBe(scope.retainBank);
+			expect(state?.config.recallBanks).toEqual(scope.recallBanks);
+			expect(current.getActiveToolNames()).toEqual(["read", "retain"]);
+			expect(current.systemPrompt).toEqual(["backend:mnemopi;tools:read,retain"]);
+		} else {
+			expect(state).toBeUndefined();
+			expect(current.getActiveToolNames()).toEqual(["read"]);
+			expect(current.getAllToolNames()).toEqual(["read"]);
+			expect(current.systemPrompt).toEqual(["backend:off;tools:read"]);
+		}
+	});
+
 	it("cancels a displaced local startup generation", async () => {
 		const current = createSession(async () => []);
 		const localStartup = current.beginLocalMemoryStartup();
