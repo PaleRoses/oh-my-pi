@@ -157,6 +157,15 @@ describe("canonical agent identity surfaces", () => {
 		expect(formatAgentIdentityReport(denied)).toContain("Active Hindsight bank: disabled-by-profile");
 	});
 
+	test("refuses an identity that cannot name the profile it claims", () => {
+		expect(() =>
+			createEffectiveSessionIdentity({ role: "main", promptSource: "system-prompt-profile", memoryEnabled: true }),
+		).toThrow("A system-prompt-profile identity requires a profile id.");
+		expect(() =>
+			createEffectiveSessionIdentity({ role: "main", promptSource: "maintained-omp-prompt", memoryEnabled: false }),
+		).toThrow("A profile-disabled memory capability requires a profile id.");
+	});
+
 	test("keeps the existing footer rows and every line bounded at narrow widths", () => {
 		const session = sessionStub({
 			promptProfile: "long-prompt-profile",

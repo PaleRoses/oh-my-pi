@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { APP_NAME } from "@oh-my-pi/pi-utils";
-import type { Subprocess } from "bun";
+import { APP_NAME, formatCount, ptree } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 
 const CONFIG_KEYS = {
@@ -75,8 +75,8 @@ function assertSafeBranchName(value: string, key: string): void {
 	if (invalid) throw new Error(`Invalid source-update branch in ${key}: ${value}`);
 }
 
-async function requireLocalConfig(checkout: string, key: string): Promise<string> {
-	const value = await vcs.requireGit(checkout).configGet(key);
+async function requireLocalConfig(git: VcsGitRepo, key: string): Promise<string> {
+	const value = await git.configGet(key);
 	if (!value) {
 		throw new Error(
 			`Source update is not configured: missing repository-local Git setting ${key}. ` +
@@ -86,9 +86,8 @@ async function requireLocalConfig(checkout: string, key: string): Promise<string
 	return value;
 }
 
-async function loadConfig(checkout: string): Promise<SourceUpdateConfig> {
-	const enabled = await vcs.requireGit(checkout).configGet(CONFIG_KEYS.enabled);
-	if (enabled !== "true") {
+async function loadConfig(git: VcsGitRepo, checkout: string): Promise<SourceUpdateConfig> {
+	if ((await git.configGet(CONFIG_KEYS.enabled)) !== "true") {
 		throw new Error(
 			`This ${APP_NAME} runs from source checkout ${checkout}, but managed source updates are not enabled. ` +
 				`Set repository-local ${CONFIG_KEYS.enabled}=true and the four source-update remote/branch settings; ` +
@@ -96,10 +95,10 @@ async function loadConfig(checkout: string): Promise<SourceUpdateConfig> {
 		);
 	}
 	const [upstreamRemote, upstreamBranch, publishRemote, publishBranch] = await Promise.all([
-		requireLocalConfig(checkout, CONFIG_KEYS.upstreamRemote),
-		requireLocalConfig(checkout, CONFIG_KEYS.upstreamBranch),
-		requireLocalConfig(checkout, CONFIG_KEYS.publishRemote),
-		requireLocalConfig(checkout, CONFIG_KEYS.publishBranch),
+		requireLocalConfig(git, CONFIG_KEYS.upstreamRemote),
+		requireLocalConfig(git, CONFIG_KEYS.upstreamBranch),
+		requireLocalConfig(git, CONFIG_KEYS.publishRemote),
+		requireLocalConfig(git, CONFIG_KEYS.publishBranch),
 	]);
 	assertSafeRemoteName(upstreamRemote, CONFIG_KEYS.upstreamRemote);
 	assertSafeBranchName(upstreamBranch, CONFIG_KEYS.upstreamBranch);
@@ -108,48 +107,45 @@ async function loadConfig(checkout: string): Promise<SourceUpdateConfig> {
 	return { upstreamRemote, upstreamBranch, publishRemote, publishBranch };
 }
 
-async function resolveCheckoutRoot(checkout: string): Promise<string> {
+/** Resolve the configured marker to the canonical worktree root and its repository handle. */
+function resolveCheckout(checkout: string): readonly [VcsGitRepo, string] {
 	let requestedRoot: string;
 	try {
 		requestedRoot = fs.realpathSync(path.resolve(checkout));
 	} catch (error) {
 		throw new Error(`Source checkout does not exist: ${checkout}`, { cause: error });
 	}
-	const discoveredRoot = vcs.git(requestedRoot)?.info().repoRoot ?? null;
-	if (!discoveredRoot) throw new Error(`Source checkout is not a Git worktree: ${requestedRoot}`);
-	const canonicalRoot = fs.realpathSync(discoveredRoot);
+	const git = vcs.git(requestedRoot);
+	if (!git) throw new Error(`Source checkout is not a Git worktree: ${requestedRoot}`);
+	const canonicalRoot = fs.realpathSync(git.info().repoRoot);
 	if (canonicalRoot !== requestedRoot) {
 		throw new Error(`Source checkout marker must name the worktree root: ${requestedRoot} (root: ${canonicalRoot})`);
 	}
-	return canonicalRoot;
+	return [git, canonicalRoot];
 }
 
-async function fetchBranch(checkout: string, remote: string, branch: string): Promise<string> {
+async function fetchBranch(git: VcsGitRepo, remote: string, branch: string): Promise<string> {
 	const ref = `refs/remotes/${remote}/${branch}`;
-	await vcs.requireGit(checkout).fetch(remote, `refs/heads/${branch}`, ref);
-	const sha = await vcs.requireGit(checkout).resolveRef(ref);
+	await git.fetch(remote, `refs/heads/${branch}`, ref);
+	const sha = await git.resolveRef(ref);
 	if (!sha) throw new Error(`Fetched ${remote}/${branch}, but ${ref} does not resolve to a commit`);
 	return sha;
 }
 
-async function assertClean(checkout: string): Promise<void> {
-	const state = await vcs.requireGit(checkout).statusPorcelain({ untracked: "all" });
+async function assertClean(git: VcsGitRepo): Promise<void> {
+	const state = await git.statusPorcelain({ untracked: "all" });
 	if (!state) return;
-	const summary = state.split("\n").slice(0, 8).join("\n");
-	throw new Error(`Source update requires a clean worktree. Commit or remove these changes first:\n${summary}`);
-}
-
-interface GitCommandResult {
-	readonly exitCode: number;
-	readonly stderr: string;
-	readonly stdout: string;
+	throw new Error(
+		`Source update requires a clean worktree. Commit or remove these changes first:\n${state.split("\n").slice(0, 8).join("\n")}`,
+	);
 }
 
 /** Updater-only porcelain edge for merge operations not exposed by upstream pi-vcs. */
-async function runGit(checkout: string, args: readonly string[]): Promise<GitCommandResult> {
-	let child: Subprocess<"ignore", "pipe", "pipe">;
+async function requireGit(checkout: string, args: readonly string[]): Promise<string> {
+	const name = args[0] ?? "command";
+	let result: ptree.ExecResult;
 	try {
-		child = Bun.spawn(["git", ...args], {
+		result = await ptree.exec(["git", ...args], {
 			cwd: checkout,
 			env: {
 				...process.env,
@@ -157,26 +153,14 @@ async function runGit(checkout: string, args: readonly string[]): Promise<GitCom
 				GIT_MERGE_AUTOEDIT: "no",
 				GIT_TERMINAL_PROMPT: "0",
 			},
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
+			allowNonZero: true,
+			stderr: "full",
 		});
 	} catch (error) {
-		throw new Error(`Could not start git ${args[0] ?? "command"}`, { cause: error });
+		throw new Error(`Could not start git ${name}`, { cause: error });
 	}
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(child.stdout).text(),
-		new Response(child.stderr).text(),
-		child.exited,
-	]);
-	return { exitCode, stderr: stderr.trim(), stdout: stdout.trim() };
-}
-
-async function requireGit(checkout: string, args: readonly string[]): Promise<string> {
-	const result = await runGit(checkout, args);
-	if (result.exitCode === 0) return result.stdout;
-	const detail = result.stderr || result.stdout || `exit ${result.exitCode}`;
-	throw new Error(`git ${args[0] ?? "command"} failed: ${detail}`);
+	if (result.ok) return result.stdout.trim();
+	throw new Error(`git ${name} failed: ${result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`}`);
 }
 
 async function gitRevListCount(checkout: string, range: string): Promise<number> {
@@ -218,48 +202,46 @@ async function validateSourceCheckout(checkout: string): Promise<void> {
 	await runCommand(codingAgent, ["bun", "run", "build"]);
 }
 
-async function stageGeneratedNativeLockfile(checkout: string): Promise<void> {
-	const changed = await vcs.requireGit(checkout).changedFiles({ files: [GENERATED_NATIVE_LOCKFILE] });
-	if (changed.includes(GENERATED_NATIVE_LOCKFILE)) {
-		await vcs.requireGit(checkout).stageFiles([GENERATED_NATIVE_LOCKFILE]);
-	}
+/** The one artifact validation is allowed to regenerate, carried into the merge commit. */
+async function stageGeneratedNativeLockfile(git: VcsGitRepo): Promise<void> {
+	const changed = await git.changedFiles({ files: [GENERATED_NATIVE_LOCKFILE] });
+	if (changed.includes(GENERATED_NATIVE_LOCKFILE)) await git.stageFiles([GENERATED_NATIVE_LOCKFILE]);
 }
 
-async function assertValidationStable(checkout: string): Promise<void> {
-	const summary = await vcs.requireGit(checkout).statusSummary();
-	if (!summary) throw new Error("Could not inspect the source checkout after validation");
-	if (summary.unstaged === 0 && summary.untracked === 0) return;
+async function assertValidationStable(git: VcsGitRepo): Promise<void> {
+	const { unstaged, untracked } = await git.statusSummary();
+	if (unstaged === 0 && untracked === 0) return;
 	throw new Error(
-		`Validation changed the source checkout outside the merge index: ` +
-			`${summary.unstaged} unstaged, ${summary.untracked} untracked.`,
+		`Validation changed the source checkout outside the merge index: ${unstaged} unstaged, ${untracked} untracked.`,
 	);
 }
 
-async function restoreFailedMerge(checkout: string, originalHead: string, failure: unknown): Promise<never> {
-	let worktreeRestoreFailure: unknown;
+/** Run one rollback step, reporting its failure as a diagnostic sentence. */
+async function rollbackFailure(label: string, step: () => Promise<unknown>): Promise<string> {
 	try {
-		const summary = await vcs.requireGit(checkout).statusSummary();
-		if (summary?.unstaged) await requireGit(checkout, ["checkout", "--", "."]);
+		await step();
+		return "";
 	} catch (error) {
-		worktreeRestoreFailure = error;
+		return `${label} failed: ${errorMessage(error)}.`;
 	}
-	let abortFailure: unknown;
-	try {
-		await requireGit(checkout, ["merge", "--abort"]);
-	} catch (error) {
-		abortFailure = error;
-	}
-	const [restoredHead, state] = await Promise.all([
-		vcs.requireGit(checkout).headSha(),
-		vcs.requireGit(checkout).statusPorcelain({ untracked: "all" }),
-	]);
+}
+
+async function restoreFailedMerge(
+	git: VcsGitRepo,
+	checkout: string,
+	originalHead: string,
+	failure: unknown,
+): Promise<never> {
+	const rollbackDetail = [
+		await rollbackFailure("Worktree restore", async () => {
+			if ((await git.statusSummary()).unstaged) await requireGit(checkout, ["checkout", "--", "."]);
+		}),
+		await rollbackFailure("Merge abort", () => requireGit(checkout, ["merge", "--abort"])),
+	]
+		.filter(Boolean)
+		.join(" ");
+	const [restoredHead, state] = await Promise.all([git.headSha(), git.statusPorcelain({ untracked: "all" })]);
 	if (restoredHead !== originalHead || state) {
-		const rollbackDetail = [
-			worktreeRestoreFailure ? `Worktree restore failed: ${errorMessage(worktreeRestoreFailure)}.` : "",
-			abortFailure ? `Merge abort failed: ${errorMessage(abortFailure)}.` : "",
-		]
-			.filter(Boolean)
-			.join(" ");
 		throw new Error(
 			`Source update failed and the checkout could not be restored automatically. ${rollbackDetail} ` +
 				`Original HEAD: ${originalHead}; current HEAD: ${restoredHead ?? "missing"}; status: ${state || "clean"}.`,
@@ -271,33 +253,30 @@ async function restoreFailedMerge(checkout: string, originalHead: string, failur
 	});
 }
 
-function logSource(log: (message: string) => void, checkout: string, config: SourceUpdateConfig): void {
-	log(chalk.dim(`Source checkout: ${checkout}`));
-	log(chalk.dim(`Upstream: ${config.upstreamRemote}/${config.upstreamBranch}`));
-	log(chalk.dim(`Publish: ${config.publishRemote}/${config.publishBranch}`));
-}
-
 export async function runSourceCheckoutUpdate(
 	options: SourceCheckoutUpdateOptions,
 	dependencies: SourceCheckoutUpdateDependencies = {},
 ): Promise<SourceCheckoutUpdateResult> {
 	const log = dependencies.log ?? console.log;
 	const validate = dependencies.validate ?? validateSourceCheckout;
-	const checkout = await resolveCheckoutRoot(options.checkout);
-	const config = await loadConfig(checkout);
-	const originalHead = await vcs.requireGit(checkout).headSha();
+	const [git, checkout] = resolveCheckout(options.checkout);
+	const config = await loadConfig(git, checkout);
+	const originalHead = await git.headSha();
 	if (!originalHead) throw new Error(`Source checkout has no HEAD commit: ${checkout}`);
-	logSource(log, checkout, config);
+	log(chalk.dim(`Source checkout: ${checkout}`));
+	log(chalk.dim(`Upstream: ${config.upstreamRemote}/${config.upstreamBranch}`));
+	log(chalk.dim(`Publish: ${config.publishRemote}/${config.publishBranch}`));
 
-	const publishedHead = await fetchBranch(checkout, config.publishRemote, config.publishBranch);
-	if ((await vcs.requireGit(checkout).mergeBase(publishedHead, originalHead)) !== publishedHead) {
+	const publishRefspec = `HEAD:refs/heads/${config.publishBranch}`;
+	const publishedHead = await fetchBranch(git, config.publishRemote, config.publishBranch);
+	if ((await git.mergeBase(publishedHead, originalHead)) !== publishedHead) {
 		throw new Error(
 			`${config.publishRemote}/${config.publishBranch} contains commits absent from local HEAD. ` +
 				"Refusing a non-fast-forward publication; integrate that branch first.",
 		);
 	}
-	const upstreamHead = await fetchBranch(checkout, config.upstreamRemote, config.upstreamBranch);
-	const upstreamContained = (await vcs.requireGit(checkout).mergeBase(upstreamHead, originalHead)) === upstreamHead;
+	const upstreamHead = await fetchBranch(git, config.upstreamRemote, config.upstreamBranch);
+	const upstreamContained = (await git.mergeBase(upstreamHead, originalHead)) === upstreamHead;
 	const unpublished = publishedHead !== originalHead;
 
 	if (options.check) {
@@ -305,28 +284,25 @@ export async function runSourceCheckoutUpdate(
 			log(chalk.green("Source checkout is up to date"));
 		} else {
 			const commits = await gitRevListCount(checkout, `${originalHead}..${upstreamHead}`);
-			log(chalk.cyan(`${commits} upstream commit${commits === 1 ? "" : "s"} available`));
+			log(chalk.cyan(`${formatCount("upstream commit", commits)} available`));
 			return { kind: "available", commits, head: originalHead, upstream: upstreamHead };
 		}
 		if (unpublished) {
 			const commits = await gitRevListCount(checkout, `${publishedHead}..${originalHead}`);
-			log(chalk.yellow(`${commits} local commit${commits === 1 ? "" : "s"} not yet published`));
+			log(chalk.yellow(`${formatCount("local commit", commits)} not yet published`));
 		}
 		return { kind: "up-to-date", head: originalHead };
 	}
 
-	await assertClean(checkout);
+	await assertClean(git);
 	if (upstreamContained) {
 		if (options.force || unpublished) {
 			log(chalk.dim("Validating source checkout..."));
 			await validate(checkout);
-			await assertValidationStable(checkout);
+			await assertValidationStable(git);
 		}
 		if (unpublished) {
-			await vcs.requireGit(checkout).push({
-				remote: config.publishRemote,
-				refspec: `HEAD:refs/heads/${config.publishBranch}`,
-			});
+			await git.push({ remote: config.publishRemote, refspec: publishRefspec });
 			log(chalk.green(`Published ${config.publishRemote}/${config.publishBranch}`));
 			return { kind: "published", head: originalHead, previousPublishedHead: publishedHead };
 		}
@@ -339,33 +315,30 @@ export async function runSourceCheckoutUpdate(
 	}
 
 	const commits = await gitRevListCount(checkout, `${originalHead}..${upstreamHead}`);
-	log(chalk.cyan(`Merging ${commits} upstream commit${commits === 1 ? "" : "s"}...`));
+	log(chalk.cyan(`Merging ${formatCount("upstream commit", commits)}...`));
 	try {
 		await requireGit(checkout, ["merge", "--no-commit", "--no-ff", "--", upstreamHead]);
 		await validate(checkout);
-		await stageGeneratedNativeLockfile(checkout);
-		await assertValidationStable(checkout);
+		await stageGeneratedNativeLockfile(git);
+		await assertValidationStable(git);
 		await requireGit(checkout, [
 			"commit",
 			"-m",
 			`Merge ${config.upstreamRemote}/${config.upstreamBranch} into ${config.publishBranch}`,
 		]);
 	} catch (error) {
-		return await restoreFailedMerge(checkout, originalHead, error);
+		return await restoreFailedMerge(git, checkout, originalHead, error);
 	}
-	const updatedHead = await vcs.requireGit(checkout).headSha();
+	const updatedHead = await git.headSha();
 	if (!updatedHead || updatedHead === originalHead) {
 		throw new Error(`Source update did not create a merge commit from ${originalHead}`);
 	}
 	try {
-		await vcs.requireGit(checkout).push({
-			remote: config.publishRemote,
-			refspec: `HEAD:refs/heads/${config.publishBranch}`,
-		});
+		await git.push({ remote: config.publishRemote, refspec: publishRefspec });
 	} catch (error) {
 		throw new Error(
 			`Source update committed ${updatedHead}, but publication failed. Retry: git push ${config.publishRemote} ` +
-				`HEAD:refs/heads/${config.publishBranch}. ${errorMessage(error)}`,
+				`${publishRefspec}. ${errorMessage(error)}`,
 			{ cause: error },
 		);
 	}

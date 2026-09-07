@@ -67,7 +67,7 @@ import {
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
 import { loadDailyActivity } from "../../stats/activity-client";
 import { resolveMaintainedSystemPromptFilePath } from "../../system-prompt";
-import { resolveSystemPromptProfileFilePath } from "../../system-prompt-profiles";
+import { resolvePath } from "../../extensibility/utils";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -218,7 +218,7 @@ export class SelectorController {
 							operation,
 						),
 					onEditMarkdown: content => this.ctx.editMarkdown(content),
-					onOpenMarkdownFile: source => this.ctx.openMarkdownFile(resolveSystemPromptProfileFilePath(source, cwd)),
+					onOpenMarkdownFile: source => this.ctx.openMarkdownFile(resolvePath(source, cwd)),
 					onClose: done,
 					requestRender: () => this.ctx.ui.requestRender(),
 				},

@@ -256,4 +256,15 @@ describe("/prompt slash command", () => {
 			{ agentKind: "sub", profile: "worker" },
 		]);
 	});
+	it("rejects inherited object names but permits explicitly configured profiles with those names", async () => {
+		const harness = createRuntime();
+		await executeAcpBuiltinSlashCommand("/prompt show toString", harness.runtime);
+		expect(harness.output).toHaveBeenLastCalledWith(
+			expect.stringContaining('Unknown system prompt profile "toString"'),
+		);
+		await executeAcpBuiltinSlashCommand("/prompt set toString instructions explicit", harness.runtime);
+		expect(Object.hasOwn(harness.store.systemPromptProfiles, "toString")).toBe(true);
+		await executeAcpBuiltinSlashCommand("/prompt show toString", harness.runtime);
+		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("System prompt profile: toString"));
+	});
 });

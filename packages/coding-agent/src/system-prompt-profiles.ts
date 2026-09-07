@@ -103,14 +103,8 @@ function requireProfileId(value: unknown, label: string): string {
 	return profileId;
 }
 
-/** Profile file paths resolve through upstream's shared path owner, which also
- *  expands `~`, normalizes, and rejects the `local://` scheme with a real message. */
-export function resolveSystemPromptProfileFilePath(source: string, cwd: string): string {
-	return resolvePath(source, cwd);
-}
-
 async function loadPromptFile(profileId: string, source: string, cwd: string): Promise<string> {
-	const profilePath = resolveSystemPromptProfileFilePath(source, cwd);
+	const profilePath = resolvePath(source, cwd);
 	try {
 		const prompt = await Bun.file(profilePath).text();
 		if (prompt.trim().length === 0) {
@@ -125,7 +119,7 @@ async function loadPromptFile(profileId: string, source: string, cwd: string): P
 
 async function resolveContextImage(profileId: string, source: string, index: number, cwd: string): Promise<string> {
 	const label = `systemPromptProfiles.${profileId}.contextImages[${index}]`;
-	const imagePath = resolveSystemPromptProfileFilePath(requireNonEmptyString(source, label), cwd);
+	const imagePath = resolvePath(requireNonEmptyString(source, label), cwd);
 	if (!(await Bun.file(imagePath).exists())) {
 		throw new Error(`${label} does not exist: ${imagePath}`);
 	}
@@ -133,16 +127,11 @@ async function resolveContextImage(profileId: string, source: string, index: num
 }
 
 function compileProfileTools(profileId: string, raw: readonly string[]): readonly string[] {
-	const seen = new Set<string>();
-	const tools: string[] = [];
-	raw.forEach((name, index) => {
-		const trimmed = requireNonEmptyString(name, `systemPromptProfiles.${profileId}.tools[${index}]`).toLowerCase();
-		if (!seen.has(trimmed)) {
-			seen.add(trimmed);
-			tools.push(trimmed);
-		}
-	});
-	return tools;
+	const tools = new Set<string>();
+	raw.forEach((name, index) =>
+		tools.add(requireNonEmptyString(name, `systemPromptProfiles.${profileId}.tools[${index}]`).toLowerCase()),
+	);
+	return [...tools];
 }
 
 function compileModelMatcher(pattern: string, label: string): (model: string | undefined) => boolean {
@@ -157,39 +146,34 @@ function compileModelMatcher(pattern: string, label: string): (model: string | u
 	return model => model !== undefined && glob.match(model.toLowerCase());
 }
 
+/** Resolves one profile text field from its inline spelling, else its `<field>File` spelling. */
+async function resolveProfileText(
+	profileId: string,
+	raw: typeof systemPromptProfileSchema.infer,
+	field: "prompt" | "instructions",
+	cwd: string,
+): Promise<string | undefined> {
+	const label = `systemPromptProfiles.${profileId}.${field}`;
+	const inline = raw[field];
+	if (inline !== undefined) return requireNonEmptyString(inline, label);
+	const file = raw[`${field}File`];
+	if (file === undefined) return undefined;
+	return loadPromptFile(profileId, requireNonEmptyString(file, `${label}File`), cwd);
+}
+
 async function compileProfile(
 	profileId: string,
 	raw: typeof systemPromptProfileSchema.infer,
 	cwd: string,
 ): Promise<SystemPromptProfile> {
-	const promptSources = [raw.prompt !== undefined, raw.promptFile !== undefined];
-	if (promptSources.filter(Boolean).length > 1) {
+	if (raw.prompt !== undefined && raw.promptFile !== undefined) {
 		throw new Error(`systemPromptProfiles.${profileId} may contain only one of "prompt" or "promptFile"`);
 	}
-	const instructionSources = [raw.instructions !== undefined, raw.instructionsFile !== undefined];
-	if (instructionSources.filter(Boolean).length > 1) {
+	if (raw.instructions !== undefined && raw.instructionsFile !== undefined) {
 		throw new Error(`systemPromptProfiles.${profileId} may contain only one of "instructions" or "instructionsFile"`);
 	}
-	const prompt =
-		raw.prompt !== undefined
-			? requireNonEmptyString(raw.prompt, `systemPromptProfiles.${profileId}.prompt`)
-			: raw.promptFile !== undefined
-				? await loadPromptFile(
-						profileId,
-						requireNonEmptyString(raw.promptFile, `systemPromptProfiles.${profileId}.promptFile`),
-						cwd,
-					)
-				: undefined;
-	const instructions =
-		raw.instructions !== undefined
-			? requireNonEmptyString(raw.instructions, `systemPromptProfiles.${profileId}.instructions`)
-			: raw.instructionsFile !== undefined
-				? await loadPromptFile(
-						profileId,
-						requireNonEmptyString(raw.instructionsFile, `systemPromptProfiles.${profileId}.instructionsFile`),
-						cwd,
-					)
-				: undefined;
+	const prompt = await resolveProfileText(profileId, raw, "prompt", cwd);
+	const instructions = await resolveProfileText(profileId, raw, "instructions", cwd);
 	return {
 		id: profileId,
 		constitution: raw.constitution,
@@ -244,10 +228,6 @@ function compileRoute(
 	return { matches, decision: { type: "profile", profile } };
 }
 
-function decisionProfileId(decision: SystemPromptProfileDecision): string | undefined {
-	return decision.type === "profile" ? decision.profile.id : undefined;
-}
-
 export async function createSystemPromptProfileResolver(options: {
 	readonly profiles: unknown;
 	readonly routes: unknown;
@@ -285,7 +265,7 @@ export async function createSystemPromptProfileResolver(options: {
 		assertCompatible: (profileId, context) => {
 			const decision = resolveInitial(context);
 			if (decision.type === "denied") throw new Error(decision.reason);
-			const nextProfileId = decisionProfileId(decision);
+			const nextProfileId = decision.type === "profile" ? decision.profile.id : undefined;
 			if (profileId === nextProfileId) return;
 			const currentLabel = profileId === undefined ? "the default prompt" : `system prompt profile "${profileId}"`;
 			const nextLabel =

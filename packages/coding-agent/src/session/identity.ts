@@ -42,14 +42,10 @@ export function createEffectiveSessionIdentity(options: {
 	let memory: EffectiveMemoryCapability;
 	if (options.memoryEnabled) {
 		memory = Object.freeze({ status: "enabled" });
+	} else if (options.profileId === undefined) {
+		throw new Error("A profile-disabled memory capability requires a profile id.");
 	} else {
-		if (options.profileId === undefined) {
-			throw new Error("A profile-disabled memory capability requires a profile id.");
-		}
-		memory = Object.freeze({
-			status: "disabled-by-profile",
-			profileId: options.profileId,
-		});
+		memory = Object.freeze({ status: "disabled-by-profile", profileId: options.profileId });
 	}
 	return Object.freeze({
 		role: options.role,
@@ -63,20 +59,22 @@ export function formatIdentityModel(
 	return model ? `${model.provider}/${model.id}` : undefined;
 }
 
+interface HindsightMemoryFacts {
+	readonly bank: string;
+	readonly project: string;
+	readonly scope: "global" | "per-project" | "per-project-tagged";
+	readonly tags: readonly string[];
+}
+
 type MemoryProviderIdentity =
 	| { readonly backend: "off"; readonly status: "disabled" }
 	| { readonly backend: "local" | "sharpshooter"; readonly status: "active" }
 	| { readonly backend: "mnemopi"; readonly status: "configured-not-started" | "active" }
 	| { readonly backend: "hindsight"; readonly status: "configured-not-started" }
-	| {
-			readonly backend: "hindsight";
-			readonly status: "active";
-			readonly bank: string;
-			readonly project: string;
-			readonly scope: "global" | "per-project" | "per-project-tagged";
-			readonly tags: readonly string[];
-	  }
+	| ({ readonly backend: "hindsight"; readonly status: "active" } & HindsightMemoryFacts)
 	| { readonly backend: "unavailable"; readonly status: "not-started" };
+
+const MEMORY_NOT_STARTED: MemoryProviderIdentity = { backend: "unavailable", status: "not-started" };
 
 export interface AgentIdentitySnapshotInput {
 	readonly effectiveIdentity: EffectiveSessionIdentity;
@@ -92,23 +90,13 @@ export interface AgentIdentitySnapshot extends EffectiveSessionIdentity {
 		readonly backend: MemoryProviderIdentity["backend"];
 		readonly providerStatus: MemoryProviderIdentity["status"];
 		readonly hindsight:
-			| { readonly status: "disabled-by-profile" }
-			| { readonly status: "disabled" }
-			| { readonly status: "configured-not-started" }
-			| {
-					readonly status: "active";
-					readonly bank: string;
-					readonly project: string;
-					readonly scope: "global" | "per-project" | "per-project-tagged";
-					readonly tags: readonly string[];
-			  };
+			| { readonly status: "disabled-by-profile" | "disabled" | "configured-not-started" }
+			| ({ readonly status: "active" } & HindsightMemoryFacts);
 	};
 }
 
 function configuredMemoryIdentity(session: AgentSession): MemoryProviderIdentity {
-	if (session.effectiveIdentity.memory.status !== "enabled") {
-		return { backend: "unavailable", status: "not-started" };
-	}
+	if (session.effectiveIdentity.memory.status !== "enabled") return MEMORY_NOT_STARTED;
 	const backend: MemoryBackendId = session.settings.get("memory.backend") ?? "off";
 	switch (backend) {
 		case "off":
@@ -138,10 +126,7 @@ export function deriveAgentIdentitySnapshot(input: AgentIdentitySnapshotInput): 
 	const identity = input.effectiveIdentity;
 	const modelValue = formatIdentityModel(input.model);
 	const model = modelValue ? ({ status: "active", value: modelValue } as const) : ({ status: "unavailable" } as const);
-	const memoryIdentity: MemoryProviderIdentity = input.memoryIdentity ?? {
-		backend: "unavailable",
-		status: "not-started",
-	};
+	const memoryIdentity = input.memoryIdentity ?? MEMORY_NOT_STARTED;
 	const hindsight =
 		identity.memory.status === "disabled-by-profile"
 			? ({ status: "disabled-by-profile" } as const)
@@ -184,6 +169,8 @@ function formatMemoryPermission(snapshot: AgentIdentitySnapshot): string {
 
 export function formatAgentIdentityReport(snapshot: AgentIdentitySnapshot): string {
 	const hindsight = snapshot.memory.hindsight;
+	const tags =
+		hindsight.status !== "active" ? hindsight.status : hindsight.tags.length > 0 ? hindsight.tags.join(", ") : "none";
 	return [
 		"OMP identity",
 		`Role: ${snapshot.role}`,
@@ -197,13 +184,7 @@ export function formatAgentIdentityReport(snapshot: AgentIdentitySnapshot): stri
 		`Active Hindsight bank: ${hindsight.status === "active" ? hindsight.bank : hindsight.status}`,
 		`Project: ${hindsight.status === "active" ? hindsight.project : hindsight.status}`,
 		`Scope: ${hindsight.status === "active" ? hindsight.scope : hindsight.status}`,
-		`Tags: ${
-			hindsight.status === "active"
-				? hindsight.tags.length > 0
-					? hindsight.tags.join(", ")
-					: "none"
-				: hindsight.status
-		}`,
+		`Tags: ${tags}`,
 	].join("\n");
 }
 
@@ -220,14 +201,12 @@ export function formatAgentIdentitySystemPrompt(
 ): string {
 	const hindsight = snapshot.memory.hindsight;
 	const memoryIdentity =
-		snapshot.memory.status === "disabled-by-profile"
-			? hindsight.status
-			: snapshot.memory.backend === "hindsight"
-				? hindsight.status === "active"
-					? `bank=${hindsight.bank}; scope=${hindsight.scope}; project=${hindsight.project}; tags=${
-							hindsight.tags.length > 0 ? hindsight.tags.join(",") : "none"
-						}`
-					: hindsight.status
+		hindsight.status === "active"
+			? `bank=${hindsight.bank}; scope=${hindsight.scope}; project=${hindsight.project}; tags=${
+					hindsight.tags.length > 0 ? hindsight.tags.join(",") : "none"
+				}`
+			: snapshot.memory.status === "disabled-by-profile" || snapshot.memory.backend === "hindsight"
+				? hindsight.status
 				: `${snapshot.memory.backend}:${snapshot.memory.providerStatus}`;
 	return [
 		"<agent-identity>",

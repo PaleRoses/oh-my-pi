@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated profile field handling, editor transitions, identity derivation, and source-update plumbing without removing supported behavior.
+
+### Fixed
+
+- `/prompt show` rejects inherited object properties unless explicitly configured as profiles.
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.

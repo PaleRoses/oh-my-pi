@@ -17,6 +17,7 @@ import type {
 } from "../../config/settings-schema";
 import {
 	PROMPT_PROFILE_FIELD_DEFINITIONS,
+	PROMPT_PROFILE_FIELDS,
 	type PromptProfileConfiguration,
 	type PromptProfileField,
 	type PromptProfileFieldDefinition,
@@ -51,11 +52,6 @@ export interface PromptProfileSelectorCallbacks {
 type PromptProfileFileDefinition = Extract<PromptProfileFieldDefinition, { readonly input: "file" }>;
 type PromptProfileMarkdownDefinition = Extract<PromptProfileSelectorFieldDefinition, { readonly input: "markdown" }>;
 
-const PROMPT_PROFILE_FILE_DEFINITIONS = {
-	prompt: { field: "promptFile", label: "Base prompt file", input: "file" },
-	instructions: { field: "instructionsFile", label: "Appended instructions file", input: "file" },
-} as const satisfies Record<"prompt" | "instructions", PromptProfileFileDefinition>;
-
 type PromptProfileSelectorScreen =
 	| { readonly type: "home" }
 	| { readonly type: "profile"; readonly profileId: string }
@@ -82,112 +78,30 @@ interface PromptProfileSelectorState {
 	readonly busy: boolean;
 }
 
-type PromptProfileSelectorEvent =
-	| { readonly type: "navigate"; readonly screen: PromptProfileSelectorScreen }
-	| { readonly type: "operationStarted"; readonly screen: PromptProfileSelectorScreen }
-	| { readonly type: "operationCancelled"; readonly screen: PromptProfileSelectorScreen }
-	| {
-			readonly type: "operationSucceeded";
-			readonly receipt: PromptProfileUpdateReceipt;
-			readonly screen: PromptProfileSelectorScreen;
-	  }
-	| { readonly type: "operationFailed"; readonly message: string };
-
-interface SelectorAction {
-	readonly id: string;
-	readonly label: string;
-	readonly description?: string;
+interface SelectorAction extends SelectItem {
 	readonly run: () => void;
 }
 
-function reducePromptProfileSelectorState(
-	state: PromptProfileSelectorState,
-	event: PromptProfileSelectorEvent,
-): PromptProfileSelectorState {
-	switch (event.type) {
-		case "navigate":
-			return { ...state, screen: event.screen, notice: undefined };
-		case "operationStarted":
-			return { ...state, screen: event.screen, notice: undefined, busy: true };
-		case "operationCancelled":
-			return { ...state, screen: event.screen, busy: false };
-		case "operationSucceeded":
-			return {
-				model: { ...state.model, ...event.receipt.configuration },
-				screen: event.screen,
-				notice: {
-					type: "success",
-					message:
-						event.receipt.restartNotice === undefined
-							? event.receipt.message
-							: `${event.receipt.message}\n${event.receipt.restartNotice}`,
-				},
-				busy: false,
-			};
-		case "operationFailed":
-			return { ...state, notice: { type: "error", message: event.message }, busy: false };
-	}
-}
-
-function profileFieldValue(
+function describeProfileField(
 	profile: SystemPromptProfileSetting,
-	field: PromptProfileField,
-): string | boolean | readonly string[] | undefined {
-	return profile[field];
-}
-
-function defaultToggleValue(field: PromptProfileField): boolean {
-	return field !== "projectContextOnly";
-}
-
-function describeProfileField(profile: SystemPromptProfileSetting, field: PromptProfileField): string {
-	const value = profileFieldValue(profile, field);
-	switch (field) {
+	definition: PromptProfileSelectorFieldDefinition,
+): string {
+	const value = profile[definition.field];
+	switch (definition.input) {
 		case "constitution":
-			switch (profile.constitution) {
-				case undefined:
-					return "none (default)";
-				case "fable":
-					return "Fable";
-				default:
-					return profile.constitution satisfies never;
-			}
-		case "prompt":
-			return profile.promptFile !== undefined
-				? shortenPath(profile.promptFile)
-				: typeof value === "string"
-					? `inline (${value.length} chars)`
-					: "maintained prompt (default)";
-		case "promptFile":
-			return typeof value === "string" ? shortenPath(value) : "none";
-		case "instructions":
-			return profile.instructionsFile !== undefined
-				? shortenPath(profile.instructionsFile)
-				: typeof value === "string"
-					? `inline (${value.length} chars)`
+			return profile.constitution === undefined ? "none (default)" : "Fable";
+		case "toggle":
+			return typeof value === "boolean" ? (value ? "on" : "off") : `${definition.default ? "on" : "off"} (default)`;
+		case "markdown": {
+			const source = "file" in definition ? profile[definition.file] : undefined;
+			if (source !== undefined) return shortenPath(source);
+			if (definition.field === "userTitle") return profile.userTitle ?? "the user (default)";
+			return typeof value === "string"
+				? `inline (${value.length} chars)`
+				: definition.field === "prompt"
+					? "maintained prompt (default)"
 					: "none";
-		case "instructionsFile":
-			return typeof value === "string" ? shortenPath(value) : "none";
-		case "projectContextOnly":
-		case "memory":
-		case "mcpServerInstructions":
-			return typeof value === "boolean"
-				? value
-					? "on"
-					: "off"
-				: `${defaultToggleValue(field) ? "on" : "off"} (default)`;
-		case "contextImages":
-			return Array.isArray(value) && value.length > 0
-				? value.map(entry => shortenPath(String(entry))).join(", ")
-				: "none";
-		case "userTitle":
-			return typeof value === "string" ? value : "the user (default)";
-		case "compactionIdentity":
-			return typeof value === "string" ? `inline (${value.length} chars)` : "none";
-		case "tools":
-			return Array.isArray(value) && value.length > 0 ? value.map(String).join(", ") : "all (default)";
-		default:
-			return field satisfies never;
+		}
 	}
 }
 
@@ -259,49 +173,45 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		if (!this.#state.busy && this.#interactive instanceof Input) this.#interactive.pasteText(text);
 	}
 
-	#dispatch(event: PromptProfileSelectorEvent): void {
-		this.#state = reducePromptProfileSelectorState(this.#state, event);
+	#refresh(): void {
 		this.#renderState();
 		this.#callbacks.requestRender();
 	}
 
 	#navigate(screen: PromptProfileSelectorScreen): void {
-		this.#dispatch({ type: "navigate", screen });
+		this.#state = { ...this.#state, screen, notice: undefined };
+		this.#refresh();
 	}
-
 	async #apply(
-		operation: PromptProfileOperation,
+		operation: PromptProfileOperation | (() => Promise<PromptProfileOperation | undefined>),
 		successScreen: PromptProfileSelectorScreen,
 		pendingScreen = this.#state.screen,
 	): Promise<void> {
-		this.#dispatch({ type: "operationStarted", screen: pendingScreen });
+		this.#state = { ...this.#state, screen: pendingScreen, notice: undefined, busy: true };
+		this.#refresh();
 		try {
-			const receipt = await this.#callbacks.onApply(operation);
-			this.#dispatch({ type: "operationSucceeded", receipt, screen: successScreen });
-		} catch (error) {
-			this.#dispatch({ type: "operationFailed", message: errorMessage(error) });
-		}
-	}
-
-	async #editAndApply(
-		screen: Extract<PromptProfileSelectorScreen, { type: "field" }>,
-		edit: () => Promise<PromptProfileOperation | undefined>,
-	): Promise<void> {
-		this.#dispatch({ type: "operationStarted", screen });
-		try {
-			const operation = await edit();
-			if (operation === undefined) {
-				this.#dispatch({ type: "operationCancelled", screen });
-				return;
+			const resolved = typeof operation === "function" ? await operation() : operation;
+			if (resolved === undefined) {
+				this.#state = { ...this.#state, screen: pendingScreen, busy: false };
+			} else {
+				const receipt = await this.#callbacks.onApply(resolved);
+				this.#state = {
+					model: { ...this.#state.model, ...receipt.configuration },
+					screen: successScreen,
+					notice: {
+						type: "success",
+						message:
+							receipt.restartNotice === undefined
+								? receipt.message
+								: `${receipt.message}\n${receipt.restartNotice}`,
+					},
+					busy: false,
+				};
 			}
-			const receipt = await this.#callbacks.onApply(operation);
-			this.#dispatch({
-				type: "operationSucceeded",
-				receipt,
-				screen: { type: "profile", profileId: screen.profileId },
-			});
+			this.#refresh();
 		} catch (error) {
-			this.#dispatch({ type: "operationFailed", message: errorMessage(error) });
+			this.#state = { ...this.#state, notice: { type: "error", message: errorMessage(error) }, busy: false };
+			this.#refresh();
 		}
 	}
 
@@ -377,9 +287,8 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 			case "field":
 				return [this.#fieldSelector(this.#state.screen.profileId, this.#state.screen.definition)];
 			case "editPath":
-				return this.#pathInput(this.#state.screen);
 			case "create":
-				return this.#createInput(this.#state.screen.value);
+				return this.#inputScreen(this.#state.screen);
 			case "route":
 				return [this.#routeSelector(this.#state.screen.agentKind)];
 			case "remove":
@@ -389,7 +298,7 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 
 	#homeSelector(): SelectList {
 		const profileActions = sortedProfileIds(this.#state.model).map<SelectorAction>(profileId => ({
-			id: `profile:${profileId}`,
+			value: `profile:${profileId}`,
 			label: profileId,
 			description: profileDescription(this.#state.model, profileId),
 			run: () => this.#navigate({ type: "profile", profileId }),
@@ -398,24 +307,24 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 			[
 				...profileActions,
 				{
-					id: "create",
+					value: "create",
 					label: "Create profile",
 					description: "Add a validated profile",
 					run: () => this.#navigate({ type: "create", value: "" }),
 				},
 				{
-					id: "route:main",
+					value: "route:main",
 					label: "Main route",
 					description: unconditionalRouteProfile(this.#state.model.routes, "main") ?? "default prompt",
 					run: () => this.#navigate({ type: "route", agentKind: "main" }),
 				},
 				{
-					id: "route:sub",
+					value: "route:sub",
 					label: "Subagent route",
 					description: unconditionalRouteProfile(this.#state.model.routes, "sub") ?? "default prompt",
 					run: () => this.#navigate({ type: "route", agentKind: "sub" }),
 				},
-				{ id: "close", label: "Close", run: this.#callbacks.onClose },
+				{ value: "close", label: "Close", run: this.#callbacks.onClose },
 			],
 			this.#callbacks.onClose,
 		);
@@ -424,27 +333,23 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 	#profileSelector(profileId: string): SelectList {
 		const profile = this.#state.model.profiles[profileId] ?? {};
 		const fieldActions = PROMPT_PROFILE_FIELD_DEFINITIONS.map<SelectorAction>(definition => ({
-			id: `field:${definition.field}`,
+			value: `field:${definition.field}`,
 			label: definition.label,
-			description: describeProfileField(profile, definition.field),
+			description: describeProfileField(profile, definition),
 			run: () => this.#navigate({ type: "field", profileId, definition }),
 		}));
 		return this.#actionSelector(
 			[
 				...fieldActions,
 				{
-					id: "remove",
+					value: "remove",
 					label: "Remove profile",
 					description: isProfileReferenced(this.#state.model, profileId)
 						? "Referenced by a route; clear routes first"
 						: "Requires confirmation",
 					run: () => this.#navigate({ type: "remove", profileId }),
 				},
-				{
-					id: "back",
-					label: "Back",
-					run: () => this.#navigate({ type: "home" }),
-				},
+				{ value: "back", label: "Back", run: () => this.#navigate({ type: "home" }) },
 			],
 			() => this.#navigate({ type: "home" }),
 		);
@@ -452,201 +357,145 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 
 	#fieldSelector(profileId: string, definition: PromptProfileSelectorFieldDefinition): SelectList {
 		const profile = this.#state.model.profiles[profileId] ?? {};
-		const back = () => this.#navigate({ type: "profile", profileId });
+		const profileScreen = { type: "profile", profileId } as const;
 		const fieldScreen = { type: "field", profileId, definition } as const;
-		const restore = (field: PromptProfileField): SelectorAction => ({
-			id: "restore",
-			label: "Restore default",
-			description: "Remove the configured value",
-			run: () => {
-				void this.#apply({ type: "restoreField", profileId, field }, { type: "profile", profileId });
-			},
-		});
+		const back = () => this.#navigate(profileScreen);
+		const save = (value: string) => {
+			void this.#apply({ type: "setField", profileId, field: definition.field, value }, profileScreen);
+		};
+		const actions: SelectorAction[] = [];
+		let configuredField: PromptProfileField | undefined = definition.field;
 		switch (definition.input) {
 			case "constitution":
-				return this.#actionSelector(
-					[
-						{
-							id: "constitution:fable",
-							label: "Fable",
-							description: "Use the Fable worker constitution",
-							run: () => {
-								void this.#apply(
-									{ type: "setField", profileId, field: definition.field, value: "fable" },
-									{ type: "profile", profileId },
-								);
-							},
-						},
-						restore(definition.field),
-						{ id: "back", label: "Back", run: back },
-					],
-					back,
+				actions.push({
+					value: "constitution:fable",
+					label: "Fable",
+					description: "Use the Fable worker constitution",
+					run: () => save("fable"),
+				});
+				break;
+			case "toggle":
+				actions.push(
+					...["on", "off"].map(value => ({
+						value: value,
+						label: value === "on" ? "On" : "Off",
+						run: () => save(value),
+					})),
 				);
+				break;
 			case "markdown": {
-				const fileDefinition =
-					definition.field === "userTitle" ? undefined : PROMPT_PROFILE_FILE_DEFINITIONS[definition.field];
+				const fileDefinition = "file" in definition ? PROMPT_PROFILE_FIELDS[definition.file] : undefined;
 				const source = fileDefinition === undefined ? undefined : profile[fileDefinition.field];
 				const content = profile[definition.field];
-				const maintainedPromptFile = this.#state.model.maintainedPromptFile;
-				const configuredField =
+				configuredField =
 					source !== undefined && fileDefinition !== undefined
 						? fileDefinition.field
 						: content !== undefined
 							? definition.field
 							: undefined;
-				const openAction: SelectorAction[] =
-					source !== undefined
-						? [
-								{
-									id: "open",
-									label: "Open Markdown",
-									description: shortenPath(source),
-									run: () => {
-										void this.#editAndApply(fieldScreen, async () => {
-											await this.#callbacks.onOpenMarkdownFile(source);
-											return undefined;
-										});
-									},
+				const openPath =
+					source ??
+					(content === undefined && definition.field === "prompt"
+						? this.#state.model.maintainedPromptFile
+						: undefined);
+				if (openPath !== undefined) {
+					actions.push({
+						value: "open",
+						label: source === undefined ? "Open maintained Markdown" : "Open Markdown",
+						description: shortenPath(openPath),
+						run: () => {
+							void this.#apply(
+								async () => {
+									await this.#callbacks.onOpenMarkdownFile(openPath);
+									return undefined;
 								},
-							]
-						: content !== undefined || fileDefinition === undefined
-							? [
-									{
-										id: "open",
-										label: "Open inline Markdown editor",
-										description:
-											content === undefined
-												? "Not configured"
-												: `Stored in global config (${content.length} chars)`,
-										run: () => {
-											void this.#editAndApply(fieldScreen, async () => {
-												const edited = await this.#callbacks.onEditMarkdown(content ?? "");
-												if (edited === null || edited === undefined) return undefined;
-												return { type: "setField", profileId, field: definition.field, value: edited };
-											});
-										},
-									},
-								]
-							: definition.field === "prompt" && maintainedPromptFile !== undefined
-								? [
-										{
-											id: "open",
-											label: "Open maintained Markdown",
-											description: shortenPath(maintainedPromptFile),
-											run: () => {
-												void this.#editAndApply(fieldScreen, async () => {
-													await this.#callbacks.onOpenMarkdownFile(maintainedPromptFile);
-													return undefined;
-												});
-											},
-										},
-									]
-								: [];
-				const pathAction: SelectorAction[] =
-					fileDefinition === undefined
-						? []
-						: [
-								{
-									id: "path",
-									label: source === undefined ? "Use Markdown file" : "Change file path",
-									description:
-										source === undefined ? "Configure an existing Markdown file" : shortenPath(source),
-									run: () =>
-										this.#navigate({
-											type: "editPath",
-											profileId,
-											definition: fileDefinition,
-											owner: definition,
-											value: source ?? "",
-										}),
+								profileScreen,
+								fieldScreen,
+							);
+						},
+					});
+				} else if (content !== undefined || fileDefinition === undefined) {
+					actions.push({
+						value: "open",
+						label: "Open inline Markdown editor",
+						description:
+							content === undefined ? "Not configured" : `Stored in global config (${content.length} chars)`,
+						run: () => {
+							void this.#apply(
+								async () => {
+									const edited = await this.#callbacks.onEditMarkdown(content ?? "");
+									return edited == null
+										? undefined
+										: { type: "setField", profileId, field: definition.field, value: edited };
 								},
-							];
-				return this.#actionSelector(
-					[
-						...openAction,
-						...pathAction,
-						...(configuredField === undefined ? [] : [restore(configuredField)]),
-						{ id: "back", label: "Back", run: back },
-					],
-					back,
-				);
+								profileScreen,
+								fieldScreen,
+							);
+						},
+					});
+				}
+				if (fileDefinition !== undefined) {
+					actions.push({
+						value: "path",
+						label: source === undefined ? "Use Markdown file" : "Change file path",
+						description: source === undefined ? "Configure an existing Markdown file" : shortenPath(source),
+						run: () =>
+							this.#navigate({
+								type: "editPath",
+								profileId,
+								definition: fileDefinition,
+								owner: definition,
+								value: source ?? "",
+							}),
+					});
+				}
+				break;
 			}
-			case "toggle":
-				return this.#actionSelector(
-					[
-						{
-							id: "on",
-							label: "On",
-							run: () => {
-								void this.#apply(
-									{ type: "setField", profileId, field: definition.field, value: "on" },
-									{ type: "profile", profileId },
-								);
-							},
-						},
-						{
-							id: "off",
-							label: "Off",
-							run: () => {
-								void this.#apply(
-									{ type: "setField", profileId, field: definition.field, value: "off" },
-									{ type: "profile", profileId },
-								);
-							},
-						},
-						restore(definition.field),
-						{ id: "back", label: "Back", run: back },
-					],
-					back,
-				);
 		}
+		if (configuredField !== undefined) {
+			const field = configuredField;
+			actions.push({
+				value: "restore",
+				label: "Restore default",
+				description: "Remove the configured value",
+				run: () => {
+					void this.#apply({ type: "restoreField", profileId, field }, profileScreen);
+				},
+			});
+		}
+		return this.#actionSelector([...actions, { value: "back", label: "Back", run: back }], back);
 	}
 
-	#pathInput(screen: Extract<PromptProfileSelectorScreen, { type: "editPath" }>): Component[] {
+	#inputScreen(screen: Extract<PromptProfileSelectorScreen, { type: "editPath" | "create" }>): Component[] {
 		const input = new Input();
 		input.setValue(screen.value);
 		input.setUseTerminalCursor(this.#useTerminalCursor);
 		input.onSubmit = value => {
-			void this.#apply(
-				{ type: "setField", profileId: screen.profileId, field: screen.definition.field, value },
-				{ type: "profile", profileId: screen.profileId },
-				{ ...screen, value },
-			);
+			const operation: PromptProfileOperation =
+				screen.type === "create"
+					? { type: "createProfile", profileId: value }
+					: { type: "setField", profileId: screen.profileId, field: screen.definition.field, value };
+			void this.#apply(operation, { type: "profile", profileId: operation.profileId }, { ...screen, value });
 		};
-		input.onEscape = () => this.#navigate({ type: "field", profileId: screen.profileId, definition: screen.owner });
-		this.#interactive = input;
-		return [
-			new Text(
-				theme.fg("dim", "Enter the Markdown file path. Relative paths resolve from the working directory."),
-				1,
-				0,
-			),
-			new Spacer(1),
-			input,
-		];
-	}
-
-	#createInput(value: string): Component[] {
-		const input = new Input();
-		input.setValue(value);
-		input.setUseTerminalCursor(this.#useTerminalCursor);
-		input.onSubmit = profileId => {
-			void this.#apply(
-				{ type: "createProfile", profileId },
-				{ type: "profile", profileId },
-				{ type: "create", value: profileId },
+		input.onEscape = () =>
+			this.#navigate(
+				screen.type === "create"
+					? { type: "home" }
+					: { type: "field", profileId: screen.profileId, definition: screen.owner },
 			);
-		};
-		input.onEscape = () => this.#navigate({ type: "home" });
 		this.#interactive = input;
-		return [new Text(theme.fg("dim", "Letters, numbers, dot, dash, and underscore."), 1, 0), new Spacer(1), input];
+		const hint =
+			screen.type === "create"
+				? "Letters, numbers, dot, dash, and underscore."
+				: "Enter the Markdown file path. Relative paths resolve from the working directory.";
+		return [new Text(theme.fg("dim", hint), 1, 0), new Spacer(1), input];
 	}
 
 	#routeSelector(agentKind: SystemPromptProfileAgentKind): SelectList {
 		const currentProfile = unconditionalRouteProfile(this.#state.model.routes, agentKind);
 		const back = () => this.#navigate({ type: "home" });
 		const profileActions = sortedProfileIds(this.#state.model).map<SelectorAction>(profileId => ({
-			id: `profile:${profileId}`,
+			value: `profile:${profileId}`,
 			label: profileId,
 			description: profileId === currentProfile ? "current route" : undefined,
 			run: () => {
@@ -657,14 +506,14 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 			[
 				...profileActions,
 				{
-					id: "clear",
+					value: "clear",
 					label: "Clear route",
 					description: "Use the default prompt when no specific route matches",
 					run: () => {
 						void this.#apply({ type: "clearRoute", agentKind }, { type: "home" });
 					},
 				},
-				{ id: "back", label: "Back", run: back },
+				{ value: "back", label: "Back", run: back },
 			],
 			back,
 			currentProfile,
@@ -676,30 +525,25 @@ export class PromptProfileSelectorComponent extends Container implements Focusab
 		return this.#actionSelector(
 			[
 				{
-					id: "remove",
+					value: "remove",
 					label: "Remove permanently",
 					description: "Only unreferenced profiles can be removed",
 					run: () => {
 						void this.#apply({ type: "removeProfile", profileId }, { type: "home" });
 					},
 				},
-				{ id: "cancel", label: "Cancel", run: back },
+				{ value: "cancel", label: "Cancel", run: back },
 			],
 			back,
 		);
 	}
 
 	#actionSelector(actions: readonly SelectorAction[], onCancel: () => void, selectedId?: string): SelectList {
-		const items: SelectItem[] = actions.map(action => ({
-			value: action.id,
-			label: action.label,
-			description: action.description,
-		}));
-		const selector = new SelectList(items, Math.min(Math.max(items.length, 1), 12), getSelectListTheme());
+		const selector = new SelectList(actions, Math.min(Math.max(actions.length, 1), 12), getSelectListTheme());
 		const selectedIndex =
-			selectedId === undefined ? -1 : actions.findIndex(action => action.id === `profile:${selectedId}`);
+			selectedId === undefined ? -1 : actions.findIndex(action => action.value === `profile:${selectedId}`);
 		if (selectedIndex >= 0) selector.setSelectedIndex(selectedIndex);
-		selector.onSelect = item => actions.find(action => action.id === item.value)?.run();
+		selector.onSelect = item => actions.find(action => action.value === item.value)?.run();
 		selector.onCancel = onCancel;
 		this.#interactive = selector;
 		return selector;

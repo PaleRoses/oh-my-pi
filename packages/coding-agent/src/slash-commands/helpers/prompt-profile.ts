@@ -11,18 +11,6 @@ import { commandConsumed, errorMessage } from "./parse";
 
 export const PROMPT_PROFILE_RESTART_NOTICE =
 	"Global config updated. Restart OMP to load the new prompt identity; /new keeps the current profile. Project and --config overrides still take precedence.";
-const PROMPT_USAGE = [
-	"Prompt profile commands:",
-	"  /prompt status",
-	"  /prompt show <profile>",
-	"  /prompt use <profile> [main|sub]",
-	"  /prompt unroute [main|sub]",
-	"  /prompt set <profile> <field> <value>",
-	"  /prompt unset <profile> <field>",
-	"  /prompt remove <profile>",
-	"",
-	"Fields: constitution, prompt, promptFile, instructions, instructionsFile, projectContextOnly, memory, mcpServerInstructions, contextImages, userTitle, compactionIdentity, tools",
-].join("\n");
 
 export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "status", description: "Show active identity, configured profiles, and routes" },
@@ -41,39 +29,101 @@ export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
 
 export type PromptProfileField = keyof SystemPromptProfileSetting;
 
-export type PromptProfileFieldDefinition =
+export type PromptProfileFieldDefinition = { readonly label: string; readonly aliases?: readonly string[] } & (
+	| { readonly field: "constitution"; readonly input: "constitution" }
 	| {
-			readonly field: "constitution";
-			readonly label: string;
-			readonly input: "constitution";
-	  }
-	| {
-			readonly field: "prompt" | "instructions" | "userTitle";
-			readonly label: string;
+			readonly field: "prompt" | "instructions";
 			readonly input: "markdown";
+			readonly file: "promptFile" | "instructionsFile";
 	  }
+	| { readonly field: "userTitle" | "compactionIdentity"; readonly input: "markdown" }
 	| {
 			readonly field: "promptFile" | "instructionsFile";
-			readonly label: string;
 			readonly input: "file";
+			readonly inline: "prompt" | "instructions";
 	  }
 	| {
 			readonly field: "projectContextOnly" | "memory" | "mcpServerInstructions";
-			readonly label: string;
 			readonly input: "toggle";
-	  };
+			readonly default: boolean;
+	  }
+	| { readonly field: "contextImages" | "tools"; readonly input: "list" }
+);
 
-export type PromptProfileSelectorFieldDefinition = Exclude<PromptProfileFieldDefinition, { readonly input: "file" }>;
+export const PROMPT_PROFILE_FIELDS = {
+	constitution: { field: "constitution", label: "Constitution", input: "constitution" },
+	prompt: { field: "prompt", label: "Base prompt", input: "markdown", file: "promptFile" },
+	promptFile: { field: "promptFile", label: "Base prompt file", input: "file", inline: "prompt" },
+	instructions: {
+		field: "instructions",
+		label: "Appended instructions",
+		input: "markdown",
+		file: "instructionsFile",
+		aliases: ["append"],
+	},
+	instructionsFile: {
+		field: "instructionsFile",
+		label: "Appended instructions file",
+		input: "file",
+		inline: "instructions",
+		aliases: ["appendfile"],
+	},
+	projectContextOnly: {
+		field: "projectContextOnly",
+		label: "Project context only",
+		input: "toggle",
+		default: false,
+		aliases: ["context"],
+	},
+	memory: { field: "memory", label: "Memory", input: "toggle", default: true },
+	mcpServerInstructions: {
+		field: "mcpServerInstructions",
+		label: "MCP server instructions",
+		input: "toggle",
+		default: true,
+		aliases: ["mcpinstructions"],
+	},
+	contextImages: { field: "contextImages", label: "Context images", input: "list", aliases: ["images"] },
+	userTitle: { field: "userTitle", label: "User title", input: "markdown", aliases: ["user"] },
+	compactionIdentity: {
+		field: "compactionIdentity",
+		label: "Compaction identity",
+		input: "markdown",
+		aliases: ["identity"],
+	},
+	tools: { field: "tools", label: "Tools", input: "list" },
+} satisfies { [Field in PromptProfileField]: PromptProfileFieldDefinition & { readonly field: Field } };
 
-export const PROMPT_PROFILE_FIELD_DEFINITIONS: readonly PromptProfileSelectorFieldDefinition[] = [
-	{ field: "prompt", label: "Base prompt", input: "markdown" },
-	{ field: "instructions", label: "Appended instructions", input: "markdown" },
-	{ field: "projectContextOnly", label: "Project context only", input: "toggle" },
-	{ field: "memory", label: "Memory", input: "toggle" },
-	{ field: "mcpServerInstructions", label: "MCP server instructions", input: "toggle" },
-	{ field: "userTitle", label: "User title", input: "markdown" },
-	{ field: "constitution", label: "Constitution", input: "constitution" },
-];
+export const PROMPT_PROFILE_FIELD_DEFINITIONS = (
+	[
+		"prompt",
+		"instructions",
+		"projectContextOnly",
+		"memory",
+		"mcpServerInstructions",
+		"userTitle",
+		"constitution",
+	] as const
+).map(field => PROMPT_PROFILE_FIELDS[field]);
+
+export type PromptProfileSelectorFieldDefinition = (typeof PROMPT_PROFILE_FIELD_DEFINITIONS)[number];
+
+const PROFILE_FIELD_NAMES = new Map(
+	Object.values(PROMPT_PROFILE_FIELDS).flatMap(definition =>
+		[definition.field, ...("aliases" in definition ? definition.aliases : [])].map(
+			name => [name.toLowerCase(), definition.field] as const,
+		),
+	),
+);
+
+const PROMPT_USAGE = [
+	"Prompt profile commands:",
+	...PROMPT_PROFILE_SUBCOMMANDS.filter(command => command.name !== "help").map(
+		command => "  /prompt " + command.name + (command.usage ? " " + command.usage : ""),
+	),
+	"",
+	"Fields: " + Object.keys(PROMPT_PROFILE_FIELDS).join(", "),
+].join("\n");
 
 export type PromptProfileOperation =
 	| { readonly type: "createProfile"; readonly profileId: string }
@@ -108,42 +158,9 @@ export type PromptProfileConfigurationRuntime = Pick<SlashCommandRuntime, "cwd" 
 type PromptProfileCommandRuntime = PromptProfileConfigurationRuntime & Pick<SlashCommandRuntime, "session" | "output">;
 
 function normalizeField(raw: string): PromptProfileField {
-	const normalized = raw.replaceAll(/[-_]/g, "").toLowerCase();
-	switch (normalized) {
-		case "prompt":
-			return "prompt";
-		case "constitution":
-			return "constitution";
-		case "promptfile":
-			return "promptFile";
-		case "instructions":
-		case "append":
-			return "instructions";
-		case "instructionsfile":
-		case "appendfile":
-			return "instructionsFile";
-		case "projectcontextonly":
-		case "context":
-			return "projectContextOnly";
-		case "memory":
-			return "memory";
-		case "mcpinstructions":
-		case "mcpserverinstructions":
-			return "mcpServerInstructions";
-		case "contextimages":
-		case "images":
-			return "contextImages";
-		case "usertitle":
-		case "user":
-			return "userTitle";
-		case "compactionidentity":
-		case "identity":
-			return "compactionIdentity";
-		case "tools":
-			return "tools";
-		default:
-			throw new Error(`Unknown profile field "${raw}".\n${PROMPT_USAGE}`);
-	}
+	const field = PROFILE_FIELD_NAMES.get(raw.replaceAll(/[-_]/g, "").toLowerCase());
+	if (field === undefined) throw new Error(`Unknown profile field "${raw}".\n${PROMPT_USAGE}`);
+	return field;
 }
 
 function parseAgentKind(raw: string | undefined, fallback: SystemPromptProfileAgentKind): SystemPromptProfileAgentKind {
@@ -180,7 +197,9 @@ function parseConstitution(raw: string): SystemPromptProfileConstitution {
 }
 
 function omitProfileField(profile: SystemPromptProfileSetting, field: PromptProfileField): SystemPromptProfileSetting {
-	return Object.fromEntries(Object.entries(profile).filter(([key]) => key !== field)) as SystemPromptProfileSetting;
+	const next = { ...profile };
+	delete next[field];
+	return next;
 }
 
 function setProfileField(
@@ -190,46 +209,30 @@ function setProfileField(
 ): SystemPromptProfileSetting {
 	const value = rawValue.trim();
 	if (value.length === 0) throw new Error(`${field} requires a non-empty value.`);
-	switch (field) {
+	const definition = PROMPT_PROFILE_FIELDS[field];
+	const next = { ...profile };
+	switch (definition.input) {
 		case "constitution":
-			return { ...profile, constitution: parseConstitution(value) };
-		case "prompt":
-			return { ...omitProfileField(profile, "promptFile"), prompt: value };
-		case "promptFile":
-			return { ...omitProfileField(profile, "prompt"), promptFile: value };
-		case "instructions":
-			return { ...omitProfileField(profile, "instructionsFile"), instructions: value };
-		case "instructionsFile":
-			return { ...omitProfileField(profile, "instructions"), instructionsFile: value };
-		case "projectContextOnly":
-			return { ...profile, projectContextOnly: parseToggle(value, field) };
-		case "memory":
-			return { ...profile, memory: parseToggle(value, field) };
-		case "mcpServerInstructions":
-			return { ...profile, mcpServerInstructions: parseToggle(value, field) };
-		case "contextImages":
-			return {
-				...profile,
-				contextImages: value
-					.split(",")
-					.map(entry => entry.trim())
-					.filter(entry => entry.length > 0),
-			};
-		case "userTitle":
-			return { ...profile, userTitle: value };
-		case "compactionIdentity":
-			return { ...profile, compactionIdentity: value };
-		case "tools":
-			return {
-				...profile,
-				tools: value
-					.split(",")
-					.map(entry => entry.trim())
-					.filter(entry => entry.length > 0),
-			};
-		default:
-			return field satisfies never;
+			next.constitution = parseConstitution(value);
+			break;
+		case "toggle":
+			next[definition.field] = parseToggle(value, field);
+			break;
+		case "list":
+			next[definition.field] = value
+				.split(",")
+				.map(entry => entry.trim())
+				.filter(Boolean);
+			break;
+		case "markdown":
+			if ("file" in definition) delete next[definition.file];
+			next[definition.field] = value;
+			break;
+		case "file":
+			delete next[definition.inline];
+			next[definition.field] = value;
 	}
+	return next;
 }
 
 function describeInline(value: string | undefined): string {
@@ -317,32 +320,11 @@ async function persistConfiguration(
 	};
 }
 
-function currentConfiguration(runtime: PromptProfileConfigurationRuntime): PromptProfileConfiguration {
-	return {
-		profiles: runtime.settings.get("systemPromptProfiles"),
-		routes: runtime.settings.get("systemPromptProfileRoutes"),
-	};
-}
-
-function hasProfile(profiles: Record<string, SystemPromptProfileSetting>, profileId: string): boolean {
-	return Object.hasOwn(profiles, profileId);
-}
-
 function isUnconditionalProfileRoute(
 	route: SystemPromptProfileRouteSetting,
 	agentKind: SystemPromptProfileAgentKind,
 ): boolean {
 	return route.deny !== true && route.agentKind === agentKind && route.model === undefined;
-}
-
-function assignUnconditionalRoute(
-	routes: readonly SystemPromptProfileRouteSetting[],
-	agentKind: SystemPromptProfileAgentKind,
-	profileId: string,
-): SystemPromptProfileRouteSetting[] {
-	const nextRoute: SystemPromptProfileRouteSetting = { agentKind, profile: profileId };
-	const retainedRoutes = routes.filter(route => !isUnconditionalProfileRoute(route, agentKind));
-	return [nextRoute, ...retainedRoutes];
 }
 
 export async function applyPromptProfileOperation(
@@ -353,7 +335,7 @@ export async function applyPromptProfileOperation(
 	const routes = runtime.settings.get("systemPromptProfileRoutes");
 	switch (operation.type) {
 		case "createProfile": {
-			if (hasProfile(profiles, operation.profileId)) {
+			if (Object.hasOwn(profiles, operation.profileId)) {
 				throw new Error(`System prompt profile "${operation.profileId}" already exists.`);
 			}
 			return persistConfiguration(
@@ -363,7 +345,7 @@ export async function applyPromptProfileOperation(
 			);
 		}
 		case "setField": {
-			const profile = hasProfile(profiles, operation.profileId) ? profiles[operation.profileId] : {};
+			const profile = Object.hasOwn(profiles, operation.profileId) ? profiles[operation.profileId] : {};
 			const nextProfiles = {
 				...profiles,
 				[operation.profileId]: setProfileField(profile ?? {}, operation.field, operation.value),
@@ -376,7 +358,7 @@ export async function applyPromptProfileOperation(
 		}
 		case "restoreField": {
 			const profile = profiles[operation.profileId];
-			if (!hasProfile(profiles, operation.profileId) || profile === undefined) {
+			if (!Object.hasOwn(profiles, operation.profileId) || profile === undefined) {
 				throw new Error(`Unknown system prompt profile "${operation.profileId}".`);
 			}
 			return persistConfiguration(
@@ -391,12 +373,17 @@ export async function applyPromptProfileOperation(
 			);
 		}
 		case "assignRoute": {
-			if (!hasProfile(profiles, operation.profileId)) {
+			if (!Object.hasOwn(profiles, operation.profileId)) {
 				throw new Error(`Unknown system prompt profile "${operation.profileId}".`);
 			}
 			return persistConfiguration(
 				runtime,
-				{ routes: assignUnconditionalRoute(routes, operation.agentKind, operation.profileId) },
+				{
+					routes: [
+						{ agentKind: operation.agentKind, profile: operation.profileId },
+						...routes.filter(route => !isUnconditionalProfileRoute(route, operation.agentKind)),
+					],
+				},
 				`Set the global unconditional ${operation.agentKind} prompt route to ${operation.profileId}.`,
 			);
 		}
@@ -404,7 +391,7 @@ export async function applyPromptProfileOperation(
 			const nextRoutes = routes.filter(route => !isUnconditionalProfileRoute(route, operation.agentKind));
 			if (nextRoutes.length === routes.length) {
 				return {
-					configuration: currentConfiguration(runtime),
+					configuration: { profiles, routes },
 					message: `No unconditional ${operation.agentKind} prompt route is configured.`,
 				};
 			}
@@ -415,15 +402,14 @@ export async function applyPromptProfileOperation(
 			);
 		}
 		case "removeProfile": {
-			if (!hasProfile(profiles, operation.profileId)) {
+			if (!Object.hasOwn(profiles, operation.profileId)) {
 				throw new Error(`Unknown system prompt profile "${operation.profileId}".`);
 			}
 			const referenced = routes.some(route => route.deny !== true && route.profile === operation.profileId);
 			if (referenced)
 				throw new Error(`System prompt profile "${operation.profileId}" is still referenced by a route.`);
-			const nextProfiles = Object.fromEntries(
-				Object.entries(profiles).filter(([candidateId]) => candidateId !== operation.profileId),
-			);
+			const nextProfiles = { ...profiles };
+			delete nextProfiles[operation.profileId];
 			return persistConfiguration(
 				runtime,
 				{ profiles: nextProfiles },
@@ -449,89 +435,53 @@ async function outputMessage(runtime: PromptProfileCommandRuntime, message: stri
 	return commandConsumed();
 }
 
-async function handleSet(args: readonly string[], runtime: PromptProfileCommandRuntime): Promise<SlashCommandResult> {
-	const [profileId, rawField, ...valueParts] = args;
-	if (!profileId || !rawField || valueParts.length === 0) return outputMessage(runtime, PROMPT_USAGE);
-	return outputUpdate(runtime, {
-		type: "setField",
-		profileId,
-		field: normalizeField(rawField),
-		value: valueParts.join(" "),
-	});
-}
-
-async function handleUnset(args: readonly string[], runtime: PromptProfileCommandRuntime): Promise<SlashCommandResult> {
-	const [profileId, rawField, ...extra] = args;
-	if (!profileId || !rawField || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
-	return outputUpdate(runtime, { type: "restoreField", profileId, field: normalizeField(rawField) });
-}
-
-async function handleUse(args: readonly string[], runtime: PromptProfileCommandRuntime): Promise<SlashCommandResult> {
-	const [profileId, rawKind, ...extra] = args;
-	if (!profileId || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
-	return outputUpdate(runtime, {
-		type: "assignRoute",
-		profileId,
-		agentKind: parseAgentKind(rawKind, runtime.session.effectiveIdentity.role),
-	});
-}
-
-async function handleUnroute(
-	args: readonly string[],
-	runtime: PromptProfileCommandRuntime,
-): Promise<SlashCommandResult> {
-	const [rawKind, ...extra] = args;
-	if (extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
-	return outputUpdate(runtime, {
-		type: "clearRoute",
-		agentKind: parseAgentKind(rawKind, runtime.session.effectiveIdentity.role),
-	});
-}
-
-async function handleRemove(
-	args: readonly string[],
-	runtime: PromptProfileCommandRuntime,
-): Promise<SlashCommandResult> {
-	const [profileId, ...extra] = args;
-	if (!profileId || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
-	return outputUpdate(runtime, { type: "removeProfile", profileId });
-}
-
 async function handlePromptProfileCommandInner(
 	command: ParsedSlashCommand,
 	runtime: PromptProfileCommandRuntime,
 ): Promise<SlashCommandResult> {
-	const [rawVerb, ...restTokens] = parseCommandArgs(command.args);
-	const verb = rawVerb?.toLowerCase() ?? "status";
-	switch (verb) {
+	const [rawVerb, ...args] = parseCommandArgs(command.args);
+	const [profileId, fieldOrKind, ...valueParts] = args;
+	switch (rawVerb?.toLowerCase() ?? "status") {
 		case "status":
 		case "list":
-			await runtime.output(formatPromptStatus(runtime));
-			return commandConsumed();
+			return outputMessage(runtime, formatPromptStatus(runtime));
 		case "show": {
-			const [profileId, ...extra] = restTokens;
-			if (!profileId || extra.length > 0) return outputMessage(runtime, PROMPT_USAGE);
-			const profile = runtime.settings.get("systemPromptProfiles")[profileId];
-			if (!profile) throw new Error(`Unknown system prompt profile "${profileId}".`);
-			await runtime.output(formatProfileDetails(profileId, profile));
-			return commandConsumed();
+			if (!profileId || args.length !== 1) break;
+			const profiles = runtime.settings.get("systemPromptProfiles");
+			const profile = profiles[profileId];
+			if (!Object.hasOwn(profiles, profileId) || profile === undefined)
+				throw new Error(`Unknown system prompt profile "${profileId}".`);
+			return outputMessage(runtime, formatProfileDetails(profileId, profile));
 		}
-		case "use":
-			return handleUse(restTokens, runtime);
-		case "unroute":
-			return handleUnroute(restTokens, runtime);
 		case "set":
-			return handleSet(restTokens, runtime);
+			if (!profileId || !fieldOrKind || valueParts.length === 0) break;
+			return outputUpdate(runtime, {
+				type: "setField",
+				profileId,
+				field: normalizeField(fieldOrKind),
+				value: valueParts.join(" "),
+			});
 		case "unset":
-			return handleUnset(restTokens, runtime);
+			if (!profileId || !fieldOrKind || args.length !== 2) break;
+			return outputUpdate(runtime, { type: "restoreField", profileId, field: normalizeField(fieldOrKind) });
+		case "use":
+			if (!profileId || args.length > 2) break;
+			return outputUpdate(runtime, {
+				type: "assignRoute",
+				profileId,
+				agentKind: parseAgentKind(fieldOrKind, runtime.session.effectiveIdentity.role),
+			});
+		case "unroute":
+			if (args.length > 1) break;
+			return outputUpdate(runtime, {
+				type: "clearRoute",
+				agentKind: parseAgentKind(profileId, runtime.session.effectiveIdentity.role),
+			});
 		case "remove":
-			return handleRemove(restTokens, runtime);
-		case "help":
-			await runtime.output(PROMPT_USAGE);
-			return commandConsumed();
-		default:
-			return outputMessage(runtime, PROMPT_USAGE);
+			if (!profileId || args.length !== 1) break;
+			return outputUpdate(runtime, { type: "removeProfile", profileId });
 	}
+	return outputMessage(runtime, PROMPT_USAGE);
 }
 
 export async function handlePromptProfileCommand(

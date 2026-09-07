@@ -81,6 +81,32 @@ describe("system prompt profiles", () => {
 		}
 	});
 
+	it("keeps a text field's inline and file spellings exclusive and names the offending key", async () => {
+		await expect(
+			createSystemPromptProfileResolver({
+				cwd: "/tmp",
+				profiles: { driver: { prompt: "INLINE", promptFile: "driver.md" } },
+				routes: [],
+			}),
+		).rejects.toThrow('systemPromptProfiles.driver may contain only one of "prompt" or "promptFile"');
+
+		await expect(
+			createSystemPromptProfileResolver({
+				cwd: "/tmp",
+				profiles: { worker: { instructions: "INLINE", instructionsFile: "worker.md" } },
+				routes: [],
+			}),
+		).rejects.toThrow('systemPromptProfiles.worker may contain only one of "instructions" or "instructionsFile"');
+
+		await expect(
+			createSystemPromptProfileResolver({
+				cwd: "/tmp",
+				profiles: { worker: { instructionsFile: "   " } },
+				routes: [],
+			}),
+		).rejects.toThrow("systemPromptProfiles.worker.instructionsFile must be a non-empty string");
+	});
+
 	it("resolves contextImages to absolute paths and rejects missing files", async () => {
 		const dir = TempDir.createSync("@system-prompt-profile-images-");
 		try {
