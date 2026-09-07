@@ -14,7 +14,7 @@ import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, computeBankScope, resolveProjectLabel } from "./bank";
 import { createHindsightClient } from "./client";
-import { isHindsightConfigured, loadHindsightConfig } from "./config";
+import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig } from "./config";
 import { type HindsightMessage, hasSubstantiveContent } from "./content";
 import { HindsightSessionState } from "./state";
 
@@ -146,11 +146,11 @@ export const hindsightBackend: MemoryBackend = {
 	},
 };
 interface PrimaryRebuildTask {
+	/** A rebuild was requested and the loop has not consumed it yet. */
 	pending: boolean;
-	running: boolean;
-	applied: boolean;
-	readonly settingsCwd: string;
+	/** Last failed transition; only a completed transition, never a no-op, clears it. */
 	error?: unknown;
+	/** Settles once the loop has drained every request queued so far. */
 	completion: Promise<void>;
 }
 
@@ -161,64 +161,75 @@ const primaryRebuildTasks = new WeakMap<AgentSession, PrimaryRebuildTask>();
  * all settings hooks synchronously; running every callback immediately would
  * let multiple rebuilds capture the same old state and leak the fresh states
  * installed by earlier continuations.
+ *
+ * Returns the task that owns the request so a caller that must not continue
+ * until the rebuild landed can await it (see `rebindMemoryBackendForCwd`).
  */
-function schedulePrimaryStateRebuild(session: AgentSession): void {
+function schedulePrimaryStateRebuild(session: AgentSession): PrimaryRebuildTask {
 	const task = primaryRebuildTasks.get(session);
-	if (task?.running) {
+	if (task) {
 		task.pending = true;
-		return;
+		return task;
 	}
 
-	const nextTask: PrimaryRebuildTask = {
-		pending: true,
-		running: true,
-		applied: false,
-		settingsCwd: session.settings.getCwd(),
-		completion: Promise.resolve(),
-	};
+	const nextTask: PrimaryRebuildTask = { pending: true, completion: Promise.resolve() };
 	primaryRebuildTasks.set(session, nextTask);
-	nextTask.completion = Promise.resolve()
-		.then(async () => {
+	nextTask.completion = Promise.resolve().then(async () => {
+		try {
 			while (nextTask.pending) {
 				nextTask.pending = false;
-				nextTask.error = undefined;
 				try {
-					nextTask.applied = (await rebuildPrimaryStateOnScopeChange(session)) || nextTask.applied;
+					if (await rebuildPrimaryStateOnScopeChange(session)) nextTask.error = undefined;
 				} catch (err) {
 					nextTask.error = err;
 					logger.warn("Hindsight: scope rebuild failed", { error: String(err) });
 				}
 			}
-		})
-		.finally(() => {
-			nextTask.running = false;
-		});
+		} finally {
+			// Only loops that can consume requests remain registered; retire before yielding.
+			primaryRebuildTasks.delete(session);
+		}
+	});
+	return nextTask;
 }
 
-async function consumeHindsightScopeRebuild(session: AgentSession): Promise<boolean> {
-	const settingsCwd = session.settings.getCwd();
-	let appliedForCurrentCwd = false;
-	while (true) {
-		const task = primaryRebuildTasks.get(session);
-		if (!task) return appliedForCurrentCwd;
-		await task.completion;
-		if (primaryRebuildTasks.get(session) !== task) continue;
-		primaryRebuildTasks.delete(session);
-		if (task.error !== undefined) throw task.error;
-		appliedForCurrentCwd ||= task.settingsCwd === settingsCwd && task.applied;
-	}
-}
-
-/** Apply the destination project's memory backend before a cwd move completes. */
+/**
+ * Finish the memory rebind that a cwd move started, before the move reports
+ * success. The settings reload has already fired the scope hooks, so the work
+ * is normally queued: await it and re-raise its failure instead of letting a
+ * half-rebound session look like a completed move.
+ *
+ * The rebuild is also scheduled here rather than only awaited, because the
+ * hook cannot reach every case: the scope subscription is owned by the live
+ * `HindsightSessionState`, so a session whose source project had memory off
+ * has no subscriber and would never notice a destination project that selects
+ * Hindsight.
+ */
 export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<void> {
-	const scopeTaskAppliedBackend = await consumeHindsightScopeRebuild(session);
-	if (!scopeTaskAppliedBackend) await session.applyMemoryBackend();
+	// Other backends have no Hindsight scope subscription. Reapply them on an
+	// explicit cwd move, but let an in-flight Hindsight transition finish (or
+	// fail) rather than retrying a partially torn-down backend outside its task.
+	if (!session.getHindsightSessionState() && !primaryRebuildTasks.has(session)) {
+		// The manager already has the new cwd, and this may also be rollback
+		// from a destination that never committed. Drain existing writes without
+		// capturing the transcript under either transient scope.
+		await session.applyMemoryBackend({ retainMnemopi: false });
+	}
+
+	let task: PrimaryRebuildTask | undefined = schedulePrimaryStateRebuild(session);
+	while (task) {
+		await task.completion;
+		if (task.error !== undefined) throw task.error;
+		// A hook that fired while we waited installs a fresh task; the move is
+		// not rebound until the last one has settled.
+		task = primaryRebuildTasks.get(session);
+	}
 }
 
 /**
  * Build (or rebuild) the primary `HindsightSessionState` for `session` from
  * the current settings and install it. Disposes any previous primary state
- * after flushing its retain queue so in-flight tool-initiated retains land in
+ * after retiring its retain queue so in-flight tool-initiated retains land in
  * the bank that was selected when they were enqueued, not in the new bank.
  *
  * The created state takes ownership of the `onHindsightScopeChanged`
@@ -300,23 +311,77 @@ async function installPrimaryState(
 }
 
 /**
- * `onHindsightScopeChanged` handler: re-evaluate the bank scope from current
- * settings and rebuild the primary state when it has actually drifted. No-op
- * when the scope is unchanged or the session is no longer hosting a primary
- * state (e.g. it was wiped to `undefined`, or this is a subagent alias).
+ * `onHindsightScopeChanged` handler and cwd-rebind body: re-derive what the
+ * current settings select and make the runtime match it. No-op when nothing
+ * moved, when this session hosts a subagent alias (the parent owns the route),
+ * or when Hindsight is neither live nor selected.
+ *
+ * Resolves true only when the runtime actually moved — the backend owner
+ * re-applied the selection, or a fresh primary state was installed — so the
+ * scheduler can tell a completed transition from a no-op.
  */
 async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<boolean> {
 	const current = session.getHindsightSessionState();
-	if (!current || current.aliasOf) return false;
+	// `isAlias`, not `aliasOf`: the alias getter resolves the parent's live
+	// slot, so it reads `undefined` for an alias whose parent state was
+	// retired — and treating that as a primary makes `current.bankId` throw.
+	if (current?.isAlias) return false;
 
 	const settings = session.settings;
 	const config = loadHindsightConfig(settings);
-	if (isHindsightConfigured(config)) {
-		const next = computeBankScope(config, session.sessionManager.getCwd());
-		if (bankScopesEqual(next, current)) return false;
+	const selected =
+		session.effectiveIdentity.memory.status === "enabled" &&
+		settings.get("memory.backend") === "hindsight" &&
+		isHindsightConfigured(config);
+
+	// The selection itself moved — a project layer switched `memory.backend`,
+	// left `hindsight.apiUrl` unset, or the prompt profile denies memory. Only
+	// the session's backend owner can install or retire a backend's runtime
+	// state, memory tools, and prompt, and it flushes the outgoing state's
+	// queued retains on the way out.
+	if (selected !== (current !== undefined)) {
+		await session.applyMemoryBackend();
+		return true;
+	}
+	if (!current) return false;
+
+	const cwd = session.sessionManager.getCwd();
+	const projectLabel = resolveProjectLabel(cwd);
+	const next = computeBankScope(config, cwd, projectLabel);
+	// The project label rides on every retain and is derived from the cwd, so
+	// a move that keeps the bank (global scoping) still re-derives the route.
+	if (
+		projectLabel === current.projectLabel &&
+		bankScopesEqual(next, current) &&
+		hindsightConfigsEqual(current.config, config)
+	) {
+		return false;
 	}
 
-	await session.applyMemoryBackend();
+	// A confirmed bank includes its mission metadata, not just its server/id.
+	// Reuse confirmations only while the effective PUT payload is unchanged.
+	const sameBankConfig =
+		current.config.hindsightApiUrl === config.hindsightApiUrl &&
+		current.config.bankMission.trim() === config.bankMission.trim() &&
+		(current.config.retainMission?.trim() || "") === (config.retainMission?.trim() || "");
+	return (await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set())) !== undefined;
+}
+
+/**
+ * Structural compare of two resolved Hindsight configs. Both sides come from
+ * `loadHindsightConfig`, so iterating one side's keys covers the whole shape
+ * and a newly added config field is picked up without touching this compare.
+ */
+function hindsightConfigsEqual(a: HindsightConfig, b: HindsightConfig): boolean {
+	for (const key of Object.keys(a) as (keyof HindsightConfig)[]) {
+		const left = a[key];
+		const right = b[key];
+		if (Array.isArray(left) || Array.isArray(right)) {
+			if (!Array.isArray(left) || !Array.isArray(right) || !stringArraysEqual(left, right)) return false;
+			continue;
+		}
+		if (left !== right) return false;
+	}
 	return true;
 }
 

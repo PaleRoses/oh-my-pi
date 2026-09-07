@@ -36,6 +36,7 @@ interface FakeAcpBuiltinSession {
 	getLastAssistantText: () => string | undefined;
 	messages: unknown[];
 	settings: Settings;
+	effectiveIdentity: { memory: { status: "disabled-by-profile"; profileId: string } };
 	model: { provider: string; id: string } | undefined;
 	newSession(opts?: { drop?: boolean; parentSession?: string }): Promise<boolean>;
 	switchSession(sessionPath: string): Promise<boolean>;
@@ -52,6 +53,8 @@ interface FakeAcpBuiltinSession {
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
 	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
+	getHindsightSessionState(): undefined;
+	applyMemoryBackend(): Promise<void>;
 	getToolByName(name: string): unknown;
 	compact(args?: string): Promise<void>;
 	getContextUsage(): { tokens?: number; contextWindow: number } | undefined;
@@ -82,6 +85,7 @@ function createRuntime() {
 		_movedFromEmptySessionFile: undefined,
 		dispose: async () => {},
 		effectiveExtensionRoots: undefined,
+		effectiveIdentity: { memory: { status: "disabled-by-profile", profileId: "test" } },
 		setTitleSystemPrompt: (_prompt: string | undefined) => {},
 		setSlashCommands: (_commands: unknown[]) => {},
 		refreshSkills: async () => {},
@@ -139,6 +143,9 @@ function createRuntime() {
 			this._todoPhases = phases;
 		},
 		async refreshBaseSystemPrompt() {},
+		// Headless `/move` and `/wt` rebind memory for the destination project.
+		getHindsightSessionState: () => undefined,
+		async applyMemoryBackend() {},
 		getAsyncJobSnapshot: () => null,
 		formatSessionAsText: () => "",
 		dumpLlmRequestToTmpDir: async () => undefined,

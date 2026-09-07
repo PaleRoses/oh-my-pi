@@ -1597,6 +1597,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			// up the destination project's configuration.
 			if (isSettingsInitialized()) {
 				await settings.reloadForCwd(newCwd);
+				// The reload fired the memory scope hooks; complete the rebind
+				// before the move commits so the next prompt cannot recall or
+				// retain against the source project's memory.
 				await rebindMemoryBackendForCwd(this.session);
 				// Reapply provider preferences from the newly-loaded settings so the
 				// module-level search/image provider state reflects the destination

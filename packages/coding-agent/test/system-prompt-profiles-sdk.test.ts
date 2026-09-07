@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -212,6 +213,8 @@ describe("SDK system prompt profiles", () => {
 		await fs.mkdir(movedCwd, { recursive: true });
 
 		await session.moveSession(movedCwd);
+		await session.settings.reloadForCwd(movedCwd);
+		await rebindMemoryBackendForCwd(session);
 
 		const after = session.getHindsightSessionState();
 		expect(after).toBeDefined();

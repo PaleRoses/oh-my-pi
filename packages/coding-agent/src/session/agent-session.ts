@@ -5233,9 +5233,9 @@ export class AgentSession {
 		this.#memory.endLocalMemoryStartup(signal);
 	}
 
-	/** Applies the selected memory backend to runtime state, tools, and prompt. */
-	applyMemoryBackend(): Promise<void> {
-		return this.#memory.applyMemoryBackend();
+	/** Apply the backend; cwd rebinding can skip Mnemopi auto-retention while still draining writes. */
+	applyMemoryBackend(options: { retainMnemopi?: boolean } = {}): Promise<void> {
+		return this.#memory.applyMemoryBackend(options);
 	}
 
 	/** Rebuilds the stable base prompt for the current tools and model. */
@@ -7856,9 +7856,6 @@ export class AgentSession {
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
 		this.#assertVibeSessionTransitionAllowed("move the session");
 		await this.sessionManager.moveTo(newCwd, targetSessionDir);
-		// Memory scoping is cwd-derived. Rebuild once at this boundary so the
-		// installed state, bank/tag target, and retained project label stay aligned.
-		await this.#memory.applyMemoryBackend();
 	}
 
 	// =========================================================================

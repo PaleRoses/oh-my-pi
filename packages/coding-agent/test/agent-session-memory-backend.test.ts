@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -8,6 +9,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
+import { computeMnemopiBankScope } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import { getMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -149,6 +151,98 @@ describe("AgentSession memory backend lifecycle", () => {
 		await rebindMemoryBackendForCwd(current);
 		expect(current.getHindsightSessionState()).toBeUndefined();
 		expect(getMnemopiSessionState(current)).toBeUndefined();
+	});
+
+	it.each([
+		["mnemopi", "mnemopi"],
+		["mnemopi", "off"],
+		["off", "mnemopi"],
+	] as const)("rebinds %s to %s on a cwd move without Hindsight", async (source, destination) => {
+		settings.override("memory.backend", source);
+		await settings.reloadForCwd(path.join(tempDir.path(), "source"));
+		const current = createSession(async () =>
+			settings.get("memory.backend") === "mnemopi" ? [createTool("retain")] : [],
+		);
+		await current.applyMemoryBackend();
+
+		const destinationCwd = path.join(tempDir.path(), "destination");
+		current.sessionManager.setCwdWithoutRelocation(destinationCwd);
+		settings.override("memory.backend", destination);
+		await settings.reloadForCwd(destinationCwd);
+		await rebindMemoryBackendForCwd(current);
+
+		const state = getMnemopiSessionState(current);
+		if (destination === "mnemopi") {
+			const scope = computeMnemopiBankScope(
+				settings.get("mnemopi.bank"),
+				destinationCwd,
+				settings.get("mnemopi.scoping"),
+			);
+			expect(state?.config.retainBank).toBe(scope.retainBank);
+			expect(state?.config.recallBanks).toEqual(scope.recallBanks);
+			expect(current.getActiveToolNames()).toEqual(["read", "retain"]);
+			expect(current.systemPrompt).toEqual(["backend:mnemopi;tools:read,retain"]);
+		} else {
+			expect(state).toBeUndefined();
+			expect(current.getActiveToolNames()).toEqual(["read"]);
+			expect(current.getAllToolNames()).toEqual(["read"]);
+			expect(current.systemPrompt).toEqual(["backend:off;tools:read"]);
+		}
+	});
+
+	it.each([false, true])("does not auto-retain during cwd rebind teardown (rollback: %s)", async rollback => {
+		settings.override("memory.backend", "mnemopi");
+		settings.override("mnemopi.scoping", "per-project");
+		const sourceCwd = tempDir.path();
+		const destinationCwd = path.join(sourceCwd, "destination");
+		await settings.reloadForCwd(sourceCwd);
+		const current = createSession(async () => []);
+		await current.applyMemoryBackend();
+		current.sessionManager.appendMessage({
+			role: "user",
+			content: "The source project uses a dedicated release branch for production deployments.",
+			timestamp: Date.now(),
+		});
+		const sourceState = getMnemopiSessionState(current)!;
+		expect(sourceState.config.autoRetain).toBe(true);
+		const sourceDbPath = sourceState.memory.dbPath!;
+
+		await current.moveSession(destinationCwd);
+		await settings.reloadForCwd(destinationCwd);
+		await rebindMemoryBackendForCwd(current);
+		const destinationDbPath = getMnemopiSessionState(current)!.memory.dbPath!;
+		if (rollback) {
+			current.sessionManager.setCwdWithoutRelocation(sourceCwd);
+			await settings.reloadForCwd(sourceCwd);
+			await rebindMemoryBackendForCwd(current);
+		}
+
+		const db = new Database(rollback ? destinationDbPath : sourceDbPath, { readonly: true });
+		try {
+			expect(
+				db.query("SELECT metadata_json FROM working_memory WHERE source = 'coding-agent-transcript'").all(),
+			).toEqual([]);
+		} finally {
+			db.close();
+		}
+
+		// Ordinary backend changes must still retain the current transcript.
+		const activeState = getMnemopiSessionState(current)!;
+		const activeDbPath = activeState.memory.dbPath!;
+		settings.override("memory.backend", "off");
+		await current.applyMemoryBackend();
+		const retainedDb = new Database(activeDbPath, { readonly: true });
+		try {
+			expect(
+				retainedDb
+					.query(
+						"SELECT json_extract(metadata_json, '$.cwd') AS cwd FROM working_memory WHERE source = 'coding-agent-transcript'",
+					)
+					.all(),
+			).toEqual([{ cwd: rollback ? sourceCwd : destinationCwd }]);
+		} finally {
+			retainedDb.close();
+		}
 	});
 
 	it("cancels a displaced local startup generation", async () => {
@@ -295,5 +389,74 @@ describe("AgentSession memory backend lifecycle", () => {
 
 		expect(resetConversationTracking).not.toHaveBeenCalled();
 		expect(aliasState.hasRecalledForFirstTurn).toBe(true);
+	});
+
+	// A cwd move re-scopes Settings, so the destination project's
+	// `memory.backend` is what the session must run. The Hindsight scope
+	// rebuild alone only re-derives an already-active Hindsight bank, so a
+	// destination project that turns memory off used to keep the source
+	// project's backend, memory tools, and prompt for the rest of the session.
+	it("applies the destination project's memory backend on a cwd move", async () => {
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		const current = createSession(async () =>
+			settings.get("memory.backend") === "hindsight" ? [createTool("recall"), createTool("retain")] : [],
+		);
+
+		await current.applyMemoryBackend();
+		expect(current.getHindsightSessionState()).toBeDefined();
+		expect(current.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "recall", "retain"]));
+
+		// Destination project settings, as `settings.reloadForCwd` would leave them.
+		settings.override("memory.backend", "off");
+		await rebindMemoryBackendForCwd(current);
+
+		expect(current.getHindsightSessionState()).toBeUndefined();
+		expect(current.getActiveToolNames()).toEqual(["read"]);
+	});
+
+	// A rebind that fails must fail the move instead of being logged and
+	// dropped, which used to leave a half-rebound session reporting success.
+	it("surfaces a failed destination rebind to the caller", async () => {
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		let failToolBuild = false;
+		const current = createSession(async () => {
+			if (failToolBuild) throw new Error("destination memory tools unavailable");
+			return settings.get("memory.backend") === "hindsight" ? [createTool("recall")] : [];
+		});
+
+		await current.applyMemoryBackend();
+		settings.override("memory.backend", "off");
+		failToolBuild = true;
+
+		await expect(rebindMemoryBackendForCwd(current)).rejects.toThrow("destination memory tools unavailable");
+	});
+
+	// `Settings.reloadForCwd` fires the memory scope hooks synchronously, so the
+	// move's own rebind coalesces onto a rebuild that is already in flight. When
+	// the first attempt fails after `applyMemoryBackend` already tore the
+	// outgoing state down, the coalesced retry finds a runtime that matches the
+	// destination settings and no-ops — which must not launder the half-applied
+	// move into a success.
+	it("keeps a failed rebind failed when the coalesced retry has nothing left to move", async () => {
+		settings.override("memory.backend", "hindsight");
+		settings.override("hindsight.mentalModelsEnabled", false);
+		let failToolBuild = false;
+		const current = createSession(async () => {
+			if (failToolBuild) throw new Error("destination memory tools unavailable");
+			return settings.get("memory.backend") === "hindsight" ? [createTool("recall")] : [];
+		});
+
+		await current.applyMemoryBackend();
+		expect(current.getHindsightSessionState()).toBeDefined();
+
+		// Destination project settings, as `settings.reloadForCwd` would leave
+		// them; the reload then queues the rebuild the move awaits.
+		settings.override("memory.backend", "off");
+		failToolBuild = true;
+		await settings.reloadForCwd(path.join(tempDir.path(), "destination"));
+
+		await expect(rebindMemoryBackendForCwd(current)).rejects.toThrow("destination memory tools unavailable");
 	});
 });
