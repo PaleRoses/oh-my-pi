@@ -118,9 +118,18 @@ describe("canonical agent identity surfaces", () => {
 
 		await identity?.handle?.({ name: "identity", args: "", text: "/identity" }, {
 			session,
+			settings: {
+				get: (path: string) =>
+					path === "systemPromptProfiles"
+						? { fable: { instructions: "FABLE" } }
+						: [{ agentKind: "sub", profile: "fable" }],
+			},
 			output,
 		} as unknown as SlashCommandRuntime);
-		expect(output).toHaveBeenCalledWith(report);
+		const status = (output.mock.calls.at(-1)?.[0] ?? "") as string;
+		expect(status).toContain(report);
+		expect(status).toContain("fable: constitution=none");
+		expect(status).toContain("1. sub · * -> fable");
 		const footer = new FooterComponent(session);
 		const lines = footer.render(160);
 		expect(lines).toHaveLength(2);

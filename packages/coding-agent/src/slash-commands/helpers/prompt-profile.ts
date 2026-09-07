@@ -4,6 +4,7 @@ import type {
 	SystemPromptProfileRouteSetting,
 	SystemPromptProfileSetting,
 } from "../../config/settings-schema";
+import { formatAgentIdentityReport, snapshotAgentIdentity } from "../../session/identity";
 import { createSystemPromptProfileResolver } from "../../system-prompt-profiles";
 import { parseCommandArgs } from "../../utils/command-args";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SubcommandDef } from "../types";
@@ -12,7 +13,7 @@ import { commandConsumed, errorMessage } from "./parse";
 export const PROMPT_PROFILE_RESTART_NOTICE =
 	"Global config updated. Restart OMP to load the new prompt identity; /new keeps the current profile. Project and --config overrides still take precedence.";
 
-export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
+export const IDENTITY_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "status", description: "Show active identity, configured profiles, and routes" },
 	{ name: "show", description: "Show every element of one profile", usage: "<profile>" },
 	{ name: "use", description: "Route an agent kind to a profile", usage: "<profile> [main|sub]" },
@@ -24,7 +25,7 @@ export const PROMPT_PROFILE_SUBCOMMANDS: SubcommandDef[] = [
 	},
 	{ name: "unset", description: "Restore one profile element to its default", usage: "<profile> <field>" },
 	{ name: "remove", description: "Remove an unreferenced profile", usage: "<profile>" },
-	{ name: "help", description: "Show prompt profile command usage" },
+	{ name: "help", description: "Show identity command usage" },
 ];
 
 export type PromptProfileField = keyof SystemPromptProfileSetting;
@@ -116,10 +117,10 @@ const PROFILE_FIELD_NAMES = new Map(
 	),
 );
 
-const PROMPT_USAGE = [
-	"Prompt profile commands:",
-	...PROMPT_PROFILE_SUBCOMMANDS.filter(command => command.name !== "help").map(
-		command => "  /prompt " + command.name + (command.usage ? " " + command.usage : ""),
+const IDENTITY_USAGE = [
+	"Identity commands:",
+	...IDENTITY_SUBCOMMANDS.filter(command => command.name !== "help").map(
+		command => "  /identity " + command.name + (command.usage ? " " + command.usage : ""),
 	),
 	"",
 	"Fields: " + Object.keys(PROMPT_PROFILE_FIELDS).join(", "),
@@ -155,11 +156,11 @@ export interface PromptProfileUpdateReceipt {
 
 export type PromptProfileConfigurationRuntime = Pick<SlashCommandRuntime, "cwd" | "settings" | "notifyConfigChanged">;
 
-type PromptProfileCommandRuntime = PromptProfileConfigurationRuntime & Pick<SlashCommandRuntime, "session" | "output">;
+type IdentityCommandRuntime = PromptProfileConfigurationRuntime & Pick<SlashCommandRuntime, "session" | "output">;
 
 function normalizeField(raw: string): PromptProfileField {
 	const field = PROFILE_FIELD_NAMES.get(raw.replaceAll(/[-_]/g, "").toLowerCase());
-	if (field === undefined) throw new Error(`Unknown profile field "${raw}".\n${PROMPT_USAGE}`);
+	if (field === undefined) throw new Error(`Unknown profile field "${raw}".\n${IDENTITY_USAGE}`);
 	return field;
 }
 
@@ -251,28 +252,27 @@ function describeProfile(profileId: string, profile: SystemPromptProfileSetting)
 	return `${profileId}: constitution=${profile.constitution ?? "none"}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
 }
 
-function formatRoute(route: SystemPromptProfileRouteSetting, index: number): string {
+/** One ordered routing rule, rendered for both the textual status and the hub's route list. */
+export function formatProfileRoute(route: SystemPromptProfileRouteSetting, index: number): string {
 	const selector = `${route.agentKind ?? "*"} · ${route.model ?? "*"}`;
 	const target = route.deny === true ? `deny${route.reason ? ` (${route.reason})` : ""}` : route.profile;
 	return `${index + 1}. ${selector} -> ${target}`;
 }
 
-function formatPromptStatus(runtime: PromptProfileCommandRuntime): string {
-	const identity = runtime.session.effectiveIdentity;
+function formatIdentityStatus(runtime: IdentityCommandRuntime): string {
 	const profiles = runtime.settings.get("systemPromptProfiles");
 	const routes = runtime.settings.get("systemPromptProfileRoutes");
 	const profileLines = Object.entries(profiles)
 		.sort(([left], [right]) => left.localeCompare(right))
 		.map(([profileId, profile]) => `  ${describeProfile(profileId, profile)}`);
-	const routeLines = routes.map((route, index) => `  ${formatRoute(route, index)}`);
+	const routeLines = routes.map((route, index) => `  ${formatProfileRoute(route, index)}`);
 	return [
-		"System prompt profiles",
-		`Active: role=${identity.role}; profile=${identity.prompt.profileId ?? "default"}; principal=${identity.prompt.principal}; source=${identity.prompt.source}`,
-		"Profiles:",
+		formatAgentIdentityReport(snapshotAgentIdentity(runtime.session)),
+		"Configured profiles:",
 		...(profileLines.length > 0 ? profileLines : ["  none"]),
-		"Routes (first match wins):",
+		"Configured routes (first match wins):",
 		...(routeLines.length > 0 ? routeLines : ["  none"]),
-		"Use /prompt help for the compact mutation form.",
+		"Use /identity help for the compact mutation form.",
 	].join("\n");
 }
 
@@ -320,7 +320,8 @@ async function persistConfiguration(
 	};
 }
 
-function isUnconditionalProfileRoute(
+/** A global route that selects a profile for one agent kind regardless of model. */
+export function isUnconditionalProfileRoute(
 	route: SystemPromptProfileRouteSetting,
 	agentKind: SystemPromptProfileAgentKind,
 ): boolean {
@@ -420,7 +421,7 @@ export async function applyPromptProfileOperation(
 }
 
 async function outputUpdate(
-	runtime: PromptProfileCommandRuntime,
+	runtime: IdentityCommandRuntime,
 	operation: PromptProfileOperation,
 ): Promise<SlashCommandResult> {
 	const receipt = await applyPromptProfileOperation(runtime, operation);
@@ -430,21 +431,21 @@ async function outputUpdate(
 	return commandConsumed();
 }
 
-async function outputMessage(runtime: PromptProfileCommandRuntime, message: string): Promise<SlashCommandResult> {
+async function outputMessage(runtime: IdentityCommandRuntime, message: string): Promise<SlashCommandResult> {
 	await runtime.output(message);
 	return commandConsumed();
 }
 
-async function handlePromptProfileCommandInner(
+async function handleIdentityCommandInner(
 	command: ParsedSlashCommand,
-	runtime: PromptProfileCommandRuntime,
+	runtime: IdentityCommandRuntime,
 ): Promise<SlashCommandResult> {
 	const [rawVerb, ...args] = parseCommandArgs(command.args);
 	const [profileId, fieldOrKind, ...valueParts] = args;
 	switch (rawVerb?.toLowerCase() ?? "status") {
 		case "status":
 		case "list":
-			return outputMessage(runtime, formatPromptStatus(runtime));
+			return outputMessage(runtime, formatIdentityStatus(runtime));
 		case "show": {
 			if (!profileId || args.length !== 1) break;
 			const profiles = runtime.settings.get("systemPromptProfiles");
@@ -481,16 +482,16 @@ async function handlePromptProfileCommandInner(
 			if (!profileId || args.length !== 1) break;
 			return outputUpdate(runtime, { type: "removeProfile", profileId });
 	}
-	return outputMessage(runtime, PROMPT_USAGE);
+	return outputMessage(runtime, IDENTITY_USAGE);
 }
 
-export async function handlePromptProfileCommand(
+export async function handleIdentityCommand(
 	command: ParsedSlashCommand,
-	runtime: PromptProfileCommandRuntime,
+	runtime: IdentityCommandRuntime,
 ): Promise<SlashCommandResult> {
 	try {
-		return await handlePromptProfileCommandInner(command, runtime);
+		return await handleIdentityCommandInner(command, runtime);
 	} catch (error) {
-		return outputMessage(runtime, `Prompt profile error: ${errorMessage(error)}`);
+		return outputMessage(runtime, `Identity error: ${errorMessage(error)}`);
 	}
 }

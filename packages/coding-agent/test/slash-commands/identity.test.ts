@@ -50,6 +50,11 @@ function createRuntime(overrides: Partial<PromptSettingsStore> = {}) {
 				},
 				memory: { status: "enabled" },
 			},
+			model: { provider: "anthropic", id: "claude-fable-5" },
+			sessionId: "session-identity",
+			settings: { get },
+			getHindsightSessionState: () => undefined,
+			getMnemopiSessionState: () => undefined,
 		},
 		output,
 		notifyConfigChanged,
@@ -57,34 +62,36 @@ function createRuntime(overrides: Partial<PromptSettingsStore> = {}) {
 	return { flush, notifyConfigChanged, output, runtime, set, store };
 }
 
-describe("/prompt slash command", () => {
-	it("shows the active immutable identity and complete configured surface", async () => {
+describe("/identity slash command", () => {
+	it("reports the active identity together with the complete configured surface", async () => {
 		const harness = createRuntime();
 
-		expect(await executeAcpBuiltinSlashCommand("/prompt", harness.runtime)).toEqual({ consumed: true });
-		expect(harness.output).toHaveBeenCalledWith(
-			expect.stringContaining(
-				"Active: role=main; profile=driver; principal=maintained-omp-prompt; source=maintained-omp-prompt",
-			),
+		expect(await executeAcpBuiltinSlashCommand("/identity", harness.runtime)).toEqual({ consumed: true });
+		const report = harness.output.mock.calls.at(-1)?.[0] as string;
+		expect(report).toContain("Role: main");
+		expect(report).toContain("Prompt profile: driver");
+		expect(report).toContain("Prompt principal: maintained-omp-prompt");
+		expect(report).toContain("Prompt source: maintained-omp-prompt");
+		expect(report).toContain("Model: anthropic/claude-fable-5");
+		expect(report).toContain("Session ID: session-identity");
+		expect(report).toContain("Memory backend: off (disabled)");
+		expect(report).toContain(
+			"driver: constitution=none; base=maintained; append=none; context=all; memory=on; mcp=on; images=0; user=default; identity=default; tools=all",
 		);
-		expect(harness.output).toHaveBeenCalledWith(
-			expect.stringContaining(
-				"driver: constitution=none; base=maintained; append=none; context=all; memory=on; mcp=on; images=0; user=default; identity=default; tools=all",
-			),
-		);
-		expect(harness.output).toHaveBeenCalledWith(expect.stringContaining("1. main · * -> driver"));
+		expect(report).toContain("1. main · * -> driver");
+		expect(report).toContain("2. sub · * -> worker");
 		expect(harness.set).not.toHaveBeenCalled();
 	});
 
 	it("sets file-backed instructions, preserves sibling profiles, and flushes before reporting", async () => {
-		const dir = TempDir.createSync("@prompt-command-");
+		const dir = TempDir.createSync("@identity-command-");
 		try {
 			const instructionsPath = dir.join("driver instructions.md");
 			await Bun.write(instructionsPath, "DRIVER INSTRUCTIONS");
 			const harness = createRuntime();
 
 			await executeAcpBuiltinSlashCommand(
-				`/prompt set driver instructionsFile "${instructionsPath}"`,
+				`/identity set driver instructionsFile "${instructionsPath}"`,
 				harness.runtime,
 			);
 
@@ -101,7 +108,7 @@ describe("/prompt slash command", () => {
 	});
 
 	it("keeps prompt and promptFile mutually exclusive", async () => {
-		const dir = TempDir.createSync("@prompt-command-source-");
+		const dir = TempDir.createSync("@identity-command-source-");
 		try {
 			const promptPath = dir.join("driver.md");
 			await Bun.write(promptPath, "DRIVER PROMPT");
@@ -109,7 +116,7 @@ describe("/prompt slash command", () => {
 				systemPromptProfiles: { driver: { prompt: "INLINE" }, worker: {} },
 			});
 
-			await executeAcpBuiltinSlashCommand(`/prompt set driver promptFile "${promptPath}"`, harness.runtime);
+			await executeAcpBuiltinSlashCommand(`/identity set driver promptFile "${promptPath}"`, harness.runtime);
 
 			expect(harness.store.systemPromptProfiles.driver).toEqual({ promptFile: promptPath });
 		} finally {
@@ -120,7 +127,7 @@ describe("/prompt slash command", () => {
 	it("preserves quoted inline prompt whitespace", async () => {
 		const harness = createRuntime();
 
-		await executeAcpBuiltinSlashCommand('/prompt set driver instructions "Keep  exact   spacing"', harness.runtime);
+		await executeAcpBuiltinSlashCommand('/identity set driver instructions "Keep  exact   spacing"', harness.runtime);
 
 		expect(harness.store.systemPromptProfiles.driver).toEqual({
 			instructions: "Keep  exact   spacing",
@@ -130,8 +137,8 @@ describe("/prompt slash command", () => {
 	it("edits boolean elements through concise on and off values", async () => {
 		const harness = createRuntime();
 
-		await executeAcpBuiltinSlashCommand("/prompt set driver memory off", harness.runtime);
-		await executeAcpBuiltinSlashCommand("/prompt set driver project-context-only on", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity set driver memory off", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity set driver project-context-only on", harness.runtime);
 
 		expect(harness.store.systemPromptProfiles.driver).toEqual({ memory: false, projectContextOnly: true });
 		expect(harness.flush).toHaveBeenCalledTimes(2);
@@ -140,34 +147,30 @@ describe("/prompt slash command", () => {
 	it("sets only the closed Fable constitution and restores its default", async () => {
 		const harness = createRuntime();
 
-		await executeAcpBuiltinSlashCommand("/prompt set driver constitution fable", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity set driver constitution fable", harness.runtime);
 		expect(harness.store.systemPromptProfiles.driver).toEqual({ constitution: "fable" });
 
-		await executeAcpBuiltinSlashCommand("/prompt status", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity status", harness.runtime);
 		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("driver: constitution=fable"));
-		await executeAcpBuiltinSlashCommand("/prompt show driver", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity show driver", harness.runtime);
 		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("constitution: fable"));
 
 		harness.set.mockClear();
-		await executeAcpBuiltinSlashCommand("/prompt set driver constitution other", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity set driver constitution other", harness.runtime);
 		expect(harness.set).not.toHaveBeenCalled();
-		expect(harness.output).toHaveBeenLastCalledWith(
-			'Prompt profile error: constitution expects fable, received "other".',
-		);
+		expect(harness.output).toHaveBeenLastCalledWith('Identity error: constitution expects fable, received "other".');
 
-		await executeAcpBuiltinSlashCommand("/prompt unset driver constitution", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity unset driver constitution", harness.runtime);
 		expect(harness.store.systemPromptProfiles.driver).toEqual({});
 	});
 
 	it("rejects invalid values without mutating settings", async () => {
 		const harness = createRuntime();
 
-		await executeAcpBuiltinSlashCommand("/prompt set driver memory perhaps", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity set driver memory perhaps", harness.runtime);
 
 		expect(harness.set).not.toHaveBeenCalled();
-		expect(harness.output).toHaveBeenCalledWith(
-			'Prompt profile error: memory expects on or off, received "perhaps".',
-		);
+		expect(harness.output).toHaveBeenCalledWith('Identity error: memory expects on or off, received "perhaps".');
 	});
 
 	it("validates UI-created profiles and file-backed fields through the canonical resolver before persistence", async () => {
@@ -185,7 +188,7 @@ describe("/prompt slash command", () => {
 		expect(harness.set).not.toHaveBeenCalled();
 
 		await executeAcpBuiltinSlashCommand(
-			"/prompt set driver promptFile /definitely/missing/system-prompt.md",
+			"/identity set driver promptFile /definitely/missing/system-prompt.md",
 			harness.runtime,
 		);
 		expect(harness.set).not.toHaveBeenCalled();
@@ -206,7 +209,7 @@ describe("/prompt slash command", () => {
 			],
 		});
 
-		await executeAcpBuiltinSlashCommand("/prompt use researcher main", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity use researcher main", harness.runtime);
 
 		expect(harness.store.systemPromptProfileRoutes).toEqual([
 			{ agentKind: "main", profile: "researcher" },
@@ -223,7 +226,7 @@ describe("/prompt slash command", () => {
 	it("restores a field default and refuses to remove a routed profile", async () => {
 		const harness = createRuntime();
 
-		await executeAcpBuiltinSlashCommand("/prompt unset worker memory", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity unset worker memory", harness.runtime);
 		expect(harness.store.systemPromptProfiles.worker).toEqual({
 			instructions: "WORKER",
 			projectContextOnly: true,
@@ -231,10 +234,10 @@ describe("/prompt slash command", () => {
 		});
 
 		harness.set.mockClear();
-		await executeAcpBuiltinSlashCommand("/prompt remove worker", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity remove worker", harness.runtime);
 		expect(harness.set).not.toHaveBeenCalled();
 		expect(harness.output).toHaveBeenLastCalledWith(
-			'Prompt profile error: System prompt profile "worker" is still referenced by a route.',
+			'Identity error: System prompt profile "worker" is still referenced by a route.',
 		);
 	});
 
@@ -248,7 +251,7 @@ describe("/prompt slash command", () => {
 			],
 		});
 
-		await executeAcpBuiltinSlashCommand("/prompt unroute main", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity unroute main", harness.runtime);
 
 		expect(harness.store.systemPromptProfileRoutes).toEqual([
 			{ agentKind: "main", model: "openai-codex/*", profile: "driver" },
@@ -258,13 +261,13 @@ describe("/prompt slash command", () => {
 	});
 	it("rejects inherited object names but permits explicitly configured profiles with those names", async () => {
 		const harness = createRuntime();
-		await executeAcpBuiltinSlashCommand("/prompt show toString", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity show toString", harness.runtime);
 		expect(harness.output).toHaveBeenLastCalledWith(
 			expect.stringContaining('Unknown system prompt profile "toString"'),
 		);
-		await executeAcpBuiltinSlashCommand("/prompt set toString instructions explicit", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity set toString instructions explicit", harness.runtime);
 		expect(Object.hasOwn(harness.store.systemPromptProfiles, "toString")).toBe(true);
-		await executeAcpBuiltinSlashCommand("/prompt show toString", harness.runtime);
+		await executeAcpBuiltinSlashCommand("/identity show toString", harness.runtime);
 		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("System prompt profile: toString"));
 	});
 });

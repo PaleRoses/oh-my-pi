@@ -14,10 +14,10 @@ const CONFIG_KEYS = {
 } as const;
 
 const FORK_VALIDATION_TESTS = [
-	"test/modes/components/prompt-profile-selector.test.ts",
-	"test/modes/controllers/selector-controller-prompt-profile.test.ts",
-	"test/slash-commands/prompt.test.ts",
-	"test/slash-commands/prompt-tui.test.ts",
+	"test/modes/components/identity-hub.test.ts",
+	"test/modes/controllers/selector-controller-identity.test.ts",
+	"test/slash-commands/identity.test.ts",
+	"test/identity-surfaces.test.ts",
 	"test/system-prompt-profiles.test.ts",
 	"test/system-prompt-profiles-sdk.test.ts",
 	"test/system-prompt-model.test.ts",

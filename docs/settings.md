@@ -410,12 +410,14 @@ A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `inst
 
 `tools` names the model-facing active tool set; session contracts stay intact (ask, a required yield, the checkpoint/rewind and task/hub pairings, and memory tools while profile memory is enabled), and the full registry remains available through `/tools`. A route may use `deny: true` and an optional `reason` instead of `profile`.
 
-Use `/prompt` for the concise profile form instead of editing these record and
-array settings in the general panel. It shows profiles and ordered routes,
-sets or unsets its supported prompt elements, and assigns an unconditional
-`main` or `sub` route. The closed `constitution` selection is configured directly
-in YAML. `/prompt` validates referenced files before saving and reports the required OMP
-restart. `/new` retains the current profile.
+Use `/identity` for the fullscreen hub instead of editing these records in the
+general settings panel. Main and Subagents come first, followed by All profiles
+and ordered Routing. Assignments prepend an unconditional `main` or `sub` rule;
+the hub warns that it can shadow model-qualified or deny rules. Prompt elements,
+including the closed constitution choice, are editable in the hub.
+`/identity status` and explicit subcommands remain textual. Referenced files
+are validated before saving. Restart OMP to apply changes; `/new` retains the
+current profile.
 
 OMP pins the selected profile ID when it creates the transcript. Resume, model cycling, prewalk, and retry fallback may continue only when routing still selects that ID. A live switch may enter only a transcript pinned to the same profile and leaves the current session intact if its saved model is incompatible. Changing prompt identity requires a new OMP process and transcript; `/new` intentionally inherits the current profile.
 When Hindsight retention runs, the profile's immutable effective identity supplies the retained `prompt`, `principal`, and `prompt-source` provenance; see [recall](./tools/recall.md).

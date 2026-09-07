@@ -434,7 +434,8 @@ export interface InteractiveModeContext {
 
 	// Selector handling
 	showSettingsSelector(): void;
-	showPromptProfileSelector(): void;
+	/** Open the fullscreen `/identity` hub: active identity, profile library and ordered routing. */
+	showIdentityHub(): void;
 	editMarkdown(content: string): Promise<string | null | undefined>;
 	openMarkdownFile(filePath: string): Promise<boolean | undefined>;
 	/** Open the fullscreen `/usage` dashboard overlay for the given reports. */

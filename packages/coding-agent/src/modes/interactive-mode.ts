@@ -5716,8 +5716,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showSettingsSelector();
 	}
 
-	showPromptProfileSelector(): void {
-		this.#selectorController.showPromptProfileSelector();
+	showIdentityHub(): void {
+		this.#selectorController.showIdentityHub();
 	}
 
 	showUsageDashboard(reports: UsageReport[]): void {

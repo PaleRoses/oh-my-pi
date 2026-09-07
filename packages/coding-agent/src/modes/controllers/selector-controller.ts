@@ -97,13 +97,13 @@ import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
 import { listLiveToolRecords, liveToolRecordFromSession } from "../components/extensions/live-tool-session";
 import { HistorySearchComponent } from "../components/history-search";
+import { IdentityHubComponent } from "../components/identity-hub";
 import { LoginDialogComponent } from "../components/login-dialog";
 import { LogoutAccountSelectorComponent } from "../components/logout-account-selector";
 import { ModelHubComponent, type ModelRoleSelectionScope } from "../components/model-hub";
 import { ModelPickerComponent } from "../components/model-picker";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
 import { PluginSelectorComponent } from "../components/plugin-selector";
-import { PromptProfileSelectorComponent } from "../components/prompt-profile-selector";
 import { ReadToolGroupComponent } from "../components/read-tool-group";
 import { ResetUsageSelectorComponent } from "../components/reset-usage-selector";
 import { type BranchVariantPath, RewindSelectorComponent } from "../components/rewind-selector";
@@ -192,39 +192,59 @@ export class SelectorController {
 		this.ctx.ui.requestRender();
 	}
 
-	showPromptProfileSelector(): void {
-		this.showSelector(done => {
-			const identity = this.ctx.session.effectiveIdentity;
-			const cwd = this.ctx.sessionManager.getCwd();
-			const selector = new PromptProfileSelectorComponent(
-				{
-					profiles: this.ctx.settings.get("systemPromptProfiles"),
-					routes: this.ctx.settings.get("systemPromptProfileRoutes"),
-					identity: {
-						role: identity.role,
-						profileId: identity.prompt.profileId,
-						principal: identity.prompt.principal,
-						source: identity.prompt.source,
-					},
-					maintainedPromptFile: resolveMaintainedSystemPromptFilePath(),
+	/**
+	 * Bare `/identity`: the fullscreen identity hub on the alternate screen,
+	 * mounted through the one modal path shared with Settings, Model Hub and
+	 * Agent Hub. Profile writes go through the canonical
+	 * `applyPromptProfileOperation`, which validates the candidate
+	 * configuration before persisting it. The Markdown actions borrow the
+	 * interactive external-editor owner: it stops the TUI for the child
+	 * process and restarts it afterwards, and because this overlay is still
+	 * the topmost visible one the restart re-enters the alternate screen with
+	 * mouse tracking and repaints the hub.
+	 */
+	showIdentityHub(): void {
+		let closed = false;
+		const done = () => {
+			// Idempotent: a second close would hide an already-hidden overlay
+			// and pull focus back after another surface has taken it.
+			if (closed) return;
+			closed = true;
+			overlayHandle?.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		const identity = this.ctx.session.effectiveIdentity;
+		const cwd = this.ctx.sessionManager.getCwd();
+		const hub = new IdentityHubComponent(
+			this.ctx.ui,
+			{
+				profiles: this.ctx.settings.get("systemPromptProfiles"),
+				routes: this.ctx.settings.get("systemPromptProfileRoutes"),
+				identity: {
+					role: identity.role,
+					profileId: identity.prompt.profileId,
+					principal: identity.prompt.principal,
+					source: identity.prompt.source,
 				},
-				{
-					onApply: operation =>
-						applyPromptProfileOperation(
-							{
-								cwd,
-								settings: this.ctx.settings,
-							},
-							operation,
-						),
-					onEditMarkdown: content => this.ctx.editMarkdown(content),
-					onOpenMarkdownFile: source => this.ctx.openMarkdownFile(resolvePath(source, cwd)),
-					onClose: done,
-					requestRender: () => this.ctx.ui.requestRender(),
-				},
-			);
-			return { component: selector, focus: selector };
-		});
+				maintainedPromptFile: resolveMaintainedSystemPromptFilePath(),
+			},
+			{
+				onApply: operation =>
+					applyPromptProfileOperation(
+						{
+							cwd,
+							settings: this.ctx.settings,
+						},
+						operation,
+					),
+				onEditMarkdown: content => this.ctx.editMarkdown(content),
+				onOpenMarkdownFile: source => this.ctx.openMarkdownFile(resolvePath(source, cwd)),
+				onClose: done,
+				requestRender: () => this.ctx.ui.requestRender(),
+			},
+		);
+		const overlayHandle = this.#showFullscreenMenu(hub);
 	}
 
 	showSettingsSelector(): void {

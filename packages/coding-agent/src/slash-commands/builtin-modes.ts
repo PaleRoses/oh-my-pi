@@ -11,7 +11,6 @@ import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
-import { handlePromptProfileCommand, PROMPT_PROFILE_SUBCOMMANDS } from "./helpers/prompt-profile";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
@@ -316,31 +315,6 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			await runtime.ctx.handleQueueCommand(command.args);
-		},
-	},
-	{
-		name: "prompt",
-		description: "Inspect and configure system-prompt profiles",
-		acpDescription: "Manage system-prompt profiles",
-		acpInputHint: "[status|show|use|unroute|set|unset|remove|help]",
-		subcommands: PROMPT_PROFILE_SUBCOMMANDS,
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime =>
-			`Prompt: ${runtime.ctx.session.effectiveIdentity.prompt.profileId ?? "default"}`,
-		handle: handlePromptProfileCommand,
-		handleTui: async (command, runtime) => {
-			const ctx = runtime.ctx;
-			ctx.editor.setText("");
-			if (command.args.trim().length === 0) {
-				ctx.showPromptProfileSelector();
-				return;
-			}
-			await handlePromptProfileCommand(command, {
-				session: ctx.session,
-				settings: ctx.settings,
-				cwd: ctx.sessionManager.getCwd(),
-				output: text => ctx.showStatus(text),
-			});
 		},
 	},
 	{

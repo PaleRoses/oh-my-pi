@@ -1,7 +1,7 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
-import { formatAgentIdentityReport, snapshotAgentIdentity } from "../session/identity";
+import { snapshotAgentIdentity } from "../session/identity";
 import {
 	getChangelogPath,
 	parseChangelog,
@@ -13,6 +13,7 @@ import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
+import { handleIdentityCommand, IDENTITY_SUBCOMMANDS } from "./helpers/prompt-profile";
 import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
@@ -425,15 +426,29 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "identity",
-		description: "Show this agent's identity and memory scope",
-		acpDescription: "Show this agent's identity and memory scope",
+		description: "Show or configure this agent's identity: prompt profiles, routes, and memory scope",
+		acpDescription: "Show or configure agent identity, prompt profiles, and routes",
+		acpInputHint: "[status|show|use|unroute|set|unset|remove|help]",
+		subcommands: IDENTITY_SUBCOMMANDS,
+		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			const identity = snapshotAgentIdentity(runtime.ctx.session);
 			return `Identity: ${identity.prompt.principal}`;
 		},
-		handle: async (_command, runtime) => {
-			await runtime.output(formatAgentIdentityReport(snapshotAgentIdentity(runtime.session)));
-			return commandConsumed();
+		handle: handleIdentityCommand,
+		handleTui: async (command, runtime) => {
+			const ctx = runtime.ctx;
+			ctx.editor.setText("");
+			if (command.args.trim().length === 0) {
+				ctx.showIdentityHub();
+				return;
+			}
+			await handleIdentityCommand(command, {
+				session: ctx.session,
+				settings: ctx.settings,
+				cwd: ctx.sessionManager.getCwd(),
+				output: text => ctx.showStatus(text),
+			});
 		},
 	},
 	{
