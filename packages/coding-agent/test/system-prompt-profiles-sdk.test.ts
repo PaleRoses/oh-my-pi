@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { HindsightMemoryBinding } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -49,6 +50,29 @@ function routedSettings(workerMemory = false): Settings {
 	});
 }
 
+/** Routes that point at `driver`, plus two profiles owned by different memory principals. */
+function boundSettings(bankId = "person-fable"): Settings {
+	return Settings.isolated({
+		"compaction.enabled": false,
+		"todo.enabled": false,
+		"retry.enabled": false,
+		"memory.backend": "hindsight",
+		"hindsight.mentalModelsEnabled": false,
+		"hindsight.autoRecall": false,
+		systemPromptProfiles: {
+			driver: { prompt: "DRIVER CONSTITUTION" },
+			"fable-memory": { prompt: "FABLE MEMORY", memoryBinding: { principal: "fable", bankId } },
+			"astra-memory": { prompt: "ASTRA MEMORY", memoryBinding: { principal: "astra", bankId: "person-astra" } },
+			"harness-memory": { prompt: "HARNESS MEMORY" },
+			"quiet-worker": { instructions: "QUIET WORKER", memory: false },
+		},
+		systemPromptProfileRoutes: [
+			{ agentKind: "main", profile: "driver" },
+			{ agentKind: "sub", profile: "quiet-worker" },
+		],
+	});
+}
+
 describe("SDK system prompt profiles", () => {
 	let dir: TempDir;
 	let auth: AuthStorage;
@@ -83,6 +107,8 @@ describe("SDK system prompt profiles", () => {
 			restrictToolNames?: boolean;
 			parentSession?: AgentSession;
 			extensions?: ExtensionFactory[];
+			systemPromptProfile?: string;
+			inheritedMemoryBinding?: HindsightMemoryBinding | null;
 		} = {},
 	): Promise<AgentSession> {
 		const model = createMockModel({ id: modelId, handler: () => ({ content: ["ok"] }) });
@@ -97,6 +123,8 @@ describe("SDK system prompt profiles", () => {
 			taskDepth: options.taskDepth,
 			agentKind: options.agentKind,
 			restrictToolNames: options.restrictToolNames,
+			systemPromptProfile: options.systemPromptProfile,
+			inheritedMemoryBinding: options.inheritedMemoryBinding,
 			parentHindsightSessionState: options.parentSession?.getHindsightSessionState(),
 			customSystemPrompt: options.customSystemPrompt,
 			customSystemPromptSource: options.customSystemPromptSource,
@@ -131,6 +159,7 @@ describe("SDK system prompt profiles", () => {
 			profileId: "driver",
 			principal: "prompt-profile:driver",
 			source: "system-prompt-profile",
+			profileSource: "route",
 		});
 	});
 	it("renders the routed role instructions literally inside Role without leaking them to other profiles", async () => {
@@ -140,12 +169,8 @@ describe("SDK system prompt profiles", () => {
 		const principalPrompt = principal.agent.state.systemPrompt.join("\n\n");
 
 		expect(principal.systemPromptProfileId).toBe("principal");
-		expect(principal.effectiveIdentity.prompt).toEqual({
-			profileId: "principal",
-			principal: "prompt-profile:principal",
-			source: "system-prompt-profile",
-		});
 		expect(principalPrompt).toContain(`§ Role\n${ROLE_PROMPT}\n\n# Engineering`);
+
 		expect(generic.systemPromptProfileId).toBe("driver");
 		expect(generic.agent.state.systemPrompt.join("\n\n")).not.toContain(ROLE_PROMPT);
 		expect(worker.systemPromptProfileId).toBe("worker");
@@ -376,6 +401,7 @@ describe("SDK system prompt profiles", () => {
 			profileId: model === "driver-primary" ? "driver" : "principal",
 			principal: "explicit-system-prompt",
 			source: "explicit-system-prompt",
+			profileSource: "route",
 		});
 	});
 
@@ -395,11 +421,13 @@ describe("SDK system prompt profiles", () => {
 			profileId: undefined,
 			principal: "discovered-system-prompt",
 			source: "discovered-system-prompt",
+			profileSource: "route",
 		});
 		expect(maintained.effectiveIdentity.prompt).toEqual({
 			profileId: undefined,
 			principal: "maintained-omp-prompt",
 			source: "maintained-omp-prompt",
+			profileSource: "route",
 		});
 	});
 
@@ -508,7 +536,7 @@ describe("SDK system prompt profiles", () => {
 		const staleModel = createMockModel({ id: "driver-stale", handler: () => ({ content: ["stale"] }) });
 
 		const target = SessionManager.create(dir.path(), sessionDir);
-		target.pinSystemPromptProfile("driver");
+		target.pinSystemPromptSelection({ profileId: "driver", source: "route", memoryBinding: null });
 		target.appendModelChange("mock/driver-stale", "default");
 		target.appendMessage({
 			role: "assistant",
@@ -555,7 +583,7 @@ describe("SDK system prompt profiles", () => {
 		expect(session.agent.promptCacheKey).not.toBe(previousPromptCacheKey);
 
 		const target = SessionManager.create(dir.path(), sessionDir);
-		target.pinSystemPromptProfile("worker");
+		target.pinSystemPromptSelection({ profileId: "worker", source: "route", memoryBinding: null });
 		const targetModel = createMockModel({ id: "worker-primary", handler: () => ({ content: ["ok"] }) });
 		target.appendMessage({
 			role: "assistant",
@@ -574,7 +602,9 @@ describe("SDK system prompt profiles", () => {
 			stopReason: "stop",
 			timestamp: Date.now(),
 		});
-		expect(() => target.pinSystemPromptProfile("driver")).toThrow("immutable once a transcript has started");
+		expect(() =>
+			target.pinSystemPromptSelection({ profileId: "driver", source: "route", memoryBinding: null }),
+		).toThrow("immutable once a transcript has started");
 		await target.flush();
 		const targetFile = target.getSessionFile();
 		await target.close();
@@ -631,5 +661,320 @@ describe("SDK system prompt profiles", () => {
 
 		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "checkpoint", "rewind"]));
 		expect(session.getActiveToolNames()).not.toContain("hub");
+	});
+
+	it("pins an explicitly selected profile with its owner instead of the routed default", async () => {
+		const sessionDir = path.join(dir.path(), "explicit-sessions");
+		const session = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+			systemPromptProfile: "astra-memory",
+		});
+		const header = session.sessionManager.getHeader();
+
+		expect(session.systemPromptProfileId).toBe("astra-memory");
+		expect(header?.systemPromptProfileSource).toBe("explicit");
+		expect(header?.memoryBinding).toEqual({ principal: "astra", bankId: "person-astra" });
+		expect(session.memoryBinding).toEqual({ principal: "astra", bankId: "person-astra" });
+		expect(session.agent.state.systemPrompt.join("\n\n")).toContain("ASTRA MEMORY");
+	});
+
+	it("pins an unbound routed session explicitly, distinguishing it from a legacy transcript", async () => {
+		const session = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), path.join(dir.path(), "unbound-sessions")),
+		});
+
+		expect(session.sessionManager.getHeader()?.memoryBinding).toBeNull();
+		expect(session.sessionManager.getHeader()?.systemPromptProfileSource).toBe("route");
+		expect(session.memoryBinding).toBeNull();
+	});
+
+	it("resumes a persisted explicit selection without the flag while routes point elsewhere", async () => {
+		const sessionDir = path.join(dir.path(), "resume-explicit");
+		const original = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+			systemPromptProfile: "astra-memory",
+		});
+		await original.prompt("seed");
+		const sessionFile = original.sessionFile;
+		await original.dispose();
+		sessions = sessions.filter(session => session !== original);
+		if (!sessionFile) throw new Error("Expected persisted source session");
+
+		const resumedManager = await SessionManager.open(sessionFile, sessionDir);
+		const resumed = await create("driver-primary", boundSettings(), { sessionManager: resumedManager });
+
+		expect(resumed.systemPromptProfileId).toBe("astra-memory");
+		expect(resumed.memoryBinding).toEqual({ principal: "astra", bankId: "person-astra" });
+	});
+
+	it("keeps an explicit selection through a model change that routes elsewhere", async () => {
+		const settings = boundSettings();
+		settings.override("systemPromptProfileRoutes", [
+			{ agentKind: "main", model: "mock/worker*", profile: "harness-memory" },
+			{ agentKind: "main", profile: "driver" },
+			{ agentKind: "sub", profile: "quiet-worker" },
+		]);
+		const session = await create("driver-primary", settings, { systemPromptProfile: "astra-memory" });
+		const routedElsewhere = createMockModel({ id: "worker-primary", handler: () => ({ content: ["ok"] }) });
+
+		await session.setModel(routedElsewhere);
+
+		expect(session.model?.id).toBe("worker-primary");
+		expect(session.systemPromptProfileId).toBe("astra-memory");
+		expect(session.memoryBinding).toEqual({ principal: "astra", bankId: "person-astra" });
+	});
+
+	it("refuses a flag that contradicts the pinned profile", async () => {
+		const sessionDir = path.join(dir.path(), "conflict-sessions");
+		const original = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+			systemPromptProfile: "astra-memory",
+		});
+		await original.prompt("seed");
+		const sessionFile = original.sessionFile;
+		await original.dispose();
+		sessions = sessions.filter(session => session !== original);
+		if (!sessionFile) throw new Error("Expected persisted source session");
+
+		const resumedManager = await SessionManager.open(sessionFile, sessionDir);
+		try {
+			await expect(
+				create("driver-primary", boundSettings(), {
+					sessionManager: resumedManager,
+					systemPromptProfile: "fable-memory",
+				}),
+			).rejects.toThrow('pinned to system prompt profile "astra-memory"');
+		} finally {
+			await resumedManager.close();
+		}
+	});
+
+	it("refuses a resume whose profile now names another bank, before memory starts", async () => {
+		const sessionDir = path.join(dir.path(), "rebank-sessions");
+		const original = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+			systemPromptProfile: "fable-memory",
+		});
+		await original.prompt("seed");
+		const sessionFile = original.sessionFile;
+		await original.dispose();
+		sessions = sessions.filter(session => session !== original);
+		if (!sessionFile) throw new Error("Expected persisted source session");
+
+		const resumedManager = await SessionManager.open(sessionFile, sessionDir);
+		try {
+			await expect(
+				create("driver-primary", boundSettings("person-fable-v2"), { sessionManager: resumedManager }),
+			).rejects.toThrow('pinned to memory owner "fable" (bank "person-fable")');
+		} finally {
+			await resumedManager.close();
+		}
+	});
+
+	it("refuses a legacy transcript whose profile has since acquired an owner", async () => {
+		const sessionDir = path.join(dir.path(), "legacy-sessions");
+		const legacy = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+		});
+		await legacy.prompt("seed");
+		const sessionFile = legacy.sessionFile;
+		await legacy.dispose();
+		sessions = sessions.filter(session => session !== legacy);
+		if (!sessionFile) throw new Error("Expected persisted legacy session");
+		// Strip the pin fields the way a transcript written before they existed looks.
+		const legacyLines = (await fs.readFile(sessionFile, "utf8")).split("\n").map(line => {
+			if (!line.includes('"type":"session"')) return line;
+			const parsed = JSON.parse(line);
+			delete parsed.memoryBinding;
+			delete parsed.systemPromptProfileSource;
+			return JSON.stringify(parsed);
+		});
+		await fs.writeFile(sessionFile, legacyLines.join("\n"));
+
+		const settings = boundSettings();
+		settings.override("systemPromptProfiles", {
+			driver: { prompt: "DRIVER CONSTITUTION", memoryBinding: { principal: "fable", bankId: "person-fable" } },
+			"quiet-worker": { instructions: "QUIET WORKER", memory: false },
+		});
+		const resumedManager = await SessionManager.open(sessionFile, sessionDir);
+		try {
+			await expect(create("driver-primary", settings, { sessionManager: resumedManager })).rejects.toThrow(
+				'predates memory owners; start a new session to use "fable"',
+			);
+		} finally {
+			await resumedManager.close();
+		}
+	});
+
+	it("refuses a bound profile when the memory backend is not Hindsight", async () => {
+		const settings = boundSettings();
+		settings.override("memory.backend", "local");
+
+		await expect(create("driver-primary", settings, { systemPromptProfile: "fable-memory" })).rejects.toThrow(
+			'requires the hindsight memory backend; memory.backend is "local"',
+		);
+	});
+
+	it("carries profile, selection source, and owner into the transcript /new opens", async () => {
+		const sessionDir = path.join(dir.path(), "new-sessions");
+		const session = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+			systemPromptProfile: "fable-memory",
+		});
+
+		await session.newSession();
+		const header = session.sessionManager.getHeader();
+
+		expect(header?.systemPromptProfile).toBe("fable-memory");
+		expect(header?.systemPromptProfileSource).toBe("explicit");
+		expect(header?.memoryBinding).toEqual({ principal: "fable", bankId: "person-fable" });
+	});
+
+	it("lets a same-owner select-profile fork change prompt but refuses another owner's fork", async () => {
+		const sessionDir = path.join(dir.path(), "fork-sessions");
+		const original = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+			systemPromptProfile: "fable-memory",
+		});
+		await original.prompt("seed");
+		const sessionFile = original.sessionFile;
+		await original.dispose();
+		sessions = sessions.filter(session => session !== original);
+		if (!sessionFile) throw new Error("Expected persisted source session");
+
+		const settings = boundSettings();
+		settings.override("systemPromptProfiles", {
+			driver: { prompt: "DRIVER CONSTITUTION" },
+			"quiet-worker": { instructions: "QUIET WORKER", memory: false },
+			"fable-memory": { prompt: "FABLE MEMORY", memoryBinding: { principal: "fable", bankId: "person-fable" } },
+			"fable-review": { prompt: "FABLE REVIEW", memoryBinding: { principal: "fable", bankId: "person-fable" } },
+			"astra-memory": { prompt: "ASTRA MEMORY", memoryBinding: { principal: "astra", bankId: "person-astra" } },
+		});
+
+		const sameOwnerFork = await SessionManager.forkFrom(sessionFile, dir.path(), sessionDir, undefined, {
+			systemPromptProfile: "select",
+		});
+		const forked = await create("driver-primary", settings, {
+			sessionManager: sameOwnerFork,
+			systemPromptProfile: "fable-review",
+		});
+		expect(forked.systemPromptProfileId).toBe("fable-review");
+		expect(forked.sessionManager.getHeader()?.memoryBinding).toEqual({ principal: "fable", bankId: "person-fable" });
+
+		const crossOwnerFork = await SessionManager.forkFrom(sessionFile, dir.path(), sessionDir, undefined, {
+			systemPromptProfile: "select",
+		});
+		try {
+			await expect(
+				create("driver-primary", settings, {
+					sessionManager: crossOwnerFork,
+					systemPromptProfile: "astra-memory",
+				}),
+			).rejects.toThrow("requires a fresh session");
+		} finally {
+			await crossOwnerFork.close();
+		}
+	});
+
+	it("binds an independent helper to the owner it acts for and refuses a conflicting profile", async () => {
+		const settings = boundSettings();
+		const owner: HindsightMemoryBinding = { principal: "fable", bankId: "person-fable" };
+
+		const helper = await create("driver-primary", settings, {
+			systemPromptProfile: "harness-memory",
+			inheritedMemoryBinding: owner,
+		});
+		expect(helper.memoryBinding).toEqual(owner);
+		expect(helper.sessionManager.getHeader()?.memoryBinding).toEqual(owner);
+
+		await expect(
+			create("driver-primary", settings, {
+				systemPromptProfile: "astra-memory",
+				inheritedMemoryBinding: owner,
+			}),
+		).rejects.toThrow('profile "astra-memory" declares "astra"');
+	});
+
+	it("preserves a disabled worker's owner across persisted revival and history-bearing forks", async () => {
+		const settings = boundSettings();
+		const owner = { principal: "fable", bankId: "person-fable" };
+		const sessionDir = path.join(dir.path(), "disabled-owner-sessions");
+		const child = await create("driver-primary", settings, {
+			agentKind: "sub",
+			taskDepth: 1,
+			inheritedMemoryBinding: owner,
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+		});
+
+		expect(child.systemPromptProfileId).toBe("quiet-worker");
+		expect(child.effectiveIdentity.memory.status).toBe("disabled-by-profile");
+		await child.prompt("Preserve this worker history.");
+		const sessionFile = child.sessionFile;
+		await child.dispose();
+		sessions = sessions.filter(session => session !== child);
+		if (!sessionFile) throw new Error("Expected persisted worker");
+		const reopened = await create("driver-primary", settings, {
+			agentKind: "sub",
+			taskDepth: 1,
+			inheritedMemoryBinding: owner,
+			sessionManager: await SessionManager.open(sessionFile, sessionDir),
+		});
+		await reopened.prompt("Continue the worker history.");
+		expect(reopened.memoryBinding).toEqual(owner);
+		expect(reopened.getHindsightSessionState()).toBeUndefined();
+		expect(reopened.getActiveToolNames()).not.toContain("retain");
+
+		const forkManager = await SessionManager.forkFrom(sessionFile, dir.path(), sessionDir, undefined, {
+			systemPromptProfile: "select",
+		});
+		const forked = await create("driver-primary", settings, {
+			agentKind: "sub",
+			taskDepth: 1,
+			inheritedMemoryBinding: owner,
+			sessionManager: forkManager,
+		});
+		await forked.prompt("Continue from copied history.");
+		expect(forked.memoryBinding).toEqual(owner);
+		expect(forked.getHindsightSessionState()).toBeUndefined();
+		expect(forked.getActiveToolNames()).not.toContain("recall");
+	});
+
+	it("refuses a live switch to a transcript of the same profile with another memory owner", async () => {
+		const sessionDir = path.join(dir.path(), "switch-owner-sessions");
+		const session = await create("driver-primary", boundSettings(), {
+			sessionManager: SessionManager.create(dir.path(), sessionDir),
+			systemPromptProfile: "fable-memory",
+		});
+
+		// Pinned before the profile named an owner: same prompt, no bank.
+		const target = SessionManager.create(dir.path(), sessionDir);
+		target.pinSystemPromptSelection({ profileId: "fable-memory", source: "explicit", memoryBinding: null });
+		const targetModel = createMockModel({ id: "driver-secondary", handler: () => ({ content: ["ok"] }) });
+		target.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "target" }],
+			api: targetModel.api,
+			provider: targetModel.provider,
+			model: targetModel.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		await target.flush();
+		const targetFile = target.getSessionFile();
+		await target.close();
+		if (!targetFile) throw new Error("Expected persisted target session");
+
+		await expect(session.switchSession(targetFile)).rejects.toThrow(
+			'Cannot switch from memory owner "fable" to "none"',
+		);
+		expect(session.memoryBinding).toEqual({ principal: "fable", bankId: "person-fable" });
 	});
 });

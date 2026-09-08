@@ -40,6 +40,7 @@ import {
 	resolveModelOverride,
 } from "../../config/model-resolver";
 import type { Settings } from "../../config/settings";
+import type { HindsightMemoryBinding } from "../../config/settings-schema";
 import agentCreationArchitectPrompt from "../../prompts/system/agent-creation-architect.md" with { type: "text" };
 import agentCreationUserPrompt from "../../prompts/system/agent-creation-user.md" with { type: "text" };
 import { createAgentSession } from "../../sdk";
@@ -123,6 +124,8 @@ export interface AgentsHubModelContext {
 	modelRegistry?: ModelRegistry;
 	activeModelPattern?: string;
 	defaultModelPattern?: string;
+	/** Memory owner of the session that opened the hub; the creation architect acts for it. */
+	memoryBinding?: HindsightMemoryBinding | null;
 	/**
 	 * Live provider for the owning session's extension roots (explicit + mode +
 	 * configured). Supplied so `/agents` lists exactly the agents the session
@@ -770,6 +773,9 @@ export class AgentsHubComponent implements Component {
 			settings: this.#settings,
 			model: selectedModel,
 			agentKind: "sub",
+			// Independent helper session: it acts for the opening session's memory
+			// owner instead of resolving one of its own.
+			inheritedMemoryBinding: this.#modelContext.memoryBinding ?? null,
 			systemPrompt: [systemPrompt],
 			hasUI: false,
 			enableLsp: false,

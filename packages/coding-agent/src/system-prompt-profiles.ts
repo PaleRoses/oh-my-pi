@@ -1,5 +1,9 @@
 import { type } from "arktype";
-import type { SystemPromptProfileAgentKind, SystemPromptProfileRouteSetting } from "./config/settings-schema";
+import type {
+	HindsightMemoryBinding,
+	SystemPromptProfileAgentKind,
+	SystemPromptProfileRouteSetting,
+} from "./config/settings-schema";
 import { resolvePath } from "./extensibility/utils";
 
 export interface SystemPromptProfile {
@@ -10,6 +14,7 @@ export interface SystemPromptProfile {
 	readonly instructions?: string;
 	readonly projectContextOnly: boolean;
 	readonly memoryEnabled: boolean;
+	readonly memoryBinding?: HindsightMemoryBinding;
 	readonly mcpServerInstructionsEnabled: boolean;
 	/** Absolute paths of standing context images injected into the message stream at conversation start. */
 	readonly contextImages: readonly string[];
@@ -37,7 +42,11 @@ export interface SystemPromptProfileContext {
 export interface SystemPromptProfileResolver {
 	resolveInitial(context: SystemPromptProfileContext): SystemPromptProfileDecision;
 	resolveProfile(profileId: string): SystemPromptProfile;
-	assertCompatible(profileId: string | undefined, context: SystemPromptProfileContext): void;
+	assertCompatible(
+		profileId: string | undefined,
+		context: SystemPromptProfileContext,
+		source?: "route" | "explicit",
+	): void;
 }
 
 export function systemPromptProfileCacheKey(baseKey: string, profileId: string): string {
@@ -54,6 +63,7 @@ const systemPromptProfileSchema = type({
 	"instructionsFile?": "string",
 	"projectContextOnly?": "boolean",
 	"memory?": "boolean",
+	"memoryBinding?": { "+": "reject", principal: "string", bankId: "string" },
 	"mcpServerInstructions?": "boolean",
 	"contextImages?": "string[]",
 	"userTitle?": "string",
@@ -164,6 +174,17 @@ async function compileProfile(
 	raw: typeof systemPromptProfileSchema.infer,
 	cwd: string,
 ): Promise<SystemPromptProfile> {
+	const memoryBinding = raw.memoryBinding && {
+		principal: raw.memoryBinding.principal.trim(),
+		bankId: requireNonEmptyString(raw.memoryBinding.bankId, `systemPromptProfiles.${profileId}.memoryBinding.bankId`),
+	};
+	if (memoryBinding && !/^[a-z][a-z0-9-]{0,63}$/.test(memoryBinding.principal)) {
+		throw new Error(`systemPromptProfiles.${profileId}.memoryBinding.principal must be a valid memory owner`);
+	}
+	if (memoryBinding && raw.memory === false) {
+		throw new Error(`systemPromptProfiles.${profileId} cannot disable memory while binding a memory owner`);
+	}
+
 	const prompt = await resolveProfileText(profileId, raw, "prompt", cwd);
 	const instructions = await resolveProfileText(profileId, raw, "instructions", cwd);
 	const rolePrompt = (await resolveProfileText(profileId, raw, "rolePrompt", cwd))?.trim();
@@ -174,6 +195,7 @@ async function compileProfile(
 		instructions,
 		projectContextOnly: raw.projectContextOnly === true,
 		memoryEnabled: raw.memory !== false,
+		memoryBinding,
 		mcpServerInstructionsEnabled: raw.mcpServerInstructions !== false,
 		contextImages:
 			raw.contextImages === undefined
@@ -255,9 +277,10 @@ export async function createSystemPromptProfileResolver(options: {
 	return {
 		resolveInitial,
 		resolveProfile,
-		assertCompatible: (profileId, context) => {
+		assertCompatible: (profileId, context, source = "route") => {
 			const decision = resolveInitial(context);
 			if (decision.type === "denied") throw new Error(decision.reason);
+			if (source === "explicit") return;
 			const nextProfileId = decision.type === "profile" ? decision.profile.id : undefined;
 			if (profileId === nextProfileId) return;
 			const currentLabel = profileId === undefined ? "the default prompt" : `system prompt profile "${profileId}"`;

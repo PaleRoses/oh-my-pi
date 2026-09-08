@@ -30,6 +30,7 @@ import { extractMessages } from "./transcript";
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
 const RETENTION_METADATA_VALUE_MAX_CHARS = 512;
+const PRINCIPAL_TAG_PREFIX = "principal:";
 
 interface HindsightRouteSnapshot {
 	readonly client: HindsightApi;
@@ -205,7 +206,7 @@ export class HindsightRetainQueue {
 						content: item.content,
 						context: item.context ?? route.config.retainContext,
 						metadata: item.metadata,
-						tags: route.retainTags,
+						tags: retainTagsWithOwner(item.metadata.principal, route),
 						timestamp: item.timestamp,
 					}));
 					await route.client.retainBatch(route.bankId, batch, { async: true });
@@ -265,6 +266,9 @@ function buildRetentionMetadata(
 	add("session_id", state.sessionId);
 	const identity = state.session.effectiveIdentity;
 	add("agent_kind", identity.role);
+	// Owner of the bank being written, resolved through the route's primary
+	// session. A subagent's own prompt profile never authors ownership.
+	add("principal", state.memoryOwner);
 	add("prompt_profile", identity.prompt.profileId ?? "default");
 	add("prompt_principal", identity.prompt.principal);
 	add("prompt_source", identity.prompt.source);
@@ -273,6 +277,17 @@ function buildRetentionMetadata(
 	add("cwd", state.session.sessionManager.getCwd());
 	add("source", source);
 	return metadata satisfies MemoryProvenanceMetadata;
+}
+
+/**
+ * Tags written with every retain on `route`. The bound owner is stamped here
+ * and never in `BankScope`, so recall filters and mental-model seeds keep
+ * seeing bank scope tags only.
+ */
+function retainTagsWithOwner(owner: string | undefined, route: HindsightRouteSnapshot): string[] | undefined {
+	if (!owner) return route.retainTags;
+	const stamp = `${PRINCIPAL_TAG_PREFIX}${owner}`;
+	return route.retainTags ? [...route.retainTags, stamp] : [stamp];
 }
 
 function boundedMetadataValue(value: unknown): string | undefined {
@@ -357,6 +372,17 @@ export class HindsightSessionState {
 	get aliasOf(): HindsightSessionState | undefined {
 		const state = this.#primarySession?.getHindsightSessionState();
 		return state?.isAlias ? state.aliasOf : state;
+	}
+
+	/**
+	 * Memory owner principal of the session that owns this route, when bound.
+	 * An alias reports its parent's owner: a subagent writes into the parent's
+	 * bank, so its own prompt profile must never author ownership.
+	 */
+	get memoryOwner(): string | undefined {
+		const owner = this.isAlias ? this.aliasOf : this;
+		const memory = owner?.session.effectiveIdentity.memory;
+		return memory?.status === "enabled" ? memory.memoryBinding?.principal : undefined;
 	}
 
 	captureRoute(): HindsightRouteSnapshot {
@@ -498,7 +524,7 @@ export class HindsightSessionState {
 			documentId,
 			context: this.config.retainContext,
 			metadata: buildRetentionMetadata(this, "session-auto-retain"),
-			tags: this.retainTags,
+			tags: retainTagsWithOwner(this.memoryOwner, this.captureRoute()),
 			timestamp: sourceTimestamp,
 			async: true,
 		});

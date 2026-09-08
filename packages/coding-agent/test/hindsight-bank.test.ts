@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, type 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { computeBankScope, ensureBankExists } from "@oh-my-pi/pi-coding-agent/hindsight/bank";
+import { computeBankScope, computeSessionBankScope, ensureBankExists } from "@oh-my-pi/pi-coding-agent/hindsight/bank";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -268,6 +268,39 @@ describe("computeBankScope", () => {
 			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), worktreeRoot).retainTags).toEqual([
 				"project:casedrepo",
 			]);
+		});
+	});
+});
+
+describe("computeSessionBankScope", () => {
+	const binding = { principal: "alpha", bankId: "owner-alpha" };
+
+	it("routes a bound session to its own bank while the global selectors still move an unbound one", () => {
+		const config = baseConfig({ bankId: "shared", bankIdPrefix: "prod" });
+		expect(computeSessionBankScope(config, "/work/proj")).toEqual({ bankId: "prod-shared" });
+		expect(computeSessionBankScope(config, "/work/proj", binding)).toEqual({ bankId: "owner-alpha" });
+	});
+
+	it("keeps project tag scoping inside the bound bank and never leaks the owner into tags", () => {
+		const scope = computeSessionBankScope(
+			baseConfig({ scoping: "per-project-tagged", bankId: "shared" }),
+			"/work/proj",
+			binding,
+		);
+		expect(scope).toEqual({
+			bankId: "owner-alpha",
+			retainTags: ["project:proj"],
+			recallTags: ["project:proj"],
+			recallTagsMatch: "any",
+		});
+	});
+
+	it("refuses per-project scoping for a bound owner instead of sharding its bank", () => {
+		expect(() => computeSessionBankScope(baseConfig({ scoping: "per-project" }), "/work/proj", binding)).toThrow(
+			'Hindsight scoping "per-project" cannot host memory owner alpha',
+		);
+		expect(computeSessionBankScope(baseConfig({ scoping: "per-project" }), "/work/proj")).toEqual({
+			bankId: "omp-proj",
 		});
 	});
 });

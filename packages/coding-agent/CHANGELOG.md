@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `--prompt-profile <id>` explicitly selects a fresh session's prompt profile while honoring deny rules. Transcripts pin profile, selection source, and memory owner; resume preserves the selection and refuses conflicting owners, while legacy history cannot silently acquire an owner.
+- Profile `memoryBinding` binds Hindsight to an explicit principal and bank, editable atomically in `/identity`. Delegated work inherits ownership independently of memory permission, and live backend/service changes cannot move a bound session's memory. Retain provenance distinguishes memory owner from prompt identity.
+
 ### Changed
 
 - Consolidated profile field handling, editor transitions, identity derivation, and source-update plumbing without removing supported behavior.

@@ -63,21 +63,20 @@ function createRuntime(overrides: Partial<PromptSettingsStore> = {}) {
 }
 
 describe("/identity slash command", () => {
-	it("reports the active identity together with the complete configured surface", async () => {
+	it("preserves an explicit owner/bank pair and rejects contradictory edits before saving", async () => {
 		const harness = createRuntime();
-
-		expect(await executeAcpBuiltinSlashCommand("/identity", harness.runtime)).toEqual({ consumed: true });
-		const report = harness.output.mock.calls.at(-1)?.[0] as string;
-		expect(report).toContain("Role: main");
-		expect(report).toContain("Prompt profile: driver");
-		expect(report).toContain("Prompt principal: maintained-omp-prompt");
-		expect(report).toContain("Prompt source: maintained-omp-prompt");
-		expect(report).toContain("Model: anthropic/claude-fable-5");
-		expect(report).toContain("Session ID: session-identity");
-		expect(report).toContain("Memory backend: off (disabled)");
-		expect(report).toContain("1. main · * -> driver");
-		expect(report).toContain("2. sub · * -> worker");
-		expect(harness.set).not.toHaveBeenCalled();
+		await executeAcpBuiltinSlashCommand(
+			'/identity set driver memoryBinding alpha "Archive::Personal Memory"',
+			harness.runtime,
+		);
+		const configured = harness.store.systemPromptProfiles.driver;
+		expect(configured.memoryBinding).toEqual({ principal: "alpha", bankId: "Archive::Personal Memory" });
+		await executeAcpBuiltinSlashCommand('/identity set driver memoryBinding "beta owner" archive', harness.runtime);
+		expect(harness.store.systemPromptProfiles.driver).toEqual(configured);
+		await executeAcpBuiltinSlashCommand("/identity set driver memory off", harness.runtime);
+		expect(harness.store.systemPromptProfiles.driver).toEqual(configured);
+		await executeAcpBuiltinSlashCommand("/identity unset driver memoryBinding", harness.runtime);
+		expect(harness.store.systemPromptProfiles.driver.memoryBinding).toBeUndefined();
 	});
 
 	it("sets file-backed instructions, preserves sibling profiles, and persists configuration", async () => {

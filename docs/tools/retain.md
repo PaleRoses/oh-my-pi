@@ -59,7 +59,7 @@ Mnemopi:
 
 ### Hindsight retained-item provenance
 - Tool-called items snapshot their timestamp, optional input context, and provenance when `enqueueRetain(...)` runs. A later queue flush never resamples the session identity, model, prompt profile, project, working directory, or source.
-- OMP-authored provenance metadata is string-only and emitted in this fixed key order: `session_id`, `agent_kind`, `prompt_profile`, `prompt_principal`, `prompt_source`, `model`, `project`, `cwd`, `source`. Fields that cannot be resolved are omitted.
+- OMP-authored provenance metadata is string-only and emitted in this fixed key order: `session_id`, `agent_kind`, `principal`, `prompt_profile`, `prompt_principal`, `prompt_source`, `model`, `project`, `cwd`, `source`. Fields that cannot be resolved are omitted.
 - `prompt_principal` identifies the immutable prompt authority selected for the session. `prompt_source` is one of `maintained-omp-prompt`, `discovered-system-prompt`, `explicit-system-prompt`, or `system-prompt-profile`. `model` is `<provider>/<model id>`. `project` is the project label owned by the active Hindsight bank scope, and `cwd` is the corresponding session working directory.
 - `source` has exactly two OMP-authored variants: `agent-retain` for explicit `retain` tool items and `session-auto-retain` for automatic transcript retention.
 - Automatic retention bypasses the queue and captures its timestamp and provenance when `retainSession(...)` constructs the request. Its canonical item fields are serialized in the order `content`, `timestamp`, `context`, `metadata`, `document_id`, and optional `tags`.
@@ -69,7 +69,7 @@ Mnemopi:
 ## Modes / Variants
 - Hindsight tool path: queued batch write only.
 - Mnemopi tool path: direct local `remember(...)` into the scoped retain bank.
-- Hindsight bank scoping from `computeBankScope(...)`:
+- Hindsight chooses one bank per operation. A profile `memoryBinding` uses its exact bank, independently of prompt identity; enabled delegated memory uses its inherited owner. `principal` metadata and `principal:<owner>` tags identify that owner. This does not add recall filters or shared-bank queries. Unbound sessions use `computeBankScope(...)`:
   - `global` — one shared bank, no project tags.
   - `per-project` — bank id gets `-<project label>` appended, where the label is the git primary checkout root basename (cwd basename outside a repo).
   - `per-project-tagged` — shared bank plus `project:<project label>` tags on retained memories.

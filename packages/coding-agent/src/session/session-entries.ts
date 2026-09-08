@@ -7,8 +7,10 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
+import type { HindsightMemoryBinding } from "../config/settings-schema";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import type { CompactionMethod } from "./compaction-methods";
+import type { ProfileSelectionSource } from "./identity";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -53,6 +55,14 @@ export interface SessionHeader {
 	providerPromptCacheKey?: string;
 	/** Immutable system-prompt profile selected when this transcript was created. */
 	systemPromptProfile?: string;
+	/** How {@link systemPromptProfile} was selected. Absent on transcripts pinned before selection sources existed. */
+	systemPromptProfileSource?: ProfileSelectionSource;
+	/**
+	 * Memory owner this transcript belongs to. `null` is a deliberate unbound
+	 * pin; an absent field is a legacy transcript that never recorded one and
+	 * may not adopt a binding without starting a fresh session.
+	 */
+	memoryBinding?: HindsightMemoryBinding | null;
 }
 
 export interface NewSessionOptions {
@@ -61,10 +71,34 @@ export interface NewSessionOptions {
 	providerPromptCacheKey?: string;
 	/** System-prompt profile inherited by the new transcript. */
 	systemPromptProfile?: string;
+	/** Selection source carried alongside {@link systemPromptProfile}. */
+	systemPromptProfileSource?: ProfileSelectionSource;
+	/** Memory owner carried into the new transcript; `null` pins it explicitly unbound. */
+	memoryBinding?: HindsightMemoryBinding | null;
 	/** Skip flushing the current session and delete it instead of saving. */
 	drop?: boolean;
 	/** Additional workspace directories to seed on the new session. */
 	additionalDirectories?: string[];
+}
+
+/** The indivisible prompt-identity pin of a transcript: profile, how it was chosen, and its memory owner. */
+export interface SessionPromptPin {
+	readonly profileId: string | undefined;
+	readonly source: ProfileSelectionSource;
+	readonly memoryBinding: HindsightMemoryBinding | null;
+}
+
+/**
+ * Whether two pinned bindings name the same memory owner. A legacy absent
+ * field and an explicit `null` both mean "no owner", so ordinary unbound
+ * transcripts stay interchangeable while a bound one never silently changes bank.
+ */
+export function sameMemoryOwner(
+	a: HindsightMemoryBinding | null | undefined,
+	b: HindsightMemoryBinding | null | undefined,
+): boolean {
+	if (!a || !b) return !a === !b;
+	return a.principal === b.principal && a.bankId === b.bankId;
 }
 
 export interface SessionEntryBase {

@@ -94,7 +94,12 @@ function createState(
 	client: HindsightApi,
 	identity: EffectiveSessionIdentity,
 	runtime: MutableRuntime,
-	options: { config?: HindsightConfig; projectLabel?: string; retainTags?: string[] } = {},
+	options: {
+		config?: HindsightConfig;
+		projectLabel?: string;
+		retainTags?: string[];
+		recallTags?: string[];
+	} = {},
 ): HindsightSessionState {
 	let installed: HindsightSessionState | undefined;
 	const session = {
@@ -122,6 +127,7 @@ function createState(
 		bankId: "test-bank",
 		projectLabel: options.projectLabel ?? "aurora",
 		retainTags: options.retainTags,
+		recallTags: options.recallTags,
 		config: options.config ?? makeConfig(),
 		session,
 		banksSet: new Set(),
@@ -297,6 +303,89 @@ describe("Hindsight retention provenance", () => {
 		const metadata = client.batches[0]?.items[0]?.metadata;
 		expect(Object.values(metadata ?? {}).every(value => value.length <= 512)).toBe(true);
 	});
+
+	it("stamps the bound memory owner on retained metadata and tags, never on recall filters", async () => {
+		const client = new RecordingHindsightApi();
+		const state = createState(
+			client,
+			createEffectiveSessionIdentity({
+				role: "main",
+				profileId: "alpha",
+				promptSource: "system-prompt-profile",
+				memoryEnabled: true,
+				memoryBinding: { principal: "alpha", bankId: "private-alpha" },
+			}),
+			{ cwd: "/workspace/aurora", model: { provider: "anthropic", id: "claude-fable-5" } },
+			{ retainTags: ["project:aurora"], recallTags: ["project:aurora"] },
+		);
+
+		state.enqueueRetain("owner-stamped fact");
+		await state.flushRetainQueue();
+		await state.retainSession([
+			{ role: "user", content: "remember this automatic transcript" },
+			{ role: "assistant", content: "acknowledged" },
+		]);
+
+		expect(client.batches[0]?.items[0]?.metadata).toMatchObject({
+			principal: "alpha",
+			prompt_principal: "prompt-profile:alpha",
+		});
+		expect(client.batches[0]?.items[0]?.tags).toEqual(["project:aurora", "principal:alpha"]);
+		expect(client.retains[0]?.options?.metadata?.principal).toBe("alpha");
+		expect(client.retains[0]?.options?.tags).toEqual(["project:aurora", "principal:alpha"]);
+		// The owner is provenance, not a retrieval scope: recall and mental-model
+		// filters must keep seeing bank scope tags only.
+		expect(state.recallTags).toEqual(["project:aurora"]);
+		expect(state.retainTags).toEqual(["project:aurora"]);
+	});
+
+	it("attributes a subagent's writes to the parent's owner, not to its own prompt profile", async () => {
+		const client = new RecordingHindsightApi();
+		const parent = createState(
+			client,
+			createEffectiveSessionIdentity({
+				role: "main",
+				profileId: "alpha",
+				promptSource: "system-prompt-profile",
+				memoryEnabled: true,
+				memoryBinding: { principal: "alpha", bankId: "private-alpha" },
+			}),
+			{ cwd: "/workspace/aurora", model: { provider: "anthropic", id: "claude-fable-5" } },
+			{ retainTags: ["project:aurora"] },
+		);
+		const childSession = {
+			effectiveIdentity: createEffectiveSessionIdentity({
+				role: "sub",
+				profileId: "worker",
+				promptSource: "system-prompt-profile",
+				memoryEnabled: true,
+			}),
+			model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+			sessionManager: { getCwd: () => "/workspace/aurora" },
+			emitNotice: () => {},
+		} as unknown as AgentSession;
+		const alias = new HindsightSessionState({
+			sessionId: "session-child",
+			session: childSession,
+			aliasOf: parent,
+			hasRecalledForFirstTurn: true,
+		});
+
+		alias.enqueueRetain("subagent fact");
+		parent.session.setHindsightSessionState(undefined);
+		await alias.flushRetainQueue();
+
+		expect(client.batches[0]?.bankId).toBe(parent.bankId);
+		expect(client.batches[0]?.items[0]?.metadata).toMatchObject({
+			session_id: "session-child",
+			agent_kind: "sub",
+			principal: "alpha",
+			prompt_profile: "worker",
+			prompt_principal: "prompt-profile:worker",
+			model: "openai-codex/gpt-5.6-sol",
+		});
+		expect(client.batches[0]?.items[0]?.tags).toEqual(["project:aurora", "principal:alpha"]);
+	});
 });
 
 describe("Hindsight recall provenance", () => {
@@ -313,8 +402,9 @@ describe("Hindsight recall provenance", () => {
 					cwd: "/work/omp",
 					project: "omp",
 					model: "openai-codex/gpt-5.6-sol",
-					prompt_profile: "fable",
-					prompt_principal: "prompt-profile:fable",
+					principal: "alpha",
+					prompt_profile: "fable-driver",
+					prompt_principal: "prompt-profile:fable-driver",
 					prompt_source: "system-prompt-profile",
 					agent_kind: "sub",
 					session_id: "session-1",
@@ -332,7 +422,8 @@ describe("Hindsight recall provenance", () => {
 		expect(formatMemories(rich)).toBe(
 			"- The project uses tabs [experience] (2026-08-02T12:34:56Z) " +
 				"{document=doc-7; tags=alpha,zeta; source=agent-retain; session=session-1; agent=sub; " +
-				"prompt=fable; principal=prompt-profile:fable; prompt-source=system-prompt-profile; " +
+				"principal=alpha; prompt=fable-driver; prompt-principal=prompt-profile:fable-driver; " +
+				"prompt-source=system-prompt-profile; " +
 				"model=openai-codex/gpt-5.6-sol; project=omp; cwd=/work/omp}\n\n" +
 				"- A fact without a document [world] {fact=fact-12}",
 		);

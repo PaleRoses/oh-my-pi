@@ -398,6 +398,12 @@ export interface ModelTagsSettings {
 
 export type SystemPromptProfileAgentKind = "main" | "sub";
 
+/** An explicit memory owner and its bank; neither is derived from a model or profile name. */
+export interface HindsightMemoryBinding {
+	readonly principal: string;
+	readonly bankId: string;
+}
+
 export interface SystemPromptProfileSetting {
 	/** Markdown replacing the maintained system prompt's Role text. */
 	readonly rolePrompt?: string;
@@ -408,6 +414,7 @@ export interface SystemPromptProfileSetting {
 	readonly instructionsFile?: string;
 	readonly projectContextOnly?: boolean;
 	readonly memory?: boolean;
+	readonly memoryBinding?: HindsightMemoryBinding;
 	readonly mcpServerInstructions?: boolean;
 	/** Image file paths injected as standing context at conversation start (absolute, `~/`, or cwd-relative). */
 	readonly contextImages?: readonly string[];

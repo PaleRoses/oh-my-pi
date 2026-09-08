@@ -1,5 +1,6 @@
 import type {
 	SystemPromptProfileAgentKind,
+	HindsightMemoryBinding,
 	SystemPromptProfileRouteSetting,
 	SystemPromptProfileSetting,
 } from "../../config/settings-schema";
@@ -30,6 +31,7 @@ export const IDENTITY_SUBCOMMANDS: SubcommandDef[] = [
 export type PromptProfileField = keyof SystemPromptProfileSetting;
 
 export type PromptProfileFieldDefinition = { readonly label: string; readonly aliases?: readonly string[] } & (
+	| { readonly field: "memoryBinding"; readonly input: "binding" }
 	| {
 			readonly field: "rolePrompt" | "prompt" | "instructions";
 			readonly input: "markdown";
@@ -76,6 +78,7 @@ export const PROMPT_PROFILE_FIELDS = {
 		aliases: ["context"],
 	},
 	memory: { field: "memory", label: "Memory", input: "toggle", default: true },
+	memoryBinding: { field: "memoryBinding", label: "Memory binding", input: "binding" },
 	mcpServerInstructions: {
 		field: "mcpServerInstructions",
 		label: "MCP server instructions",
@@ -100,6 +103,7 @@ export const PROMPT_PROFILE_FIELD_DEFINITIONS = (
 		"instructions",
 		"projectContextOnly",
 		"memory",
+		"memoryBinding",
 		"mcpServerInstructions",
 		"userTitle",
 		"rolePrompt",
@@ -123,6 +127,7 @@ const IDENTITY_USAGE = [
 	),
 	"",
 	"Fields: " + Object.keys(PROMPT_PROFILE_FIELDS).join(", "),
+	"Memory binding: /identity set <profile> memoryBinding <principal> <bankId>",
 ].join("\n");
 
 export type PromptProfileOperation =
@@ -130,9 +135,10 @@ export type PromptProfileOperation =
 	| {
 			readonly type: "setField";
 			readonly profileId: string;
-			readonly field: PromptProfileField;
+			readonly field: Exclude<PromptProfileField, "memoryBinding">;
 			readonly value: string;
 	  }
+	| { readonly type: "setMemoryBinding"; readonly profileId: string; readonly binding: HindsightMemoryBinding }
 	| { readonly type: "restoreField"; readonly profileId: string; readonly field: PromptProfileField }
 	| {
 			readonly type: "assignRoute";
@@ -195,7 +201,7 @@ function omitProfileField(profile: SystemPromptProfileSetting, field: PromptProf
 
 function setProfileField(
 	profile: SystemPromptProfileSetting,
-	field: PromptProfileField,
+	field: Exclude<PromptProfileField, "memoryBinding">,
 	rawValue: string,
 ): SystemPromptProfileSetting {
 	const value = rawValue.trim();
@@ -231,7 +237,7 @@ function describeProfile(profileId: string, profile: SystemPromptProfileSetting)
 	const rolePrompt = describeText(profile.rolePrompt, profile.rolePromptFile);
 	const base = describeText(profile.prompt || undefined, profile.promptFile, "maintained");
 	const appended = describeText(profile.instructions, profile.instructionsFile);
-	return `${profileId}: rolePrompt=${rolePrompt}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
+	return `${profileId}: rolePrompt=${rolePrompt}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; binding=${profile.memoryBinding ? `${profile.memoryBinding.principal}@${profile.memoryBinding.bankId}` : "none"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
 }
 
 /** One ordered routing rule, rendered for both the textual status and the prompt settings selection-rule list. */
@@ -269,6 +275,7 @@ function formatProfileDetails(profileId: string, profile: SystemPromptProfileSet
 		`instructionsFile: ${profile.instructionsFile ?? "none"}`,
 		`projectContextOnly: ${profile.projectContextOnly === true ? "on" : "off"}`,
 		`memory: ${profile.memory === false ? "off" : "on (default)"}`,
+		`memoryBinding: ${profile.memoryBinding ? `${profile.memoryBinding.principal} → ${profile.memoryBinding.bankId}` : "none"}`,
 		`mcpServerInstructions: ${profile.mcpServerInstructions === false ? "off" : "on (default)"}`,
 		`contextImages: ${profile.contextImages?.length ? profile.contextImages.join(", ") : "none"}`,
 		`userTitle: ${profile.userTitle ?? "the user (default)"}`,
@@ -328,16 +335,20 @@ export async function applyPromptProfileOperation(
 				`Created system prompt profile ${operation.profileId}.`,
 			);
 		}
-		case "setField": {
+		case "setField":
+		case "setMemoryBinding": {
 			const profile = Object.hasOwn(profiles, operation.profileId) ? profiles[operation.profileId] : {};
 			const nextProfiles = {
 				...profiles,
-				[operation.profileId]: setProfileField(profile ?? {}, operation.field, operation.value),
+				[operation.profileId]:
+					operation.type === "setMemoryBinding"
+						? { ...profile, memoryBinding: operation.binding }
+						: setProfileField(profile ?? {}, operation.field, operation.value),
 			};
 			return persistConfiguration(
 				runtime,
 				{ profiles: nextProfiles },
-				`Saved ${operation.profileId}.${operation.field}.`,
+				`Saved ${operation.profileId}.${operation.type === "setMemoryBinding" ? "memoryBinding" : operation.field}.`,
 			);
 		}
 		case "restoreField": {
@@ -437,14 +448,20 @@ async function handleIdentityCommandInner(
 				throw new Error(`Unknown system prompt profile "${profileId}".`);
 			return outputMessage(runtime, formatProfileDetails(profileId, profile));
 		}
-		case "set":
+		case "set": {
 			if (!profileId || !fieldOrKind || valueParts.length === 0) break;
-			return outputUpdate(runtime, {
-				type: "setField",
-				profileId,
-				field: normalizeField(fieldOrKind),
-				value: valueParts.join(" "),
-			});
+			const field = normalizeField(fieldOrKind);
+			return outputUpdate(
+				runtime,
+				field === "memoryBinding"
+					? {
+							type: "setMemoryBinding",
+							profileId,
+							binding: { principal: valueParts[0] ?? "", bankId: valueParts.slice(1).join(" ") },
+						}
+					: { type: "setField", profileId, field, value: valueParts.join(" ") },
+			);
+		}
 		case "unset":
 			if (!profileId || !fieldOrKind || args.length !== 2) break;
 			return outputUpdate(runtime, { type: "restoreField", profileId, field: normalizeField(fieldOrKind) });

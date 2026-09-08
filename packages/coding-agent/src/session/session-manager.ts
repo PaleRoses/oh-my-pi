@@ -18,6 +18,7 @@ import {
 	stringifyJson,
 	toError,
 } from "@oh-my-pi/pi-utils";
+import type { HindsightMemoryBinding } from "../config/settings-schema";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
@@ -52,11 +53,13 @@ import {
 	type ModelUsageEntry,
 	type NewSessionOptions,
 	type ResetBoundaryEntry,
+	sameMemoryOwner,
 	type ServiceTierChangeEntry,
 	type SessionEntry,
 	type SessionHeader,
 	type SessionInitEntry,
 	type SessionMessageEntry,
+	type SessionPromptPin,
 	type SessionTitleSource,
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
@@ -110,6 +113,12 @@ function nowIso(): string {
 
 function fileSafeTimestamp(iso: string): string {
 	return iso.replace(/[:.]/g, "-");
+}
+
+/** Human label for a pinned memory owner; a legacy transcript never recorded one at all. */
+function memoryOwnerLabel(binding: HindsightMemoryBinding | null | undefined): string {
+	if (binding) return `memory owner "${binding.principal}" (bank "${binding.bankId}")`;
+	return binding === null ? "no memory owner" : "no recorded memory owner";
 }
 
 function artifactsDirectoryFor(sessionFile: string | undefined): string | null {
@@ -1133,6 +1142,8 @@ export class SessionManager {
 			parentSession: options?.parentSession,
 			providerPromptCacheKey: options?.providerPromptCacheKey,
 			systemPromptProfile: options?.systemPromptProfile,
+			systemPromptProfileSource: options?.systemPromptProfileSource,
+			memoryBinding: options?.memoryBinding,
 		};
 		const workspace = normalizeSessionWorkspace({
 			cwd: this.#cwd,
@@ -1535,6 +1546,8 @@ export class SessionManager {
 			parentSession: parentSessionId,
 			providerPromptCacheKey: this.#header.providerPromptCacheKey ?? parentSessionId,
 			systemPromptProfile: this.#header.systemPromptProfile,
+			systemPromptProfileSource: this.#header.systemPromptProfileSource,
+			memoryBinding: this.#header.memoryBinding,
 		};
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
@@ -2652,20 +2665,44 @@ export class SessionManager {
 		return this.#systemPromptProfileSelectionPending;
 	}
 
-	pinSystemPromptProfile(profileId: string | undefined): void {
-		if (this.#systemPromptProfileSelectionPending) {
-			this.#systemPromptProfileSelectionPending = false;
-			this.#header.systemPromptProfile = profileId;
-			this.#rewriteSynchronously();
+	/**
+	 * Pin this transcript's prompt identity as one product: the profile, how it
+	 * was selected, and the memory owner it belongs to.
+	 *
+	 * A started transcript may not change any of the three. A copied transcript
+	 * awaiting selection (`forkFrom` with `systemPromptProfile: "select"`) may
+	 * change profile and source but never its memory owner: carrying one
+	 * owner's history into another owner's bank is refused, and a legacy
+	 * transcript that never recorded an owner may not adopt one here.
+	 */
+	pinSystemPromptSelection(pin: SessionPromptPin): void {
+		const header = this.#header;
+		const sameOwner = sameMemoryOwner(header.memoryBinding, pin.memoryBinding);
+		if (
+			sameOwner &&
+			header.memoryBinding !== undefined &&
+			header.systemPromptProfile === pin.profileId &&
+			header.systemPromptProfileSource === pin.source
+		) {
 			return;
 		}
-		if (this.#header.systemPromptProfile === profileId) return;
-		if (this.#header.systemPromptProfile !== undefined || this.#entries.length > 0) {
+		if (!sameOwner && (header.memoryBinding !== undefined || this.#entries.length > 0)) {
 			throw new Error(
-				`System prompt profile "${this.#header.systemPromptProfile ?? "default"}" is immutable once a transcript has started`,
+				`This transcript is pinned to ${memoryOwnerLabel(header.memoryBinding)}; ${memoryOwnerLabel(pin.memoryBinding)} requires a fresh session.`,
 			);
 		}
-		this.#header.systemPromptProfile = profileId;
+		if (
+			!this.#systemPromptProfileSelectionPending &&
+			(header.systemPromptProfile !== undefined || this.#entries.length > 0)
+		) {
+			throw new Error(
+				`System prompt profile "${header.systemPromptProfile ?? "default"}" is immutable once a transcript has started`,
+			);
+		}
+		this.#systemPromptProfileSelectionPending = false;
+		header.systemPromptProfile = pin.profileId;
+		header.systemPromptProfileSource = pin.source;
+		header.memoryBinding = pin.memoryBinding;
 		this.#rewriteSynchronously();
 	}
 
@@ -2778,6 +2815,8 @@ export class SessionManager {
 			parentSession: this.#persist ? sourceSessionFile : undefined,
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
 			systemPromptProfile: this.#header.systemPromptProfile,
+			systemPromptProfileSource: this.#header.systemPromptProfileSource,
+			memoryBinding: this.#header.memoryBinding,
 		};
 
 		const labels: LabelEntry[] = [];
@@ -2901,12 +2940,17 @@ export class SessionManager {
 				parentSession: sourceHeader?.id,
 				providerPromptCacheKey: sourceHeader?.providerPromptCacheKey ?? sourceHeader?.id,
 				systemPromptProfile: sourceHeader?.systemPromptProfile,
+				systemPromptProfileSource: sourceHeader?.systemPromptProfileSource,
+				// The copied history keeps its owner: a select-profile fork may change
+				// prompt behavior, never the bank the transcript belongs to.
+				memoryBinding: sourceHeader?.memoryBinding,
 			},
 			options?.sessionFile,
 		);
 		if (options?.systemPromptProfile === "select") {
 			manager.#systemPromptProfileSelectionPending = true;
 			manager.#header.systemPromptProfile = undefined;
+			manager.#header.systemPromptProfileSource = undefined;
 		}
 		manager.#header.title = sourceHeader?.title;
 		manager.#header.titleSource = sourceHeader?.titleSource;

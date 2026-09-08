@@ -142,6 +142,9 @@ export class TanCommandController {
 							toolNames,
 							providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
 							providerPromptCacheKey: parentSessionId,
+							// A tan runs its own memory state over the parent's transcript;
+							// it acts for the parent's owner rather than selecting one.
+							inheritedMemoryBinding: session.memoryBinding,
 							modelRegistry,
 							authStorage: modelRegistry.authStorage,
 							settings,

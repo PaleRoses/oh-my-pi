@@ -166,6 +166,9 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--system-prompt": (result, value) => {
 		result.systemPrompt = value;
 	},
+	"--prompt-profile": (result, value) => {
+		result.promptProfile = value;
+	},
 	"--append-system-prompt": (result, value) => {
 		result.appendSystemPrompt = value;
 	},

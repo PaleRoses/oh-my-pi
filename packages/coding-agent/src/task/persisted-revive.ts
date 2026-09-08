@@ -157,6 +157,7 @@ export function createPersistedSubagentReviverFactory(
 				parentTaskPrefix: ref.id,
 				parentAgentId: ref.parentId,
 				parentHindsightSessionState: ctx.session.getHindsightSessionState?.(),
+				inheritedMemoryBinding: ctx.session.memoryBinding,
 				expectedAgentRef: expectedRef,
 				taskDepth,
 				toolNames: revivedToolNames,

@@ -10,9 +10,10 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { onHindsightScopeChanged, type Settings } from "../config/settings";
+import type { HindsightMemoryBinding } from "../config/settings-schema";
 import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
 import type { AgentSession } from "../session/agent-session";
-import { type BankScope, computeBankScope, resolveProjectLabel } from "./bank";
+import { type BankScope, computeSessionBankScope, resolveProjectLabel } from "./bank";
 import { createHindsightClient } from "./client";
 import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig } from "./config";
 import { type HindsightMessage, hasSubstantiveContent } from "./content";
@@ -156,6 +157,9 @@ interface PrimaryRebuildTask {
 
 const primaryRebuildTasks = new WeakMap<AgentSession, PrimaryRebuildTask>();
 
+// A session can turn memory off without surrendering its original service binding.
+const boundConnections = new WeakMap<AgentSession, Pick<HindsightConfig, "hindsightApiUrl" | "hindsightApiToken">>();
+
 /**
  * Coalesce and serialize live scope rebuilds for one session. Cwd reloads fire
  * all settings hooks synchronously; running every callback immediately would
@@ -247,10 +251,40 @@ async function installPrimaryState(
 	const config = loadHindsightConfig(settings);
 	if (!isHindsightConfigured(config)) return undefined;
 
-	const client = createHindsightClient(config);
 	const cwd = session.sessionManager.getCwd();
 	const projectLabel = resolveProjectLabel(cwd);
-	const scope = computeBankScope(config, cwd, projectLabel);
+	const memory = session.effectiveIdentity.memory;
+	const binding = memory.status === "enabled" ? memory.memoryBinding : undefined;
+	const connection = boundConnections.get(session);
+	// A bound owner keeps the service it started with: its bank id on another
+	// server, or under other credentials, is a different memory owner. Refuse
+	// before any teardown or request, so the live route keeps serving.
+	if (
+		binding &&
+		connection &&
+		(connection.hindsightApiUrl !== config.hindsightApiUrl ||
+			connection.hindsightApiToken !== config.hindsightApiToken)
+	) {
+		logger.warn("Hindsight: refused a live service change for a bound memory owner", {
+			owner: binding.principal,
+			bankId: binding.bankId,
+		});
+		session.emitNotice(
+			"warning",
+			`Memory stays bound to bank ${binding.bankId}; a Hindsight service change needs a fresh session.`,
+			"Hindsight",
+		);
+		return undefined;
+	}
+	const scope = resolveSessionScope(session, config, cwd, projectLabel, binding);
+	if (!scope) return undefined;
+	if (binding && !connection) {
+		boundConnections.set(session, {
+			hindsightApiUrl: config.hindsightApiUrl,
+			hindsightApiToken: config.hindsightApiToken,
+		});
+	}
+	const client = createHindsightClient(config);
 
 	// Cleanup any stale state for this session (defensive — prevents leaks
 	// when a session is reused without going through dispose). Closing intake
@@ -311,6 +345,28 @@ async function installPrimaryState(
 }
 
 /**
+ * Resolve the session's bank target, or refuse. A refusal happens before any
+ * teardown or request, so the caller can abandon the transition with the
+ * previous route still serving its owner.
+ */
+function resolveSessionScope(
+	session: AgentSession,
+	config: HindsightConfig,
+	cwd: string,
+	projectLabel: string,
+	binding: HindsightMemoryBinding | undefined,
+): BankScope | undefined {
+	try {
+		return computeSessionBankScope(config, cwd, binding, projectLabel);
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		logger.warn("Hindsight: bound memory owner refused the configured scope", { reason });
+		session.emitNotice("warning", reason, "Hindsight");
+		return undefined;
+	}
+}
+
+/**
  * `onHindsightScopeChanged` handler and cwd-rebind body: re-derive what the
  * current settings select and make the runtime match it. No-op when nothing
  * moved, when this session hosts a subagent alias (the parent owns the route),
@@ -329,16 +385,17 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 
 	const settings = session.settings;
 	const config = loadHindsightConfig(settings);
+	const memory = session.effectiveIdentity.memory;
+	const binding = memory.status === "enabled" ? memory.memoryBinding : undefined;
 	const selected =
-		session.effectiveIdentity.memory.status === "enabled" &&
-		settings.get("memory.backend") === "hindsight" &&
-		isHindsightConfigured(config);
+		memory.status === "enabled" && settings.get("memory.backend") === "hindsight" && isHindsightConfigured(config);
 
 	// The selection itself moved — a project layer switched `memory.backend`,
 	// left `hindsight.apiUrl` unset, or the prompt profile denies memory. Only
 	// the session's backend owner can install or retire a backend's runtime
-	// state, memory tools, and prompt, and it flushes the outgoing state's
-	// queued retains on the way out.
+	// state, memory tools, and prompt; it flushes the outgoing state's queued
+	// retains on the way out, and refuses a switch that would move a bound
+	// owner to another memory provider.
 	if (selected !== (current !== undefined)) {
 		await session.applyMemoryBackend();
 		return true;
@@ -347,13 +404,16 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 
 	const cwd = session.sessionManager.getCwd();
 	const projectLabel = resolveProjectLabel(cwd);
-	const next = computeBankScope(config, cwd, projectLabel);
+	const next = resolveSessionScope(session, config, cwd, projectLabel, binding);
+	if (!next) return false;
 	// The project label rides on every retain and is derived from the cwd, so
 	// a move that keeps the bank (global scoping) still re-derives the route.
+	// A bound owner also ignores the global bank selectors, so editing them is
+	// not an effective change and must not churn its state.
 	if (
 		projectLabel === current.projectLabel &&
 		bankScopesEqual(next, current) &&
-		hindsightConfigsEqual(current.config, config)
+		hindsightConfigsEqual(current.config, config, binding ? BOUND_OWNER_IGNORED_CONFIG_KEYS : undefined)
 	) {
 		return false;
 	}
@@ -367,13 +427,24 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 	return (await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set())) !== undefined;
 }
 
+/** Global bank selectors, which a bound owner resolves from its binding instead. */
+const BOUND_OWNER_IGNORED_CONFIG_KEYS: Partial<Record<keyof HindsightConfig, true>> = {
+	bankId: true,
+	bankIdPrefix: true,
+};
+
 /**
  * Structural compare of two resolved Hindsight configs. Both sides come from
  * `loadHindsightConfig`, so iterating one side's keys covers the whole shape
  * and a newly added config field is picked up without touching this compare.
  */
-function hindsightConfigsEqual(a: HindsightConfig, b: HindsightConfig): boolean {
+function hindsightConfigsEqual(
+	a: HindsightConfig,
+	b: HindsightConfig,
+	ignored?: Partial<Record<keyof HindsightConfig, true>>,
+): boolean {
 	for (const key of Object.keys(a) as (keyof HindsightConfig)[]) {
+		if (ignored?.[key]) continue;
 		const left = a[key];
 		const right = b[key];
 		if (Array.isArray(left) || Array.isArray(right)) {

@@ -9,6 +9,7 @@ import {
 	type EffectivePromptSource,
 	formatAgentIdentityBadge,
 	formatAgentIdentityReport,
+	formatAgentIdentitySystemPrompt,
 	snapshotAgentIdentity,
 } from "@oh-my-pi/pi-coding-agent/session/identity";
 import { lookupBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
@@ -31,9 +32,13 @@ interface SessionStubOptions {
 	role?: "main" | "sub";
 	promptProfile?: string;
 	promptSource?: EffectivePromptSource;
+	profileSource?: "route" | "explicit";
 	memoryEnabled?: boolean;
+	memoryBinding?: { principal: string; bankId: string };
 	model?: { provider: string; id: string; contextWindow: number };
 	memoryIdentity?: StubMemoryIdentity;
+	/** `memory.backend` selector value, when it disagrees with the live route. */
+	selectorBackend?: "off" | "local" | "mnemopi" | "sharpshooter" | "hindsight";
 }
 
 function sessionStub(options: SessionStubOptions = {}): AgentSession {
@@ -42,6 +47,8 @@ function sessionStub(options: SessionStubOptions = {}): AgentSession {
 		role: options.role ?? "main",
 		promptSource: options.promptSource ?? (options.promptProfile ? "system-prompt-profile" : "maintained-omp-prompt"),
 		memoryEnabled: options.memoryEnabled ?? true,
+		profileSource: options.profileSource,
+		memoryBinding: options.memoryBinding,
 		...(options.promptProfile ? { profileId: options.promptProfile } : {}),
 	});
 	const hindsightState =
@@ -58,7 +65,10 @@ function sessionStub(options: SessionStubOptions = {}): AgentSession {
 		model,
 		sessionId: "session-01",
 		settings: {
-			get: (path: string) => (path === "memory.backend" ? (options.memoryIdentity?.backend ?? "off") : undefined),
+			get: (path: string) =>
+				path === "memory.backend"
+					? (options.selectorBackend ?? options.memoryIdentity?.backend ?? "off")
+					: undefined,
 		},
 		state: { model },
 		sessionManager: { getEntries: () => [] },
@@ -163,6 +173,69 @@ describe("canonical agent identity surfaces", () => {
 		expect(denied.memory.hindsight).toEqual({ status: "disabled-by-profile" });
 		expect(formatAgentIdentityReport(denied)).toContain("Memory permission: disabled by prompt profile isolated");
 		expect(formatAgentIdentityReport(denied)).toContain("Active Hindsight bank: disabled-by-profile");
+	});
+
+	test("reports the bound memory owner and how the profile was selected", () => {
+		const bound = snapshotAgentIdentity(
+			sessionStub({
+				promptProfile: "fable",
+				profileSource: "explicit",
+				memoryBinding: { principal: "alpha", bankId: "private-alpha" },
+				memoryIdentity: {
+					backend: "hindsight",
+					status: "active",
+					bank: "private-alpha",
+					project: "pale-meridian",
+					scope: "per-project-tagged",
+					tags: ["project:pale-meridian"],
+				},
+			}),
+		);
+		const report = formatAgentIdentityReport(bound);
+		const promptBlock = formatAgentIdentitySystemPrompt(bound);
+
+		expect(report).toContain("Memory owner: alpha (bank private-alpha)");
+		expect(report).toContain("Profile selection: explicit");
+		expect(promptBlock).toContain("Memory owner: alpha (bank private-alpha)");
+		expect(promptBlock).toContain("Profile selection: explicit");
+		expect(promptBlock).toContain("Memory identity: bank=private-alpha; scope=per-project-tagged");
+
+		// An unbound session follows the global bank derivation, and a session
+		// with no recorded selection source must not invent one.
+		const unbound = snapshotAgentIdentity(
+			sessionStub({
+				memoryIdentity: {
+					backend: "hindsight",
+					status: "active",
+					bank: "omp",
+					project: "pale-meridian",
+					scope: "per-project-tagged",
+					tags: ["project:pale-meridian"],
+				},
+			}),
+		);
+		expect(formatAgentIdentityReport(unbound)).toContain("Memory owner: unbound");
+		expect(formatAgentIdentityReport(unbound)).not.toContain("Profile selection:");
+		expect(formatAgentIdentitySystemPrompt(unbound)).not.toContain("Profile selection:");
+
+		// A refused live backend switch leaves the selector pointing elsewhere;
+		// the report must name the route that is still serving its owner.
+		const refused = snapshotAgentIdentity(
+			sessionStub({
+				selectorBackend: "mnemopi",
+				memoryBinding: { principal: "alpha", bankId: "private-alpha" },
+				memoryIdentity: {
+					backend: "hindsight",
+					status: "active",
+					bank: "private-alpha",
+					project: "pale-meridian",
+					scope: "global",
+					tags: [],
+				},
+			}),
+		);
+		expect(formatAgentIdentityReport(refused)).toContain("Memory backend: hindsight (active)");
+		expect(formatAgentIdentityReport(refused)).toContain("Active Hindsight bank: private-alpha");
 	});
 
 	test("refuses an identity that cannot name the profile it claims", () => {

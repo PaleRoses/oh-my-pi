@@ -202,13 +202,34 @@ export class SessionMemory {
 				(selectedBackend?.id === "hindsight" && this.#parentHindsightSessionState !== undefined)
 					? selectedBackend
 					: undefined;
-			const replaceHindsightInPlace =
-				backend?.id === "hindsight" && this.#host.getHindsightSessionState() !== undefined;
+			const session = this.#host.memoryBackendSession();
+			const memory = session.effectiveIdentity.memory;
+			const binding = memory.status === "enabled" ? memory.memoryBinding : undefined;
+			const liveHindsight = this.#host.getHindsightSessionState();
+			if (binding && backend !== undefined) {
+				// A bound memory owner keeps the backend it started with: another
+				// provider would go on storing this session's experience under a
+				// different owner. Turning memory off owns nothing, so it stays
+				// allowed; refuse before the drain and disposal below.
+				if (backend.id !== "hindsight" && backend.id !== "off") {
+					logger.warn("Memory lifecycle: refused a live backend switch for a bound memory owner", {
+						owner: binding.principal,
+						backend: backend.id,
+					});
+					session.emitNotice(
+						"warning",
+						`Memory stays bound to bank ${binding.bankId}; the ${backend.id} memory backend needs a fresh session.`,
+						"Hindsight",
+					);
+					return;
+				}
+			}
+			const replaceHindsightInPlace = backend?.id === "hindsight" && liveHindsight !== undefined;
 			// Live child aliases read the parent slot, so Hindsight replaces it atomically after draining the old route.
 			if (!replaceHindsightInPlace) await this.#disposeMemoryBackendState(true, retainMnemopi);
 			if (backend && agentDir !== undefined && !this.#host.isDisposed()) {
 				await backend.start({
-					session: this.#host.memoryBackendSession(),
+					session,
 					settings: this.#host.settings,
 					modelRegistry: this.#host.modelRegistry,
 					agentDir,

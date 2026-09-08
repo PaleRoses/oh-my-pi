@@ -8,6 +8,7 @@ import type { EffectiveExtensionRoots } from "../capability/types";
 import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
+import type { HindsightMemoryBinding } from "../config/settings-schema";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
@@ -278,6 +279,8 @@ export interface ToolSession {
 	getSessionId?: () => string | null;
 	/** Effective prompt-profile memory permission for internal URL routing. */
 	memoryEnabled?: () => boolean;
+	/** Owner inherited by delegated work, independent of installed memory state. */
+	getMemoryBinding?: () => HindsightMemoryBinding | null;
 	/** Get Hindsight runtime state for this agent session. */
 	getHindsightSessionState?: () => HindsightSessionState | undefined;
 	/** Get Mnemopi runtime state for this agent session. */

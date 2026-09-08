@@ -23,6 +23,7 @@
 import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { HindsightMemoryBinding } from "../config/settings-schema";
 import type { HindsightApi } from "./client";
 import type { HindsightConfig } from "./config";
 
@@ -107,6 +108,32 @@ export function computeBankScope(config: HindsightConfig, directory: string, pro
 			};
 		}
 	}
+}
+
+/**
+ * Resolve the bank target of a session, honouring an explicit memory binding.
+ *
+ * A bound session owns exactly one bank: `binding.bankId` verbatim. The global
+ * bank id and prefix are route selectors for unbound sessions, so they never
+ * move a bound owner. Project tagging still applies — it scopes retrieval
+ * inside the owner's own bank — but `per-project` would shard one owner across
+ * a bank per checkout, which contradicts one bank per owner, so it is refused
+ * instead of being silently reinterpreted as something else.
+ */
+export function computeSessionBankScope(
+	config: HindsightConfig,
+	directory: string,
+	binding?: HindsightMemoryBinding,
+	projectLabel?: string,
+): BankScope {
+	const scope = computeBankScope(config, directory, projectLabel);
+	if (!binding) return scope;
+	if (config.scoping === "per-project") {
+		throw new Error(
+			`Hindsight scoping "per-project" cannot host memory owner ${binding.principal}: it would split bank ${binding.bankId} across projects. Use "global" or "per-project-tagged".`,
+		);
+	}
+	return { ...scope, bankId: binding.bankId };
 }
 
 /**

@@ -51,6 +51,8 @@ export type MemoryProvenanceSource = "agent-retain" | "session-auto-retain";
 export type MemoryProvenanceKey =
 	| "session_id"
 	| "agent_kind"
+	/** Memory owner the item belongs to; absent for unbound sessions. */
+	| "principal"
 	| "prompt_profile"
 	| "prompt_principal"
 	| "prompt_source"

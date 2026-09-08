@@ -356,6 +356,51 @@ export class PromptSettingsComponent implements Component, Focusable {
 		};
 	}
 
+	/** Edit the owner/bank pair as one transaction; leaving the screen never saves half a binding. */
+	#memoryBindingScreen(profileId: string): Screen {
+		const depth = this.#screens.length;
+		const binding = this.#model.profiles[profileId]?.memoryBinding;
+		const inputs: [Input, Input] = [new Input(), new Input()];
+		inputs[0].setValue(binding?.principal ?? "");
+		inputs[1].setValue(binding?.bankId ?? "");
+		inputs.forEach(input => input.setUseTerminalCursor(this.#terminalCursor));
+		let active: 0 | 1 = 0;
+		const focus = (next: 0 | 1) => {
+			inputs[active].focused = false;
+			active = next;
+			this.callbacks.requestRender();
+		};
+		inputs[0].onSubmit = () => focus(1);
+		inputs[1].onSubmit = () => {
+			const principal = inputs[0].getValue().trim();
+			const bankId = inputs[1].getValue().trim();
+			void this.#task(
+				principal || bankId
+					? { type: "setMemoryBinding", profileId, binding: { principal, bankId } }
+					: { type: "restoreField", profileId, field: "memoryBinding" },
+				depth,
+			);
+		};
+		const container = new Container();
+		container.addChild(new Text(theme.fg("dim", "Principal · Enter next · ↑↓ fields"), 0, 0));
+		container.addChild(inputs[0]);
+		container.addChild(new Text(theme.fg("dim", "Bank ID · Enter saves both · clear both to remove"), 0, 0));
+		container.addChild(inputs[1]);
+		return {
+			label: "Memory binding",
+			component: Object.assign(container, {
+				handleInput: (data: string) => {
+					if (matchesSelectUp(data)) focus(0);
+					else if (matchesSelectDown(data)) focus(1);
+					else inputs[active].handleInput(data);
+				},
+			}),
+			get input() {
+				return inputs[active];
+			},
+		};
+	}
+
 	#scopeItems(scope: ScopeEntry["id"]): SettingItem[] {
 		switch (scope) {
 			case "main":
@@ -490,6 +535,22 @@ export class PromptSettingsComponent implements Component, Focusable {
 				});
 				continue;
 			}
+			if (definition.input === "binding") {
+				const binding = profile.memoryBinding;
+				items.push(
+					actionRow(
+						`binding:${profileId}`,
+						definition.label,
+						binding ? `${binding.principal} → ${binding.bankId}` : "Unbound",
+						{
+							changed: binding !== undefined,
+							description: "One private memory owner and bank. Applies to fresh sessions after restart.",
+						},
+					),
+				);
+				continue;
+			}
+
 			const document = this.#document(profileId, definition);
 			items.push(
 				actionRow(`doc:${profileId}:${definition.field}`, definition.label, document.value, {
@@ -557,10 +618,23 @@ export class PromptSettingsComponent implements Component, Focusable {
 			case "toggle":
 				void this.#task(
 					value === "default"
-						? { type: "restoreField", profileId: target, field: field as PromptProfileField }
-						: { type: "setField", profileId: target, field: field as PromptProfileField, value },
+						? {
+								type: "restoreField",
+								profileId: target,
+								field: field as Exclude<PromptProfileField, "memoryBinding">,
+							}
+						: {
+								type: "setField",
+								profileId: target,
+								field: field as Exclude<PromptProfileField, "memoryBinding">,
+								value,
+							},
 				);
 				return;
+			case "binding":
+				this.#push(this.#memoryBindingScreen(target));
+				return;
+
 			case "doc":
 			case "src": {
 				const definition = PROMPT_PROFILE_FIELD_DEFINITIONS.find(

@@ -27,7 +27,7 @@ import {
 import type { PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, resolveSubagentServiceTier } from "../config/service-tier";
 import { Settings } from "../config/settings";
-import { SETTINGS_SCHEMA, type SettingPath } from "../config/settings-schema";
+import { type HindsightMemoryBinding, SETTINGS_SCHEMA, type SettingPath } from "../config/settings-schema";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
@@ -527,6 +527,8 @@ export interface ExecutorOptions {
 	parentArtifactManager?: ArtifactManager;
 	/** Parent Hindsight state used to bind a subagent alias to the parent's live provider slot. */
 	parentHindsightSessionState?: HindsightSessionState;
+	/** Inherited owner, including when the parent has no installed memory state. */
+	inheritedMemoryBinding?: HindsightMemoryBinding | null;
 	/** Parent agent's eval executor session id. Subagents reuse it so eval state is shared. */
 	parentEvalSessionId?: string;
 	/**
@@ -3389,6 +3391,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				// without leaking into another root session's traffic.
 				subagentEventBus: options.subagentEventBus,
 				parentHindsightSessionState: options.parentHindsightSessionState,
+				inheritedMemoryBinding: options.inheritedMemoryBinding,
 				parentTaskPrefix: id,
 				parentAgentId: options.parentAgentId,
 				agentId: id,

@@ -44,6 +44,8 @@ export interface Args {
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
+	/** Prompt profile selected for this process, overriding the ordered routes on a fresh session. */
+	promptProfile?: string;
 	thinking?: ConfiguredThinkingLevel;
 	serviceTier?: ServiceTierOpenAISettingValue;
 	hideThinking?: boolean;

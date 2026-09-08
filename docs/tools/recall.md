@@ -39,7 +39,7 @@ When matches exist:
 
 Hindsight bullet format comes from `formatMemories(...)`:
 - the complete shape is `- <text> [<fact_type>] (<mentioned_at>) {<details>}`; every suffix is omitted when its canonical field is absent or invalid, and only `fact_type` supplies the type suffix;
-- details render in this fixed order: `document=<document_id>` (falling back to `fact=<id>`), `tags=<tags>`, then the whitelisted metadata fields `source=<source>`, `session=<session_id>`, `agent=<agent_kind>`, `prompt=<prompt_profile>`, `principal=<prompt_principal>`, `prompt-source=<prompt_source>`, `model=<model>`, `project=<project>`, and `cwd=<cwd>`;
+- details render in this fixed order: `document=<document_id>` (falling back to `fact=<id>`), `tags=<tags>`, then the whitelisted metadata fields `source=<source>`, `session=<session_id>`, `agent=<agent_kind>`, `principal=<principal>`, `prompt=<prompt_profile>`, `prompt-principal=<prompt_principal>`, `prompt-source=<prompt_source>`, `model=<model>`, `project=<project>`, and `cwd=<cwd>`;
 - arbitrary metadata is never rendered. In particular, credential-shaped or nested metadata cannot enter the recall projection;
 - inline scalar fields are trimmed, internal whitespace is collapsed, `<` and `>` become `‹` and `›`, `{}`, `[]`, `()`, and `;` become `_`, and the result is capped at 96 characters;
 - tags are subject to the same normalization with a 48-character cap. The renderer inspects at most 32 entries, drops invalid and duplicate values, sorts the survivors lexicographically, renders at most eight, and appends `…` when additional entries may remain.
@@ -69,7 +69,7 @@ When no matches exist:
 ## Modes / Variants
 - Tool path: explicit query-only recall. It does not compose context from recent turns.
 - Backend auto-recall has a richer query-composition path in `HindsightSessionState.beforeAgentStartPrompt(...)` / `maybeRecallOnAgentStart(...)` and `MnemopiSessionState.beforeAgentStartPrompt(...)` / `maybeRecallOnAgentStart(...)`.
-- Hindsight bank scoping:
+- Hindsight calls exactly one bank: a profile-bound owner's bank, or the configured derivation when unbound. Explicit shared-bank MCP recall is separate and is never automatically merged into this tool. Unbound bank scoping:
   - `global` — no tag filter.
   - `per-project` — separate bank id per project label (git primary checkout root basename; cwd basename outside a repo).
   - `per-project-tagged` — shared bank id plus `project:<project label>` filter with `tagsMatch = "any"`, so project-tagged and untagged global memories can both surface.

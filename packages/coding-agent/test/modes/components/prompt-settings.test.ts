@@ -137,6 +137,45 @@ function createHub(
 }
 
 describe("PromptSettingsComponent", () => {
+	it("saves the complete memory binding atomically and discards an unfinished edit", async () => {
+		const h = createHub();
+		h.select("Memory binding");
+		await h.key("\n");
+		h.hub.pasteText("alpha");
+		await h.key("\n");
+		expect(h.settings.get("systemPromptProfiles").driver.memoryBinding).toBeUndefined();
+		h.hub.pasteText("Archive::Personal Memory");
+		await h.key("\n");
+		const binding = { principal: "alpha", bankId: "Archive::Personal Memory" };
+		expect(h.settings.get("systemPromptProfiles").driver.memoryBinding).toEqual(binding);
+		h.select("Memory binding");
+		await h.key("\n");
+		await h.key("\x15");
+		h.hub.pasteText("beta");
+		await h.key("\n");
+		await h.key(ESCAPE);
+		expect(h.settings.get("systemPromptProfiles").driver.memoryBinding).toEqual(binding);
+	});
+
+	it("refuses an empty owner instead of reinterpreting the bank's words as an owner", async () => {
+		const h = createHub();
+		h.select("Memory binding");
+		await h.key("\n");
+		await h.key("\n");
+		h.hub.pasteText("beta archive");
+		await h.key("\n");
+		expect(h.settings.get("systemPromptProfiles").driver.memoryBinding).toBeUndefined();
+		expect(h.pane()).toContain("beta archive");
+		await h.key(UP);
+		h.hub.pasteText("alpha");
+		await h.key("\n");
+		await h.key("\n");
+		expect(h.settings.get("systemPromptProfiles").driver.memoryBinding).toEqual({
+			principal: "alpha",
+			bankId: "beta archive",
+		});
+	});
+
 	it("shows only the selected scope while keeping the sidebar reachable from a library profile", async () => {
 		const h = createHub({
 			profiles: {

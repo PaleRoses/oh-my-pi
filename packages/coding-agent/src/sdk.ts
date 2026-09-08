@@ -75,7 +75,7 @@ import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate
 import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { buildServiceTierByFamily } from "./config/service-tier";
 import { Settings, type SkillsSettings } from "./config/settings";
-import type { SystemPromptProfileAgentKind } from "./config/settings-schema";
+import type { HindsightMemoryBinding, SystemPromptProfileAgentKind } from "./config/settings-schema";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "./cursor";
 import { createBridgeEditTool, createBridgeGrepFactory } from "./cursor-bridge-tools";
 import "./discovery";
@@ -159,6 +159,7 @@ import {
 	createEffectiveSessionIdentity,
 	deriveAgentIdentitySnapshot,
 	formatAgentIdentitySystemPrompt,
+	type ProfileSelectionSource,
 	snapshotAgentIdentity,
 } from "./session/identity";
 import {
@@ -177,6 +178,7 @@ import {
 	resolveRetryFallbackChainKey,
 } from "./session/retry-fallback-chains";
 import { getRestorableSessionModels } from "./session/session-context";
+import { sameMemoryOwner } from "./session/session-entries";
 import { SessionManager } from "./session/session-manager";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
@@ -439,6 +441,13 @@ export interface CreateAgentSessionOptions {
 	/** Already-loaded text appended through the bundled system prompt templates. */
 	appendSystemPrompt?: string;
 	/**
+	 * Prompt profile selected for this process (CLI `--prompt-profile`). A fresh
+	 * transcript uses it instead of the ordered routes and pins it as an
+	 * explicit selection; a transcript that already pinned a different profile
+	 * is refused rather than re-pinned.
+	 */
+	systemPromptProfile?: string;
+	/**
 	 * Already-loaded title-generation system prompt override (typically
 	 * {@link discoverTitleSystemPromptFile} → {@link resolvePromptInput}). When
 	 * set, every automatic session-title generation path on this session — the
@@ -577,6 +586,13 @@ export interface CreateAgentSessionOptions {
 	taskDepth?: number;
 	/** Parent Hindsight state used to bind a subagent alias to the parent's live provider slot. */
 	parentHindsightSessionState?: HindsightSessionState;
+	/**
+	 * Memory owner an independent delegated helper (a `/tan` clone, the agent
+	 * creation architect) acts for. Trusted SDK-only: the helper runs its own
+	 * memory state but never selects another owner, so `null` is a deliberate
+	 * unbound parent and a profile declaring a different owner is refused.
+	 */
+	inheritedMemoryBinding?: HindsightMemoryBinding | null;
 	/** Pre-allocated agent identity for IRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
 	agentId?: string;
 	/** Session role when taskDepth/parentTaskPrefix inference is unavailable. */
@@ -1847,6 +1863,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
 			isDisposed: () => session?.isDisposed ?? false,
 			memoryEnabled: () => session?.effectiveIdentity.memory.status === "enabled",
+			getMemoryBinding: () => session?.memoryBinding ?? null,
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
 			getAgentId: () => resolvedAgentId,
@@ -2787,19 +2804,101 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agentKind,
 			model: model ? formatModelString(model) : undefined,
 		};
-		const persistedSystemPromptProfileId = sessionManager.getHeader()?.systemPromptProfile;
+		const sessionHeader = sessionManager.getHeader();
+		const persistedSystemPromptProfileId = sessionHeader?.systemPromptProfile;
 		const systemPromptProfileSelectionPending = sessionManager.needsSystemPromptProfileSelection();
+		const requestedSystemPromptProfileId = options.systemPromptProfile;
+		// A parent's owner governs every delegated session: an alias inherits it
+		// through the parent's live identity, an independent helper through the
+		// trusted `inheritedMemoryBinding` option. Neither may pick another owner.
+		const inheritedMemoryBinding =
+			options.inheritedMemoryBinding !== undefined
+				? options.inheritedMemoryBinding
+				: options.parentHindsightSessionState?.session.memoryBinding;
 		let selectedSystemPromptProfile: SystemPromptProfile | undefined;
-		if (!systemPromptProfileSelectionPending && persistedSystemPromptProfileId !== undefined) {
-			selectedSystemPromptProfile = systemPromptProfileResolver.resolveProfile(persistedSystemPromptProfileId);
-			systemPromptProfileResolver.assertCompatible(persistedSystemPromptProfileId, systemPromptProfileContext);
-		} else if (!systemPromptProfileSelectionPending && hasExistingSession) {
-			systemPromptProfileResolver.assertCompatible(undefined, systemPromptProfileContext);
+		let systemPromptProfileSource: ProfileSelectionSource = "route";
+		let sessionMemoryBinding: HindsightMemoryBinding | null = null;
+		if (
+			!systemPromptProfileSelectionPending &&
+			(persistedSystemPromptProfileId !== undefined || hasExistingSession)
+		) {
+			if (
+				requestedSystemPromptProfileId !== undefined &&
+				requestedSystemPromptProfileId !== persistedSystemPromptProfileId
+			) {
+				throw new Error(
+					`This session is pinned to ${persistedSystemPromptProfileId === undefined ? "the default prompt" : `system prompt profile "${persistedSystemPromptProfileId}"`}; --prompt-profile ${requestedSystemPromptProfileId} needs a new session.`,
+				);
+			}
+			systemPromptProfileSource = sessionHeader?.systemPromptProfileSource ?? "route";
+			if (persistedSystemPromptProfileId !== undefined) {
+				selectedSystemPromptProfile = systemPromptProfileResolver.resolveProfile(persistedSystemPromptProfileId);
+			}
+			systemPromptProfileResolver.assertCompatible(
+				persistedSystemPromptProfileId,
+				systemPromptProfileContext,
+				systemPromptProfileSource,
+			);
+			const declaredBinding = selectedSystemPromptProfile?.memoryBinding ?? null;
+			// A delegated session acts for its parent's owner, so that is the owner
+			// its transcript must already be pinned to; everything else comes from
+			// the profile the transcript pinned.
+			const expectedBinding = inheritedMemoryBinding !== undefined ? inheritedMemoryBinding : declaredBinding;
+			if (sessionHeader?.memoryBinding === undefined) {
+				// Legacy transcript: it never recorded an owner, so an edited profile
+				// cannot fold its history into a bank retroactively. A delegated
+				// revival keeps acting for the parent that spawned it.
+				if (declaredBinding) {
+					throw new Error(
+						`Session ${sessionManager.getSessionId()} predates memory owners; start a new session to use "${declaredBinding.principal}".`,
+					);
+				}
+				sessionMemoryBinding = inheritedMemoryBinding ?? null;
+			} else if (!sameMemoryOwner(sessionHeader.memoryBinding, expectedBinding)) {
+				throw new Error(
+					`This session is pinned to memory owner "${sessionHeader.memoryBinding?.principal ?? "none"}" (bank "${sessionHeader.memoryBinding?.bankId ?? "none"}"); it now resolves to "${expectedBinding?.principal ?? "none"}". Start a new session.`,
+				);
+			} else {
+				sessionMemoryBinding = sessionHeader.memoryBinding;
+			}
 		} else {
-			const decision = systemPromptProfileResolver.resolveInitial(systemPromptProfileContext);
-			if (decision.type === "denied") throw new Error(decision.reason);
-			selectedSystemPromptProfile = decision.type === "profile" ? decision.profile : undefined;
-			sessionManager.pinSystemPromptProfile(selectedSystemPromptProfile?.id);
+			if (requestedSystemPromptProfileId !== undefined) {
+				selectedSystemPromptProfile = systemPromptProfileResolver.resolveProfile(requestedSystemPromptProfileId);
+				systemPromptProfileSource = "explicit";
+				// An explicit selection still obeys a denying route for this
+				// agent kind and model; it only skips route-equality.
+				systemPromptProfileResolver.assertCompatible(
+					requestedSystemPromptProfileId,
+					systemPromptProfileContext,
+					"explicit",
+				);
+			} else {
+				const decision = systemPromptProfileResolver.resolveInitial(systemPromptProfileContext);
+				if (decision.type === "denied") throw new Error(decision.reason);
+				selectedSystemPromptProfile = decision.type === "profile" ? decision.profile : undefined;
+			}
+			const declaredBinding = selectedSystemPromptProfile?.memoryBinding ?? null;
+			if (inheritedMemoryBinding !== undefined) {
+				if (declaredBinding && !sameMemoryOwner(declaredBinding, inheritedMemoryBinding)) {
+					throw new Error(
+						`Delegated session acts for memory owner "${inheritedMemoryBinding?.principal ?? "none"}"; profile "${selectedSystemPromptProfile?.id ?? "default"}" declares "${declaredBinding.principal}".`,
+					);
+				}
+				sessionMemoryBinding = inheritedMemoryBinding;
+			} else {
+				sessionMemoryBinding = declaredBinding;
+			}
+			sessionManager.pinSystemPromptSelection({
+				profileId: selectedSystemPromptProfile?.id,
+				source: systemPromptProfileSource,
+				memoryBinding: sessionMemoryBinding,
+			});
+		}
+		const memoryEnabledForSession = selectedSystemPromptProfile?.memoryEnabled ?? true;
+		if (memoryEnabledForSession && sessionMemoryBinding && settings.get("memory.backend") !== "hindsight") {
+			throw new Error(
+				`Memory owner "${sessionMemoryBinding.principal}" requires the hindsight memory backend; memory.backend is "${settings.get("memory.backend")}".`,
+			);
 		}
 		const effectivePromptSource =
 			options.systemPrompt !== undefined ||
@@ -2817,8 +2916,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const effectiveIdentity = createEffectiveSessionIdentity({
 			role: agentKind,
 			promptSource: effectivePromptSource,
-			memoryEnabled: selectedSystemPromptProfile?.memoryEnabled ?? true,
+			memoryEnabled: memoryEnabledForSession,
+			profileSource: systemPromptProfileSource,
 			...(selectedSystemPromptProfile ? { profileId: selectedSystemPromptProfile.id } : {}),
+			...(sessionMemoryBinding ? { memoryBinding: sessionMemoryBinding } : {}),
 		});
 		const profileMemoryEnabled = effectiveIdentity.memory.status === "enabled";
 		const profileMcpServerInstructionsEnabled = selectedSystemPromptProfile?.mcpServerInstructionsEnabled ?? true;
@@ -3972,10 +4073,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agentId: resolvedAgentId,
 			effectiveIdentity,
 			assertSystemPromptProfileCompatible: targetModel =>
-				systemPromptProfileResolver.assertCompatible(selectedSystemPromptProfile?.id, {
-					agentKind,
-					model: targetModel ? formatModelString(targetModel) : undefined,
-				}),
+				systemPromptProfileResolver.assertCompatible(
+					selectedSystemPromptProfile?.id,
+					{ agentKind, model: targetModel ? formatModelString(targetModel) : undefined },
+					systemPromptProfileSource,
+				),
 			profileContextImages: selectedSystemPromptProfile?.contextImages,
 			profileCompactionIdentity: selectedSystemPromptProfile?.compactionIdentity,
 			providerSessionId: options.providerSessionId,

@@ -422,13 +422,14 @@ are validated before saving. Restart OMP to apply changes; `/new` retains the
 current profile.
 The Session profile header shows the current transcript's profile ID.
 
-OMP pins the selected profile ID when it creates the transcript. Resume, model cycling, prewalk, and retry fallback may continue only when routing still selects that ID. A live switch may enter only a transcript pinned to the same profile and leaves the current session intact if its saved model is incompatible. Changing prompt identity requires a new OMP process and transcript; `/new` intentionally inherits the current profile.
-When Hindsight retention runs, the profile's immutable effective identity supplies the retained `prompt`, `principal`, and `prompt-source` provenance; see [recall](./tools/recall.md).
+OMP pins profile, route/explicit selection source, and memory owner together. `--prompt-profile <id>` explicitly selects a profile for a fresh session; denying routes still apply. Resume preserves that selection and refuses changed owners or a conflicting flag. Routed sessions must remain route-compatible. Forks carrying history cannot switch owners, and legacy transcripts cannot silently acquire one. `/new` inherits the current selection and owner.
+`memoryBinding: { principal: alpha, bankId: private-alpha }` binds Hindsight memory to one exact bank. It requires a slug principal, a nonempty bank ID, enabled Hindsight memory, and global or per-project-tagged scoping. Edit the pair atomically in `/identity` or with `/identity set <profile> memoryBinding <principal> <bankId>`. Disabled delegated profiles retain their inherited transcript owner without accessing memory. Shared knowledge uses a separate, optional bank-bound MCP server, not an automatic second bank. Retention records the owner as `principal`; prompt identity remains separate as `prompt`, `prompt-principal`, and `prompt-source`; see [recall](./tools/recall.md).
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `systemPromptProfiles` | record | `{}` | Named profiles with `rolePrompt` / `rolePromptFile`, `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, `mcpServerInstructions`, `contextImages`, `userTitle`, `compactionIdentity`, and `tools`. |
+| `systemPromptProfiles` | record | `{}` | Named profiles with `rolePrompt` / `rolePromptFile`, `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, `memoryBinding`, `mcpServerInstructions`, `contextImages`, `userTitle`, `compactionIdentity`, and `tools`. |
 | `systemPromptProfileRoutes` | array | `[]` | Ordered first-match selection rules with optional `agentKind` and `model` glob. Each rule names a `profile` or sets `deny: true`; model-specific `main` rules must precede generic `main` rules. |
+
 
 ### Advisor
 

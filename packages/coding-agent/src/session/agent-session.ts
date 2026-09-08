@@ -112,6 +112,7 @@ import {
 	onExtendedContextChanged,
 	onModelRolesChanged,
 } from "../config/settings";
+import type { HindsightMemoryBinding } from "../config/settings-schema";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
 import { releaseCompletionHandles } from "../eval/completion-bridge";
@@ -348,7 +349,7 @@ import {
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
 import { formatSessionDumpText } from "./session-dump-format";
-import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
+import { type BranchSummaryEntry, type NewSessionOptions, sameMemoryOwner } from "./session-entries";
 import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
 import {
 	COMPACTION_CHECK_NONE,
@@ -4825,6 +4826,32 @@ export class AgentSession {
 		return this.effectiveIdentity.prompt.profileId;
 	}
 
+	/**
+	 * The pinned prompt identity of the live transcript — profile, selection
+	 * source, and memory owner — carried verbatim into every new transcript this
+	 * session opens (`/new`, rewind-to-root, `/drop`).
+	 */
+	get pinnedPromptSelection(): Pick<
+		NewSessionOptions,
+		"systemPromptProfile" | "systemPromptProfileSource" | "memoryBinding"
+	> {
+		const header = this.sessionManager.getHeader();
+		return {
+			systemPromptProfile: this.systemPromptProfileId,
+			systemPromptProfileSource: header?.systemPromptProfileSource,
+			memoryBinding: header?.memoryBinding ?? null,
+		};
+	}
+
+	/**
+	 * The owner this session acts for, independently of memory permission.
+	 * Delegated helpers inherit this pair instead of selecting their own.
+	 */
+	get memoryBinding(): HindsightMemoryBinding | null {
+		const memory = this.effectiveIdentity.memory;
+		return memory.memoryBinding ?? null;
+	}
+
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model | undefined {
 		return this.agent.state.model;
@@ -7698,7 +7725,7 @@ export class AgentSession {
 				}
 				await this.sessionManager.newSession({
 					...options,
-					systemPromptProfile: this.systemPromptProfileId,
+					...this.pinnedPromptSelection,
 					additionalDirectories: this.settings.get("workspace.additionalDirectories"),
 				});
 				this.#bash.markSessionTransition(bashTransition);
@@ -8838,6 +8865,12 @@ export class AgentSession {
 					`Cannot switch from system prompt profile "${this.systemPromptProfileId ?? "default"}" to "${target.header?.systemPromptProfile ?? "default"}" in one live session.`,
 				);
 			}
+			const liveBinding = this.sessionManager.getHeader()?.memoryBinding;
+			if (!sameMemoryOwner(target.header?.memoryBinding, liveBinding)) {
+				throw new Error(
+					`Cannot switch from memory owner "${liveBinding?.principal ?? "none"}" to "${target.header?.memoryBinding?.principal ?? "none"}" in one live session.`,
+				);
+			}
 			preflightTargetModel = this.#resolveRestorableSessionModel(target.targetModelStrings);
 			if (preflightTargetModel) this.#assertSystemPromptProfileCompatible?.(preflightTargetModel);
 		}
@@ -9240,7 +9273,7 @@ export class AgentSession {
 					const titleSource = this.sessionManager.titleSource;
 					await this.sessionManager.newSession({
 						parentSession: previousSessionFile,
-						systemPromptProfile: this.systemPromptProfileId,
+						...this.pinnedPromptSelection,
 					});
 					if (title) await this.sessionManager.setSessionName(title, titleSource);
 				} else {

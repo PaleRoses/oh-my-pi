@@ -98,7 +98,7 @@ async function createPersistedSession(
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) throw new Error("Expected a persisted session file");
-	manager.pinSystemPromptProfile(systemPromptProfile);
+	manager.pinSystemPromptSelection({ profileId: systemPromptProfile, source: "route", memoryBinding: null });
 	manager.appendSessionInit({
 		systemPrompt: "persisted prompt",
 		task: "persisted task",

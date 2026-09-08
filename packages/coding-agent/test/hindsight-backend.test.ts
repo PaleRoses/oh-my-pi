@@ -19,12 +19,15 @@ import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import { HindsightRetainQueue, type HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SessionMemory } from "@oh-my-pi/pi-coding-agent/session/session-memory";
+import { resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/resolve";
 
 interface FakeSessionDeps {
 	sessionId: string | null;
 	cwd?: string;
 	entries?: Array<{ role: "user" | "assistant"; text: string }>;
 	settings?: Settings;
+	memoryBinding?: { principal: string; bankId: string };
 }
 
 function makeFakeSession(deps: FakeSessionDeps) {
@@ -37,7 +40,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 		effectiveIdentity: {
 			role: "main",
 			prompt: { profileId: undefined, principal: "maintained-omp-prompt", source: "maintained-omp-prompt" },
-			memory: { status: "enabled" },
+			memory: { status: "enabled", memoryBinding: deps.memoryBinding },
 		},
 		model: undefined,
 		settings: deps.settings ?? Settings.isolated(),
@@ -74,6 +77,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 			return () => listeners.delete(listener);
 		},
 		refreshBaseSystemPrompt: vi.fn().mockResolvedValue(undefined),
+		emitNotice: vi.fn(),
 		getHindsightSessionState: () => hindsightState,
 		setHindsightSessionState(state: HindsightSessionState | undefined) {
 			const previous = hindsightState;
@@ -1079,6 +1083,215 @@ describe("hindsightBackend live bank routing", () => {
 			expect(bankIdx).toBeLessThan(mmIdx);
 		}
 		void listMentalSpy;
+	});
+});
+
+describe("hindsightBackend bound memory owner", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const BINDING = { principal: "alpha", bankId: "private-alpha" };
+
+	// The bound bank is the owner's, so the global bank selectors are not route
+	// selectors for it: editing them must neither move the bank nor churn the
+	// live state (a rebuild resets recall/retain progress for no reason).
+	it("uses the owner bank verbatim and stays immune to global bank edits", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "global",
+		});
+		settings.set("hindsight.bankId", "omp");
+		const session = makeFakeSession({ sessionId: "s-bound", settings, memoryBinding: BINDING });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const initial = session.getHindsightSessionState();
+		expect(initial?.bankId).toBe("private-alpha");
+
+		settings.set("hindsight.bankId", "Minigames");
+		settings.set("hindsight.bankIdPrefix", "live");
+		// Drain the rebuild the hooks queued instead of racing it on a timer.
+		await rebindMemoryBackendForCwd(session as never);
+
+		expect(session.getHindsightSessionState()).toBe(initial);
+		initial!.enqueueRetain("bound fact");
+		await initial!.flushRetainQueue();
+		expect(retainBatchSpy.mock.calls[0][0]).toBe("private-alpha");
+		expect(retainBatchSpy.mock.calls[0][1][0]?.tags).toEqual(["principal:alpha"]);
+	});
+
+	// A project layer that repoints the service would put the owner's bank on a
+	// different server, under different credentials — a different owner.
+	it("refuses a live Hindsight service change and keeps serving the owner bank", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "global",
+		});
+		const session = makeFakeSession({ sessionId: "s-bound-refuse", settings, memoryBinding: BINDING });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const initial = session.getHindsightSessionState();
+		expect(initial?.bankId).toBe("private-alpha");
+
+		settings.override("hindsight.apiUrl", "http://localhost:9999");
+		await rebindMemoryBackendForCwd(session as never);
+
+		expect(session.getHindsightSessionState()).toBe(initial);
+		expect(session.emitNotice).toHaveBeenCalledWith(
+			"warning",
+			expect.stringContaining("Memory stays bound to bank private-alpha"),
+			"Hindsight",
+		);
+	});
+
+	// The live `memory.backend` edit reaches the runtime through the session's
+	// backend owner, not the Hindsight scope hooks, so the refusal has to hold
+	// at that chokepoint — before it drains and disposes the bound route.
+	it("refuses a live backend switch that would move the bound owner", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated();
+		settings.set("hindsight.apiUrl", "http://localhost:8888");
+		settings.set("hindsight.scoping", "global");
+		// `set`, not an isolated override: an override would shadow the later
+		// backend edit and the switch under test would never be seen.
+		settings.set("memory.backend", "hindsight");
+		const session = makeFakeSession({ sessionId: "s-bound-backend", settings, memoryBinding: BINDING });
+		const memory = new SessionMemory(
+			{
+				agent: { sessionId: "s-bound-backend" } as never,
+				settings,
+				modelRegistry: {} as never,
+				isDisposed: () => false,
+				memoryEnabled: () => true,
+				memoryBackendSession: () => session as never,
+				getHindsightSessionState: () => session.getHindsightSessionState(),
+				setHindsightSessionState: state => {
+					session.setHindsightSessionState(state);
+				},
+				getMnemopiSessionState: () => undefined,
+				takeMnemopiSessionState: () => undefined,
+				setBaseSystemPrompt: () => {},
+				refreshBaseSystemPrompt: async () => {},
+				replaceMemoryTools: async () => {},
+			},
+			{ memoryAgentDir: "/tmp" },
+		);
+
+		await memory.applyMemoryBackend();
+		const initial = session.getHindsightSessionState();
+		expect(initial?.bankId).toBe("private-alpha");
+
+		settings.set("memory.backend", "mnemopi");
+		await memory.applyMemoryBackend();
+
+		expect(session.getHindsightSessionState()).toBe(initial);
+		expect(session.emitNotice).toHaveBeenCalledWith(
+			"warning",
+			expect.stringContaining("the mnemopi memory backend needs a fresh session"),
+			"Hindsight",
+		);
+
+		settings.set("memory.backend", "off");
+		await memory.applyMemoryBackend();
+		expect(session.getHindsightSessionState()).toBeUndefined();
+		settings.set("memory.backend", "mnemopi");
+		const otherBackend = await resolveMemoryBackend(settings);
+		if (!otherBackend) throw new Error("Missing test backend");
+		const foreignStart = vi.spyOn(otherBackend, "start").mockImplementation(() => {});
+		await memory.applyMemoryBackend();
+		settings.set("memory.backend", "hindsight");
+		settings.set("hindsight.apiUrl", "http://other-service.invalid");
+		await memory.applyMemoryBackend();
+		expect({
+			foreignStarts: foreignStart.mock.calls.length,
+			foreignService: session.getHindsightSessionState()?.config.hindsightApiUrl,
+		}).toEqual({ foreignStarts: 0, foreignService: undefined });
+		settings.set("hindsight.apiUrl", "http://localhost:8888");
+		await memory.applyMemoryBackend();
+		expect(session.getHindsightSessionState()?.bankId).toBe(BINDING.bankId);
+	});
+
+	// Project tagging scopes retrieval inside the owner's bank, so a cwd move
+	// re-derives the tags — but never the bank.
+	it("re-tags a moved bound session without moving its bank", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "per-project-tagged",
+		});
+		const deps: FakeSessionDeps = {
+			sessionId: "s-bound-move",
+			cwd: "/work/source",
+			settings,
+			memoryBinding: BINDING,
+		};
+		const session = makeFakeSession(deps);
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		expect(session.getHindsightSessionState()?.retainTags).toEqual(["project:source"]);
+
+		deps.cwd = "/work/destination";
+		await rebindMemoryBackendForCwd(session as never);
+
+		const next = session.getHindsightSessionState();
+		expect(next?.bankId).toBe("private-alpha");
+		expect(next?.retainTags).toEqual(["project:destination"]);
+		expect(next?.recallTags).toEqual(["project:destination"]);
+	});
+
+	// Sharding one owner across a bank per checkout contradicts one bank per
+	// owner: refuse instead of writing its memories somewhere else.
+	it("refuses to start a bound session under per-project bank splitting", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "per-project",
+		});
+		const session = makeFakeSession({
+			sessionId: "s-bound-split",
+			cwd: "/work/proj",
+			settings,
+			memoryBinding: BINDING,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		expect(session.getHindsightSessionState()).toBeUndefined();
 	});
 });
 
