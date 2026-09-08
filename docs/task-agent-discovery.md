@@ -216,7 +216,7 @@ Runtime output schema precedence is:
 
 The task item's optional `schemaMode` overrides the parent session mode; the default is `permissive`.
 
-The model-facing prompt (`src/prompts/tools/task.md`) tags read-only agents and warns against offloading reasoning to `scout`/`sonic`.
+The model-facing prompt (`src/prompts/tools/task.md`) tags read-only agents and matches agent capabilities and tool restrictions to the commissioned slice. Scout owns read-only investigation, not a fixed model or speed tier; model selection remains a routing concern.
 
 ## Command discovery interaction
 

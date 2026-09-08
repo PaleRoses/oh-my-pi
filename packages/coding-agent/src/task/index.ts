@@ -403,8 +403,8 @@ export function buildSpecializationAdvisory(
 	const generics = agentNames.filter(name => GENERIC_SPAWN_AGENTS.has(name));
 	if (generics.length < 2) return undefined;
 	const specialist = scoutAvailable
-		? `Check the agent list for a closer specialist type — e.g. read-only research belongs on ` +
-			`\`agent: "scout"\`, which runs on a faster model.`
+		? `Check the agent list for a closer specialist type — e.g. ` +
+			`\`agent: "scout"\` provides a read-only investigation boundary when that fits the slice.`
 		: `Check the agent list for a closer specialist type.`;
 	return `Tip: this call spawned ${generics.length} generic \`${generics[0]}\` workers. ${specialist}`;
 }

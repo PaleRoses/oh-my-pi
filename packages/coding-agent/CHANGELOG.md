@@ -5,6 +5,7 @@
 ### Changed
 
 - Consolidated profile field handling, editor transitions, identity derivation, and source-update plumbing without removing supported behavior.
+- Scout and task guidance now select agents by capabilities and tool restrictions, request source-backed findings, and defer further delegation to the parent’s decomposition instead of requiring scouts or assuming a faster model.
 
 ## [18.1.14] - 2026-09-07
 
