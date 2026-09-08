@@ -89,6 +89,57 @@ describe("Settings", () => {
 		await tempDir?.remove();
 	});
 
+	it("previews global edits through whole-layer shadowing without changing state or returned owners", async () => {
+		await writeSettings({
+			compaction: { enabled: false },
+			systemPromptProfiles: { driver: { userTitle: "Global" } },
+		});
+		const overlayPath = tempDir.join("overlay.yml");
+		await Bun.write(
+			overlayPath,
+			YAML.stringify({
+				compaction: null,
+				systemPromptProfiles: { driver: { userTitle: "Higher" }, higherOnly: { instructions: "PRIVATE" } },
+			}),
+		);
+		const settings = await Settings.loadIsolated({
+			cwd: projectDir,
+			agentDir,
+			configFiles: [overlayPath],
+			overrides: { "compaction.keepRecentTokens": 8192 },
+		});
+		const saved = await Bun.file(getConfigPath()).text();
+		// The overlay replaces the entire group; a later sibling override does
+		// not resurrect the global enabled leaf. A leaf-only preview gets this wrong.
+		expect(settings.getGlobal("compaction.enabled")).toBe(false);
+		expect(settings.get("compaction.enabled")).toBe(true);
+		expect(settings.previewGlobal("compaction.enabled", false)).toBe(true);
+		const candidate = { driver: { userTitle: "Next", memory: false }, created: {} };
+		const preview = settings.previewGlobal("systemPromptProfiles", candidate);
+		expect(preview).toEqual({
+			driver: { userTitle: "Higher", memory: false },
+			created: {},
+			higherOnly: { instructions: "PRIVATE" },
+		});
+		Object.assign(preview.higherOnly, { instructions: "Changed preview" });
+		Object.assign(preview.driver, { memory: true });
+		expect(candidate.driver.memory).toBe(false);
+		expect(settings.get("systemPromptProfiles")).toEqual({
+			driver: { userTitle: "Higher" },
+			higherOnly: { instructions: "PRIVATE" },
+		});
+		expect(settings.getGlobal("systemPromptProfiles")).toEqual({ driver: { userTitle: "Global" } });
+		await settings.flush();
+		expect(await Bun.file(getConfigPath()).text()).toBe(saved);
+		settings.set("systemPromptProfiles", candidate);
+		await settings.flush();
+		expect(settings.get("systemPromptProfiles")).toEqual({
+			driver: { userTitle: "Higher", memory: false },
+			created: {},
+			higherOnly: { instructions: "PRIVATE" },
+		});
+	});
+
 	describe("main config file selection", () => {
 		it("loads and updates an existing config.yaml without creating config.yml", async () => {
 			const yamlConfigPath = path.join(agentDir, "config.yaml");

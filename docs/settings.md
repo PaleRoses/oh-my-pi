@@ -422,6 +422,10 @@ are validated before saving. Restart OMP to apply changes; `/new` retains the
 current profile.
 The Session profile header shows the current transcript's profile ID.
 
+Profile mutations change only global defaults; project, `--config`, and runtime definitions are not copied into global config. Higher-layer-only profiles must be edited at their source. The editor displays the effective post-save values, including overrides that still win; `unroute` removes only global unconditional rules.
+
+Without a selected profile or explicit/inherited memory owner, the SDK does not append profile identity metadata to ordinary or custom prompts. Runtime identity reporting remains available.
+
 OMP pins profile, route/explicit selection source, and memory owner together. `--prompt-profile <id>` explicitly selects a profile for a fresh session; denying routes still apply. Resume preserves that selection and refuses changed owners or a conflicting flag. Routed sessions must remain route-compatible. Forks carrying history cannot switch owners, and legacy transcripts cannot silently acquire one. `/new` inherits the current selection and owner.
 `memoryBinding: { principal: alpha, bankId: private-alpha }` binds Hindsight memory to one exact bank. It requires a slug principal, a nonempty bank ID, enabled Hindsight memory, and global or per-project-tagged scoping. Edit the pair atomically in `/identity` or with `/identity set <profile> memoryBinding <principal> <bankId>`. Disabled delegated profiles retain their inherited transcript owner without accessing memory. Shared knowledge uses a separate, optional bank-bound MCP server, not an automatic second bank. Retention records the owner as `principal`; prompt identity remains separate as `prompt`, `prompt-principal`, and `prompt-source`; see [recall](./tools/recall.md).
 

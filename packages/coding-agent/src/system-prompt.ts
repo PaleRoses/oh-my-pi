@@ -678,7 +678,7 @@ export interface BuildSystemPromptOptions {
 	xdevDocs?: string;
 	/** Whether Auto-QA grievance reporting is enabled; renders the `xd://report_issue` note. */
 	autoQaEnabled?: boolean;
-	/** Phrase substituted for "the user" in the maintained prompt (e.g. a name). Default: "the user" */
+	/** Optional title substituted into the maintained prompt; unset preserves generic wording. */
 	userTitle?: string;
 	/** Whether active `write` is restricted to xd:// dispatch and the plan artifact sandbox. */
 	writeTransportOnly?: boolean;
@@ -749,8 +749,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		writeTransportOnly = false,
 		activeRepoContext: providedActiveRepoContext,
 	} = options;
-	const userTitle = providedUserTitle?.trim() || "the user";
-	const userTitleCap = userTitle.charAt(0).toUpperCase() + userTitle.slice(1);
+	const userTitle = providedUserTitle?.trim();
+	const userTitleCap = userTitle ? userTitle.charAt(0).toUpperCase() + userTitle.slice(1) : undefined;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
 	const resolvedCwd = cwd ?? getProjectDir();
 

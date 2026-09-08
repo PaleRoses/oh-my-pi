@@ -646,6 +646,25 @@ export class Settings {
 		return resolved as SettingValue<P>;
 	}
 
+	/** Get the raw global value, or its schema default, without higher layers. */
+	getGlobal<P extends SettingPath>(path: P): SettingValue<P> {
+		const value = getByPath(this.#global, SETTING_PATH_SEGMENTS[path]);
+		return value !== undefined ? (value as SettingValue<P>) : getDefault(path);
+	}
+
+	/** Preview an effective value after a global edit, without saving or firing hooks. */
+	previewGlobal<P extends SettingPath>(path: P, value: SettingValue<P>): SettingValue<P> {
+		const global = structuredClone(this.#global);
+		setByPath(global, path.split("."), value);
+		const merged = this.#composeLayers(global);
+		const prospective = getByPath(merged, SETTING_PATH_SEGMENTS[path]);
+		return structuredClone(
+			prospective !== undefined
+				? (resolvePathScopedStringArray(path, prospective, this.#cwd) ?? prospective)
+				: getDefault(path),
+		) as SettingValue<P>;
+	}
+
 	/**
 	 * Whether `path` has an explicitly configured value (global config, project
 	 * config, or runtime override) rather than falling back to the schema default.
@@ -2955,10 +2974,14 @@ export class Settings {
 		return filteredRoles ? { ...this.#project, modelRoles: filteredRoles } : this.#project;
 	}
 
+	#composeLayers(global: RawSettings): RawSettings {
+		let merged = this.#deepMerge(this.#deepMerge({}, global), this.#projectSettingsForMerge());
+		merged = this.#deepMerge(merged, this.#configOverlay);
+		return this.#deepMerge(merged, this.#overrides);
+	}
+
 	#rebuildMerged(): void {
-		this.#merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#projectSettingsForMerge());
-		this.#merged = this.#deepMerge(this.#merged, this.#configOverlay);
-		this.#merged = this.#deepMerge(this.#merged, this.#overrides);
+		this.#merged = this.#composeLayers(this.#global);
 		this.#resolvedCache.clear();
 		this.#editVariantCache = undefined;
 	}

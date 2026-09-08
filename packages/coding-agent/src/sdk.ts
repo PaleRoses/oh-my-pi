@@ -3407,6 +3407,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 
 			const withRuntimeIdentity = (result: BuildSystemPromptResult): BuildSystemPromptResult => {
+				if (!selectedSystemPromptProfile && !sessionMemoryBinding) return result;
 				const identity = hasSession
 					? snapshotAgentIdentity(session)
 					: deriveAgentIdentitySnapshot({

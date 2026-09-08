@@ -278,7 +278,7 @@ function formatProfileDetails(profileId: string, profile: SystemPromptProfileSet
 		`memoryBinding: ${profile.memoryBinding ? `${profile.memoryBinding.principal} → ${profile.memoryBinding.bankId}` : "none"}`,
 		`mcpServerInstructions: ${profile.mcpServerInstructions === false ? "off" : "on (default)"}`,
 		`contextImages: ${profile.contextImages?.length ? profile.contextImages.join(", ") : "none"}`,
-		`userTitle: ${profile.userTitle ?? "the user (default)"}`,
+		`userTitle: ${profile.userTitle ?? "generic (default)"}`,
 		`compactionIdentity: ${profile.compactionIdentity ?? "none (generic summarizer prompt)"}`,
 		`tools: ${profile.tools?.length ? profile.tools.join(", ") : "all (default)"}`,
 	].join("\n");
@@ -288,14 +288,38 @@ type PromptConfigurationUpdate =
 	| { readonly profiles: Record<string, SystemPromptProfileSetting>; readonly routes?: never }
 	| { readonly profiles?: never; readonly routes: SystemPromptProfileRouteSetting[] };
 
+function readConfiguration(runtime: PromptProfileConfigurationRuntime): PromptProfileConfiguration {
+	return {
+		profiles: runtime.settings.get("systemPromptProfiles"),
+		routes: runtime.settings.get("systemPromptProfileRoutes"),
+	};
+}
+
 async function persistConfiguration(
 	runtime: PromptProfileConfigurationRuntime,
 	update: PromptConfigurationUpdate,
 	message: string,
 ): Promise<PromptProfileUpdateReceipt> {
-	const profiles = update.profiles ?? runtime.settings.get("systemPromptProfiles");
-	const routes = update.routes ?? runtime.settings.get("systemPromptProfileRoutes");
-	await createSystemPromptProfileResolver({ profiles, routes, cwd: runtime.cwd });
+	const globalProfiles = update.profiles ?? runtime.settings.getGlobal("systemPromptProfiles");
+	const globalRoutes = update.routes ?? runtime.settings.getGlobal("systemPromptProfileRoutes");
+	const profiles =
+		update.profiles === undefined
+			? runtime.settings.get("systemPromptProfiles")
+			: runtime.settings.previewGlobal("systemPromptProfiles", update.profiles);
+	const routes =
+		update.routes === undefined
+			? runtime.settings.get("systemPromptProfileRoutes")
+			: runtime.settings.previewGlobal("systemPromptProfileRoutes", update.routes);
+	// A higher layer must not hide invalid authored sources. Global routes may
+	// legitimately reference project profiles, so resolve them in this context.
+	if (!Bun.deepEquals(globalProfiles, profiles)) {
+		await createSystemPromptProfileResolver({ profiles: globalProfiles, routes: [], cwd: runtime.cwd });
+	}
+	await createSystemPromptProfileResolver({
+		profiles,
+		routes: Bun.deepEquals(routes, globalRoutes) ? routes : [...globalRoutes, ...routes],
+		cwd: runtime.cwd,
+	});
 	if (update.profiles !== undefined) {
 		runtime.settings.set("systemPromptProfiles", update.profiles);
 	} else {
@@ -303,9 +327,23 @@ async function persistConfiguration(
 	}
 	await runtime.settings.flush();
 	await runtime.notifyConfigChanged?.();
+	const configuration = readConfiguration(runtime);
+	const globalValue =
+		update.profiles !== undefined
+			? runtime.settings.getGlobal("systemPromptProfiles")
+			: runtime.settings.getGlobal("systemPromptProfileRoutes");
+	const saved = Bun.deepEquals(update.profiles ?? update.routes, globalValue);
+	const overridden = !Bun.deepEquals(
+		globalValue,
+		update.profiles !== undefined ? configuration.profiles : configuration.routes,
+	);
 	return {
-		configuration: { profiles, routes },
-		message,
+		configuration,
+		message: !saved
+			? "Global configuration changed while saving; showing current effective settings."
+			: overridden
+				? `${message} Higher-priority overrides remain in effect; showing effective settings.`
+				: message,
 		restartNotice: PROMPT_PROFILE_RESTART_NOTICE,
 	};
 }
@@ -322,8 +360,17 @@ export async function applyPromptProfileOperation(
 	runtime: PromptProfileConfigurationRuntime,
 	operation: PromptProfileOperation,
 ): Promise<PromptProfileUpdateReceipt> {
-	const profiles = runtime.settings.get("systemPromptProfiles");
-	const routes = runtime.settings.get("systemPromptProfileRoutes");
+	const profiles = runtime.settings.getGlobal("systemPromptProfiles");
+	const routes = runtime.settings.getGlobal("systemPromptProfileRoutes");
+	if (
+		"profileId" in operation &&
+		!Object.hasOwn(profiles, operation.profileId) &&
+		Object.hasOwn(runtime.settings.get("systemPromptProfiles"), operation.profileId)
+	) {
+		throw new Error(
+			`System prompt profile "${operation.profileId}" is defined only by project, --config, or runtime settings. Edit its owning configuration; this editor only changes global profiles.`,
+		);
+	}
 	switch (operation.type) {
 		case "createProfile": {
 			if (Object.hasOwn(profiles, operation.profileId)) {
@@ -332,7 +379,7 @@ export async function applyPromptProfileOperation(
 			return persistConfiguration(
 				runtime,
 				{ profiles: { ...profiles, [operation.profileId]: {} } },
-				`Created system prompt profile ${operation.profileId}.`,
+				`Created global system prompt profile ${operation.profileId}.`,
 			);
 		}
 		case "setField":
@@ -348,7 +395,7 @@ export async function applyPromptProfileOperation(
 			return persistConfiguration(
 				runtime,
 				{ profiles: nextProfiles },
-				`Saved ${operation.profileId}.${operation.type === "setMemoryBinding" ? "memoryBinding" : operation.field}.`,
+				`Saved global ${operation.profileId}.${operation.type === "setMemoryBinding" ? "memoryBinding" : operation.field}.`,
 			);
 		}
 		case "restoreField": {
@@ -364,7 +411,7 @@ export async function applyPromptProfileOperation(
 						[operation.profileId]: omitProfileField(profile, operation.field),
 					},
 				},
-				`Restored ${operation.profileId}.${operation.field} to its default.`,
+				`Restored the global default for ${operation.profileId}.${operation.field}.`,
 			);
 		}
 		case "assignRoute": {
@@ -386,8 +433,8 @@ export async function applyPromptProfileOperation(
 			const nextRoutes = routes.filter(route => !isUnconditionalProfileRoute(route, operation.agentKind));
 			if (nextRoutes.length === routes.length) {
 				return {
-					configuration: { profiles, routes },
-					message: `No unconditional ${operation.agentKind} prompt route is configured.`,
+					configuration: readConfiguration(runtime),
+					message: `No global unconditional ${operation.agentKind} prompt route is configured.`,
 				};
 			}
 			return persistConfiguration(
@@ -408,7 +455,7 @@ export async function applyPromptProfileOperation(
 			return persistConfiguration(
 				runtime,
 				{ profiles: nextProfiles },
-				`Removed system prompt profile ${operation.profileId}.`,
+				`Removed global system prompt profile ${operation.profileId}.`,
 			);
 		}
 	}

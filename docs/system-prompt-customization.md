@@ -92,6 +92,11 @@ Escape returns from nested screens. The sidebar also remains clickable while
 editing. Type-to-search filters the current pane.
 The `Session profile` header shows the current transcript's profile ID.
 
+Mutations edit global config only. Profiles defined solely by project, `--config`, or runtime settings must be edited at their source; they are never copied globally. Global defaults remain editable beneath overrides. The editor shows effective values after saving and reports remaining higher-priority overrides. `unroute` removes only global unconditional rules.
+Boolean fields offer explicit Default, On, and Off choices, so every global value remains reachable even when the effective value is overridden.
+
+Provider-facing identity context is added only for a selected profile or an explicit/inherited memory owner. Profile-free sessions without an owner keep ordinary and custom prompt output free of that metadata; `/identity status` remains available. Unset Role and user-title fields preserve the shipped generic prose.
+
 Role instructions, Base prompt, and Appended instructions each have one document
 row; inline/file representations are not separate UI rows. Enter opens
 the document directly. A configured `rolePromptFile`, `promptFile`, or

@@ -6,7 +6,11 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { HindsightMemoryBinding } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
-import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
+import {
+	createAgentSession,
+	type CreateAgentSessionOptions,
+	type ExtensionFactory,
+} from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { formatAgentIdentityReport, snapshotAgentIdentity } from "@oh-my-pi/pi-coding-agent/session/identity";
@@ -32,7 +36,7 @@ function routedSettings(workerMemory = false): Settings {
 		"retry.enabled": false,
 		systemPromptProfiles: {
 			driver: { prompt: "DRIVER CONSTITUTION" },
-			principal: { rolePrompt: ROLE_PROMPT },
+			principal: { rolePrompt: ROLE_PROMPT, userTitle: "ada" },
 			worker: {
 				instructions: "WORKER CONSTITUTION",
 				projectContextOnly: true,
@@ -102,6 +106,7 @@ describe("SDK system prompt profiles", () => {
 			sessionManager?: SessionManager;
 			customSystemPrompt?: string;
 			customSystemPromptSource?: "explicit" | "discovered";
+			systemPrompt?: CreateAgentSessionOptions["systemPrompt"];
 			contextFiles?: Array<{ path: string; content: string; depth?: number }>;
 			toolNames?: string[];
 			restrictToolNames?: boolean;
@@ -128,6 +133,7 @@ describe("SDK system prompt profiles", () => {
 			parentHindsightSessionState: options.parentSession?.getHindsightSessionState(),
 			customSystemPrompt: options.customSystemPrompt,
 			customSystemPromptSource: options.customSystemPromptSource,
+			systemPrompt: options.systemPrompt,
 			disableExtensionDiscovery: true,
 			extensions: options.extensions,
 			enableMCP: false,
@@ -170,6 +176,8 @@ describe("SDK system prompt profiles", () => {
 
 		expect(principal.systemPromptProfileId).toBe("principal");
 		expect(principalPrompt).toContain(`§ Role\n${ROLE_PROMPT}\n\n# Engineering`);
+		expect(principalPrompt).toContain("Unexpected repo changes: ada's work; adapt.");
+		expect(principalPrompt).toContain("explicit approval from ada in this conversation");
 
 		expect(generic.systemPromptProfileId).toBe("driver");
 		expect(generic.agent.state.systemPrompt.join("\n\n")).not.toContain(ROLE_PROMPT);
@@ -405,7 +413,7 @@ describe("SDK system prompt profiles", () => {
 		});
 	});
 
-	it("records discovered SYSTEM.md and the maintained prompt as distinct effective principals", async () => {
+	it("keeps runtime identity reports without injecting identity into profile-free prompts", async () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"todo.enabled": false,
@@ -416,19 +424,35 @@ describe("SDK system prompt profiles", () => {
 			customSystemPromptSource: "discovered",
 		});
 		const maintained = await create("driver-primary", settings);
+		const explicit = await create("driver-primary", settings, {
+			customSystemPrompt: "EXPLICIT SYSTEM PROMPT",
+			customSystemPromptSource: "explicit",
+		});
+		const replacement = await create("driver-primary", settings, {
+			systemPrompt: defaultPrompt => {
+				expect(defaultPrompt.join("\n\n")).not.toContain("<agent-identity>");
+				return [ROLE_PROMPT];
+			},
+		});
 
-		expect(discovered.effectiveIdentity.prompt).toEqual({
-			profileId: undefined,
-			principal: "discovered-system-prompt",
-			source: "discovered-system-prompt",
-			profileSource: "route",
-		});
-		expect(maintained.effectiveIdentity.prompt).toEqual({
-			profileId: undefined,
-			principal: "maintained-omp-prompt",
-			source: "maintained-omp-prompt",
-			profileSource: "route",
-		});
+		for (const session of [discovered, maintained, explicit, replacement]) {
+			expect(session.systemPromptProfileId).toBeUndefined();
+			expect(session.agent.state.systemPrompt.join("\n\n")).not.toContain("<agent-identity>");
+			await session.refreshBaseSystemPrompt();
+			expect(session.agent.state.systemPrompt.join("\n\n")).not.toContain("<agent-identity>");
+		}
+		expect(discovered.agent.state.systemPrompt.join("\n\n")).toContain("AMBIENT SYSTEM PROMPT");
+		expect(explicit.agent.state.systemPrompt.join("\n\n")).toContain("EXPLICIT SYSTEM PROMPT");
+		expect(replacement.agent.state.systemPrompt).toEqual([ROLE_PROMPT]);
+		expect(formatAgentIdentityReport(snapshotAgentIdentity(discovered))).toContain(
+			"Prompt principal: discovered-system-prompt",
+		);
+		expect(formatAgentIdentityReport(snapshotAgentIdentity(maintained))).toContain(
+			"Prompt principal: maintained-omp-prompt",
+		);
+		expect(formatAgentIdentityReport(snapshotAgentIdentity(explicit))).toContain(
+			"Prompt principal: explicit-system-prompt",
+		);
 	});
 
 	it("keeps the maintained OMP prompt when a selected profile has no prompt override", async () => {
@@ -445,6 +469,9 @@ describe("SDK system prompt profiles", () => {
 		expect(prompt).toContain("§ Role");
 		expect(prompt).toContain("Prompt profile: driver");
 		expect(session.effectiveIdentity.prompt.source).toBe("maintained-omp-prompt");
+		settings.override("systemPromptProfileRoutes", []);
+		const generic = await create("driver-primary", settings);
+		expect(session.agent.state.systemPrompt[0]).toBe(generic.agent.state.systemPrompt[0]);
 	});
 
 	it("allows compatible model changes and rejects profile-changing transitions before mutation", async () => {
@@ -676,6 +703,8 @@ describe("SDK system prompt profiles", () => {
 		expect(header?.memoryBinding).toEqual({ principal: "astra", bankId: "person-astra" });
 		expect(session.memoryBinding).toEqual({ principal: "astra", bankId: "person-astra" });
 		expect(session.agent.state.systemPrompt.join("\n\n")).toContain("ASTRA MEMORY");
+		expect(session.agent.state.systemPrompt.join("\n\n")).toContain("<agent-identity>");
+		expect(session.agent.state.systemPrompt.join("\n\n")).toContain("Memory owner: astra (bank person-astra)");
 	});
 
 	it("pins an unbound routed session explicitly, distinguishing it from a legacy transcript", async () => {
@@ -893,6 +922,20 @@ describe("SDK system prompt profiles", () => {
 				inheritedMemoryBinding: owner,
 			}),
 		).rejects.toThrow('profile "astra-memory" declares "astra"');
+
+		settings.override("systemPromptProfileRoutes", []);
+		const unbound = await create("driver-primary", settings, { inheritedMemoryBinding: null });
+		expect(unbound.agent.state.systemPrompt.join("\n\n")).not.toContain("<agent-identity>");
+		const bound = await create("driver-primary", settings, { inheritedMemoryBinding: owner });
+		const delegated = await create("driver-primary", settings, { taskDepth: 1, parentSession: bound });
+		for (const session of [bound, delegated]) {
+			expect(session.systemPromptProfileId).toBeUndefined();
+			expect(session.memoryBinding).toEqual(owner);
+			expect(session.agent.state.systemPrompt.join("\n\n")).toContain("<agent-identity>");
+			expect(session.agent.state.systemPrompt.join("\n\n")).toContain("Memory owner: fable (bank person-fable)");
+			await session.refreshBaseSystemPrompt();
+			expect(session.agent.state.systemPrompt.join("\n\n")).toContain("Memory owner: fable (bank person-fable)");
+		}
 	});
 
 	it("preserves a disabled worker's owner across persisted revival and history-bearing forks", async () => {

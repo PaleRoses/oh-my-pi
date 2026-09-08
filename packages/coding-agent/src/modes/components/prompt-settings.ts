@@ -24,7 +24,6 @@ import {
 	isUnconditionalProfileRoute,
 	PROMPT_PROFILE_FIELD_DEFINITIONS,
 	type PromptProfileConfiguration,
-	type PromptProfileField,
 	type PromptProfileOperation,
 	type PromptProfileSelectorFieldDefinition,
 	type PromptProfileUpdateReceipt,
@@ -525,14 +524,17 @@ export class PromptSettingsComponent implements Component, Focusable {
 		for (const definition of PROMPT_PROFILE_FIELD_DEFINITIONS) {
 			if (definition.input === "toggle") {
 				const value = profile[definition.field];
-				items.push({
-					id: `toggle:${profileId}:${definition.field}`,
-					label: definition.label,
-					currentValue: typeof value === "boolean" ? (value ? "on" : "off") : "default",
-					values: ["default", "on", "off"],
-					changed: typeof value === "boolean",
-					description: `Default ${definition.default ? "on" : "off"} · applies to future sessions routed to ${profileId}.`,
-				});
+				items.push(
+					actionRow(
+						`toggle:${profileId}:${definition.field}`,
+						definition.label,
+						typeof value === "boolean" ? (value ? "on" : "off") : "default",
+						{
+							changed: typeof value === "boolean",
+							description: `Effective value shown · choose a global setting · default ${definition.default ? "on" : "off"}.`,
+						},
+					),
+				);
 				continue;
 			}
 			if (definition.input === "binding") {
@@ -615,22 +617,36 @@ export class PromptSettingsComponent implements Component, Focusable {
 			case "back":
 				this.#escape();
 				return;
-			case "toggle":
-				void this.#task(
-					value === "default"
-						? {
-								type: "restoreField",
-								profileId: target,
-								field: field as Exclude<PromptProfileField, "memoryBinding">,
-							}
-						: {
-								type: "setField",
-								profileId: target,
-								field: field as Exclude<PromptProfileField, "memoryBinding">,
-								value,
+			case "toggle": {
+				const definition = PROMPT_PROFILE_FIELD_DEFINITIONS.find(
+					candidate => candidate.input === "toggle" && candidate.field === field,
+				);
+				if (definition?.input !== "toggle") return;
+				const depth = this.#screens.length;
+				this.#push(
+					this.#pickerScreen(
+						`${definition.label} (global)`,
+						[
+							{
+								value: "default",
+								label: "Default",
+								description: `Remove the global override (built-in: ${definition.default ? "on" : "off"})`,
 							},
+							{ value: "on", label: "On" },
+							{ value: "off", label: "Off" },
+						],
+						value,
+						choice =>
+							void this.#task(
+								choice === "default"
+									? { type: "restoreField", profileId: target, field: definition.field }
+									: { type: "setField", profileId: target, field: definition.field, value: choice },
+								depth,
+							),
+					),
 				);
 				return;
+			}
 			case "binding":
 				this.#push(this.#memoryBindingScreen(target));
 				return;
@@ -717,7 +733,7 @@ export class PromptSettingsComponent implements Component, Focusable {
 		} catch (error) {
 			this.#notice = { text: errorMessage(error), error: true };
 		} finally {
-			// Refresh also rolls back SettingsList's optimistic cycle after a failed save.
+			// Re-read each screen from authoritative settings after either outcome.
 			for (const screen of this.#screens) screen.refresh?.();
 			this.#busy = false;
 			this.callbacks.requestRender();

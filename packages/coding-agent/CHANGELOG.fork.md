@@ -47,6 +47,8 @@ destined for upstream. Kept out of `CHANGELOG.md` so that file stays byte-identi
 
 ### Fixed
 
+- Keep prompt-profile mutations in the global layer, reject implicit imports of project/overlay-only profiles, validate masked authored sources before saving, and display authoritative effective settings after persistence.
+- Make provider-facing identity text opt-in to selected profiles or explicit memory owners, and preserve shipped generic prompt/personality prose when Role and user-title fields are unset.
 - Source-checkout update validation now runs the Rust test lane with `CI=1`. `build:native` only runs `cargo build`, which never compiles `#[cfg(test)]`, and `run-rs-task.ts` self-skips unless CI is set or `git status` reports an uncommitted `.rs` file — so after a merge, on a clean tree, a Rust test broken by a committed change was invisible to every gate.
 
 - Fixed an issue where custom model overrides were lost during configuration updates

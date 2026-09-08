@@ -24,6 +24,7 @@ const ESCAPE = "\x1b";
 function createHub(
 	options: {
 		profiles?: Record<string, SystemPromptProfileSetting>;
+		profileOverrides?: Record<string, SystemPromptProfileSetting>;
 		routes?: SystemPromptProfileRouteSetting[];
 		edit?: (content: string) => Promise<string | null | undefined>;
 		open?: (file: string) => Promise<boolean | undefined>;
@@ -43,6 +44,7 @@ function createHub(
 			{ agentKind: "sub", profile: "worker" },
 		],
 	);
+	if (options.profileOverrides) settings.override("systemPromptProfiles", options.profileOverrides);
 	const terminal = { rows: options.rows ?? 32, columns: options.columns ?? 120 };
 	let startedEffect = false;
 	let closes = 0;
@@ -137,6 +139,34 @@ function createHub(
 }
 
 describe("PromptSettingsComponent", () => {
+	it("lets every global toggle value remain reachable while effective settings stay masked", async () => {
+		const h = createHub({
+			profiles: { driver: { memory: false }, worker: {} },
+			profileOverrides: { driver: { memory: true } },
+		});
+		h.search("Memory");
+		const before = h.row("Memory");
+		await h.key("\n");
+		await h.key(UP);
+		await h.key("\n");
+		expect(h.settings.getGlobal("systemPromptProfiles").driver.memory).toBeUndefined();
+		expect(h.row("Memory")).toBe(before);
+		await h.key("\n");
+		await h.key(DOWN);
+		await h.key("\n");
+		expect(h.settings.getGlobal("systemPromptProfiles").driver.memory).toBe(false);
+		expect(h.row("Memory")).toBe(before);
+		await h.key("\n");
+		await h.key("\n");
+		expect(h.settings.getGlobal("systemPromptProfiles").driver.memory).toBe(true);
+		expect(h.settings.get("systemPromptProfiles").driver.memory).toBe(true);
+		expect(h.row("Memory")).toBe(before);
+		await h.key("\n");
+		await h.key(UP);
+		await h.key(ESCAPE);
+		expect(h.settings.getGlobal("systemPromptProfiles").driver.memory).toBe(true);
+	});
+
 	it("saves the complete memory binding atomically and discards an unfinished edit", async () => {
 		const h = createHub();
 		h.select("Memory binding");
@@ -367,13 +397,20 @@ describe("PromptSettingsComponent", () => {
 		expect(h.render()).not.toContain("Restore default");
 	});
 
-	it("cycles memory through explicit values and restores inheritance", async () => {
+	it("selects explicit memory values and restores inheritance", async () => {
 		const h = createHub();
 		h.search("Memory");
 		await h.key("\n");
+		await h.key(DOWN);
+		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver.memory).toBe(true);
 		await h.key("\n");
+		await h.key(DOWN);
+		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver.memory).toBe(false);
+		await h.key("\n");
+		await h.key(UP);
+		await h.key(UP);
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver.memory).toBeUndefined();
 	});
@@ -495,14 +532,16 @@ describe("PromptSettingsComponent", () => {
 		expect(spare.row("driver")).toContain("Active session");
 	});
 
-	it("reverts a failed optimistic toggle, keeps the frame height, and permits retry", async () => {
+	it("retains a failed toggle choice for retry without changing the frame height", async () => {
 		let fail = true;
 		const h = createHub({ failSave: () => fail });
 		const height = h.frame().length;
 		h.search("Memory");
 		await h.key("\n");
+		await h.key(DOWN);
+		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver.memory).toBeUndefined();
-		expect(h.row("Memory")).toContain("default");
+		expect(h.selected()).toContain("On");
 		expect(h.render()).toContain("configuration is read-only");
 		expect(h.frame().length).toBe(height);
 		fail = false;
