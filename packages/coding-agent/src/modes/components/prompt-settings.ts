@@ -34,17 +34,12 @@ import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme"
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import { bottomBorder, dividerSplit, row, splitBodyWidth, splitRow, topBorderSplit } from "./overlay-box";
 
-export interface IdentityHubModel extends PromptProfileConfiguration {
-	readonly identity: {
-		readonly role: SystemPromptProfileAgentKind;
-		readonly profileId: string | undefined;
-		readonly principal: string;
-		readonly source: string;
-	};
+export interface PromptSettingsModel extends PromptProfileConfiguration {
+	readonly sessionProfileId: string | undefined;
 	readonly maintainedPromptFile?: string;
 }
 
-export interface IdentityHubCallbacks {
+export interface PromptSettingsCallbacks {
 	readonly onApply: (operation: PromptProfileOperation) => Promise<PromptProfileUpdateReceipt>;
 	readonly onEditMarkdown: (content: string) => Promise<string | null | undefined>;
 	readonly onOpenMarkdownFile: (source: string) => Promise<boolean | undefined>;
@@ -55,10 +50,10 @@ export interface IdentityHubCallbacks {
 type MarkdownField = Extract<PromptProfileSelectorFieldDefinition, { input: "markdown" }>;
 // Icons resolve lazily: initTheme installs the live theme binding.
 const SCOPES = [
-	{ id: "main", label: "Main", icon: () => theme.icon.session },
+	{ id: "main", label: "Main agent", icon: () => theme.icon.session },
 	{ id: "sub", label: "Subagents", icon: () => theme.icon.agents },
 	{ id: "profiles", label: "All profiles", icon: () => theme.icon.extensionPrompt },
-	{ id: "routes", label: "Routing", icon: () => theme.icon.branch },
+	{ id: "routes", label: "Selection rules", icon: () => theme.icon.branch },
 ] as const;
 type ScopeEntry = (typeof SCOPES)[number];
 const PANE_HEADER_ROWS = 2;
@@ -67,7 +62,7 @@ const SIDEBAR_MAX_WIDTH = 28;
 const PANE_MIN_WIDTH = 37;
 const ROUTE_WARNING =
 	"Assignment inserts a kind-wide rule first and can override model-specific or deny rules. Applies to future sessions.";
-const SCOPE_NOTE = "Restart OMP to apply · /new keeps this identity · project and --config overrides win";
+const SCOPE_NOTE = "Restart OMP to apply · /new keeps this session profile · project and --config overrides win";
 
 interface Screen {
 	readonly label: string;
@@ -81,9 +76,9 @@ function actionRow(id: string, label: string, value: string, extra: Partial<Sett
 	return { ...extra, id, label, currentValue: value, values: [value] };
 }
 
-export class IdentityHubComponent implements Component, Focusable {
+export class PromptSettingsComponent implements Component, Focusable {
 	focused = false;
-	#model: IdentityHubModel;
+	#model: PromptSettingsModel;
 	#scope: ScopeEntry = SCOPES[0];
 	#focus: "scope" | "content" = "scope";
 	#screens: Screen[] = [];
@@ -97,8 +92,8 @@ export class IdentityHubComponent implements Component, Focusable {
 
 	constructor(
 		private tui: TUI,
-		model: IdentityHubModel,
-		private callbacks: IdentityHubCallbacks,
+		model: PromptSettingsModel,
+		private callbacks: PromptSettingsCallbacks,
 	) {
 		this.#model = model;
 		this.#openScope(SCOPES[0]);
@@ -120,7 +115,7 @@ export class IdentityHubComponent implements Component, Focusable {
 		this.#contentRows = rows;
 		const body = this.#renderPane(splitBodyWidth(width, sidebarWidth), rows);
 		const sidebar = this.#renderSidebar(sidebarWidth);
-		const out = [topBorderSplit(width, "Identity", sidebarWidth)];
+		const out = [topBorderSplit(width, "Prompt settings", sidebarWidth)];
 		for (let i = 0; i < rows; i++) out.push(splitRow(sidebar[i] ?? "", body[i] ?? "", width, sidebarWidth));
 		out.push(
 			dividerSplit(width, sidebarWidth),
@@ -189,11 +184,7 @@ export class IdentityHubComponent implements Component, Focusable {
 	#breadcrumb(width: number): string {
 		const trail = this.#screens.map(screen => screen.label).join(` ${theme.nav.expand} `);
 		const left = theme.bold(theme.fg("accent", visibleWidth(trail) <= width ? trail : this.#top().label));
-		const identity = this.#model.identity;
-		const right = theme.fg(
-			"dim",
-			`Pinned: ${identity.profileId ?? "default"} · ${identity.role} · ${identity.principal}`,
-		);
+		const right = theme.fg("dim", `Session profile: ${this.#model.sessionProfileId ?? "default"}`);
 		const gap = width - visibleWidth(left) - visibleWidth(right);
 		return gap >= 2 ? left + padding(gap) + right : truncateToWidth(left, width);
 	}
@@ -395,7 +386,7 @@ export class IdentityHubComponent implements Component, Focusable {
 						actionRow(
 							`profile:${id}`,
 							id,
-							id === this.#model.identity.profileId ? "Active session" : "Configured",
+							id === this.#model.sessionProfileId ? "Active session" : "Configured",
 							{
 								description: this.#profileSummary(id),
 							},
@@ -409,7 +400,7 @@ export class IdentityHubComponent implements Component, Focusable {
 					? [
 							{
 								id: "no-routes",
-								label: "No routes",
+								label: "No selection rules",
 								currentValue: "Maintained prompt",
 								description: "No profile is selected unless an ordered route matches.",
 							},
@@ -660,7 +651,7 @@ export class IdentityHubComponent implements Component, Focusable {
 	}
 
 	async #mutate(operation: PromptProfileOperation): Promise<{ text: string }> {
-		// The canonical writer validates source-pair exclusivity; only configuration, never pinned identity, changes.
+		// The canonical writer validates source-pair exclusivity; only configuration, never the session profile, changes.
 		const receipt = await this.callbacks.onApply(operation);
 		this.#model = { ...this.#model, ...receipt.configuration };
 		// Only membership changes clear filters that could hide the edit's result.

@@ -426,8 +426,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "identity",
-		description: "Show or configure this agent's identity: prompt profiles, routes, and memory scope",
-		acpDescription: "Show or configure agent identity, prompt profiles, and routes",
+		description: "Open prompt settings or report this agent's runtime identity and memory scope",
+		acpDescription: "Show agent identity or configure prompt profiles and selection rules",
 		acpInputHint: "[status|show|use|unroute|set|unset|remove|help]",
 		subcommands: IDENTITY_SUBCOMMANDS,
 		allowArgs: true,
@@ -440,7 +440,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const ctx = runtime.ctx;
 			ctx.editor.setText("");
 			if (command.args.trim().length === 0) {
-				ctx.showIdentityHub();
+				ctx.showPromptSettings();
 				return;
 			}
 			await handleIdentityCommand(command, {

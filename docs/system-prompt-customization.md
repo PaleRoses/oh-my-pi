@@ -37,9 +37,9 @@ For a single-line value, OMP first tries to read that value as a file path. If r
 
 ### Session-scoped prompt profiles
 
-`systemPromptProfiles` and `systemPromptProfileRoutes` parameterize prompt identity without changing CLI model selection. Each profile may supply its own constitution Markdown independently of a route's model glob. Routes are ordered and may match `agentKind` (`main` or `sub`) plus an optional `provider/model` glob.
+`systemPromptProfiles` defines reusable prompt settings without changing CLI model selection. Each profile may supply its own Role instructions. Ordered selection rules in `systemPromptProfileRoutes` match `agentKind` (`main` or `sub`) and an optional `provider/model` glob.
 
-Routes are first-match. A model-qualified `main` route that selects a constitutional profile must precede generic `main`, or the generic route catches the model first. A model name does not select a constitution; only the selected profile does.
+Selection rules are first-match. Put a model-specific `main` rule before a generic `main` rule, or the generic rule matches first. Role instructions come from the selected profile, never from a model name.
 
 Task sessions derive `sub` from their task metadata. Internal SDK callers without task metadata set `agentKind` explicitly, so commit, security, and agent-creation workers do not inherit the main-session profile.
 
@@ -47,9 +47,9 @@ Task sessions derive `sub` from their task metadata. Internal SDK callers withou
 systemPromptProfiles:
   driver: {}
   reviewer:
-    constitutionFile: ~/.omp/agent/prompts/reviewer.md
+    rolePromptFile: ~/.omp/agent/prompts/reviewer.md
   worker:
-    instructionsFile: ~/.omp/agent/prompts/worker-constitution.md
+    instructionsFile: ~/.omp/agent/prompts/worker.md
     memory: false
     mcpServerInstructions: false
     projectContextOnly: true
@@ -66,7 +66,7 @@ systemPromptProfileRoutes:
 
 Profiles support these prompt fields:
 
-- `constitution` or `constitutionFile` replaces only the maintained prompt's Role paragraph with literal Markdown. Omit both to retain the generic role; a custom base prompt takes precedence. Inline/file sources are mutually exclusive and nonempty; files resolve relative to cwd, `~/`, or an absolute path. Text is loaded and outer whitespace trimmed once at profile compilation, preserving interior bytes without evaluating template syntax. Edit it in the Identity hub or with `/identity set <profile> constitutionFile <path>`.
+- `rolePrompt` or `rolePromptFile` replaces only the maintained prompt's Role paragraph with literal Markdown. Omit both to retain the generic role; a custom base prompt takes precedence. Inline/file sources are mutually exclusive and nonempty; files resolve relative to cwd, `~/`, or an absolute path. Text is loaded and outer whitespace trimmed once at profile compilation, preserving interior bytes without evaluating template syntax. Edit Role instructions in Prompt settings or with `/identity set <profile> rolePromptFile <path>`.
 - `prompt` or `promptFile` replaces ambient discovered `SYSTEM.md` while retaining normal generated prompt assembly. An explicit `--system-prompt` or SDK override still wins.
 - Omitting both keeps the maintained OMP prompt.
 - `instructions` or `instructionsFile` appends one profile-owned system block after the assembled prompt.
@@ -78,21 +78,22 @@ Profiles support these prompt fields:
 - `compactionIdentity` adds a paragraph to the compaction summarizer, e.g. `compactionIdentity: "The assistant is the reviewer; the user is the maintainer."`. It rides every summarization path; unset keeps the generic summarizer prompt.
 - `tools` names the model-facing active tool set (lowercased, deduplicated at compile). The cut intersects the assembled set — built-ins, custom, and extension tools alike — while preserving session contracts: `ask` stays reachable while enabled, a required `yield` survives, `checkpoint`/`rewind` remain paired, `hub` rides along whenever `task` is listed (an orchestrator that can spawn subagents can always steer, wait on, and cancel them — from eval cells too), and memory tools ride the profile's `memory` axis rather than the list. The full registry stays constructed, so `/tools` can re-activate anything outside the profile's default set. Empty or omitted keeps every tool.
 
-The former `constitution: fable` selector is no longer a preset. Preserve its prose in a profile-owned file and select `constitutionFile`; a `constitution` string now means literal Markdown, never a named built-in. Constitutions remain pinned with the compiled profile, so changing their files requires a fresh OMP process.
+Rename existing `constitution` / `constitutionFile` keys to `rolePrompt` / `rolePromptFile`; old keys are rejected. Role instructions remain fixed with the compiled profile during a live session, so changing their files requires a fresh OMP process.
 
 `/identity` is the operator surface for these settings. Bare `/identity`
-opens a fullscreen split-pane hub like `/model`. The persistent sidebar
-selects one view: `Main`, `Subagents`, `All profiles`, or `Routing`.
-Main and Subagents show only their assigned profile's prompt elements.
-Assigning a profile from a routing row inserts a kind-wide rule ahead of the
+opens fullscreen Prompt settings, laid out like `/model`. The persistent sidebar
+selects one view: `Main agent`, `Subagents`, `All profiles`, or `Selection rules`.
+Main agent and Subagents show only their assigned profile's prompt elements.
+Assigning a profile from the Profile row inserts a kind-wide rule ahead of the
 existing list, which can shadow model-qualified or deny rules; the row warns
 before the write. Use Tab or Left/Right to move between sidebar and content;
 Escape returns from nested screens. The sidebar also remains clickable while
 editing. Type-to-search filters the current pane.
+The `Session profile` header shows the current transcript's profile ID.
 
-Field rows present one document per constitution, base prompt, and appended
-instructions; inline/file representations are not separate UI rows. Enter opens
-the document directly. A configured `constitutionFile`, `promptFile`, or
+Role instructions, Base prompt, and Appended instructions each have one document
+row; inline/file representations are not separate UI rows. Enter opens
+the document directly. A configured `rolePromptFile`, `promptFile`, or
 `instructionsFile` opens at its resolved path; an unset base prompt opens
 the authoritative `src/prompts/system/system-prompt.md` template when package
 source is available. Existing files honor `$VISUAL` or `$EDITOR`; otherwise

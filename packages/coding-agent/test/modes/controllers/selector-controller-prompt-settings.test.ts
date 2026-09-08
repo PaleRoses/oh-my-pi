@@ -5,7 +5,7 @@ import type {
 	SystemPromptProfileRouteSetting,
 	SystemPromptProfileSetting,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import { IdentityHubComponent } from "@oh-my-pi/pi-coding-agent/modes/components/identity-hub";
+import { PromptSettingsComponent } from "@oh-my-pi/pi-coding-agent/modes/components/prompt-settings";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
@@ -47,7 +47,7 @@ function openHub(fixture: HubFixture) {
 	const requestRender = vi.fn(() => {
 		for (const resolve of renderWaiters.splice(0)) resolve();
 	});
-	let hub: IdentityHubComponent | undefined;
+	let hub: PromptSettingsComponent | undefined;
 	const ctx = {
 		editor,
 		editorContainer,
@@ -55,7 +55,7 @@ function openHub(fixture: HubFixture) {
 		openMarkdownFile,
 		ui: {
 			showOverlay: vi.fn(component => {
-				hub = component as IdentityHubComponent;
+				hub = component as PromptSettingsComponent;
 				return { hide, setHidden: vi.fn(), isHidden: () => false };
 			}),
 			setFocus,
@@ -76,8 +76,8 @@ function openHub(fixture: HubFixture) {
 		},
 	} as unknown as InteractiveModeContext;
 
-	new SelectorController(ctx).showIdentityHub();
-	if (hub === undefined) throw new Error("the identity hub was not mounted as a fullscreen overlay");
+	new SelectorController(ctx).showPromptSettings();
+	if (hub === undefined) throw new Error("prompt settings were not mounted as a fullscreen overlay");
 	return {
 		hub,
 		hide,
@@ -92,7 +92,7 @@ function openHub(fixture: HubFixture) {
 }
 
 /** Type the visible label, then move to that exact row rather than its adjacent options row. */
-function focusRow(hub: IdentityHubComponent, label: string): string {
+function focusRow(hub: PromptSettingsComponent, label: string): string {
 	hub.handleInput("\x1b[C");
 	for (const character of label) hub.handleInput(character);
 	const visited = new Set<string>();
@@ -109,7 +109,7 @@ function focusRow(hub: IdentityHubComponent, label: string): string {
 	}
 }
 
-describe("SelectorController identity hub", () => {
+describe("SelectorController prompt settings", () => {
 	it("hands focus back to whatever owns the editor slot when the hub closes", () => {
 		const host = openHub({ profiles: { driver: {} }, routes: [{ agentKind: "main", profile: "driver" }] });
 		// A hook approval prompt replaced the editor while the hub covered the

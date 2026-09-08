@@ -32,6 +32,7 @@ destined for upstream. Kept out of `CHANGELOG.md` so that file stays byte-identi
 
 ### Changed
 
+- Renamed the Identity hub to Prompt settings, Constitution to Role instructions, Main to Main agent, Pinned identity to Session profile, and Routes to Selection rules. Rename profile keys `constitution` / `constitutionFile` to `rolePrompt` / `rolePromptFile`; old keys are rejected. Prompt rendering and session-profile selection are unchanged.
 - Replaced the fixed constitution selector with profile-owned `constitution` / `constitutionFile` Markdown, using the existing document editor and source validation. Removed personal prose from the maintained template, normalized Role text once at compilation, and corrected constitution-only profile provenance. The former `constitution: fable` setting must be migrated to authored text or a file; it is no longer a preset.
 - Collapsed Identity hub navigation, picker, and save handling into single owners; removed redundant screen factories and state without changing its UI or configuration contract.
 - Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability

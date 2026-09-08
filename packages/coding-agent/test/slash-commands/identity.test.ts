@@ -102,7 +102,7 @@ describe("/identity slash command", () => {
 	});
 
 	it.each([
-		["constitution", "constitutionFile"],
+		["rolePrompt", "rolePromptFile"],
 		["prompt", "promptFile"],
 		["instructions", "instructionsFile"],
 	] as const)("switches %s sources exclusively and restores either source", async (inline, file) => {
@@ -129,16 +129,16 @@ describe("/identity slash command", () => {
 		}
 	});
 
-	it("preserves quoted constitution whitespace and template-looking text", async () => {
+	it("preserves quoted role instructions whitespace and template-looking text", async () => {
 		const harness = createRuntime();
 
 		await executeAcpBuiltinSlashCommand(
-			'/identity set driver constitution "Keep  {{literal}}   spacing"',
+			'/identity set driver rolePrompt "Keep  {{literal}}   spacing"',
 			harness.runtime,
 		);
 
 		expect(harness.store.systemPromptProfiles.driver).toEqual({
-			constitution: "Keep  {{literal}}   spacing",
+			rolePrompt: "Keep  {{literal}}   spacing",
 		});
 	});
 
@@ -152,40 +152,40 @@ describe("/identity slash command", () => {
 		expect(harness.flush).toHaveBeenCalledTimes(2);
 	});
 
-	it("summarizes constitution sources without exposing document prose", async () => {
-		const constitution = "# Private role\nKeep {{document}} literal.";
+	it("summarizes role instructions sources without exposing document prose", async () => {
+		const rolePrompt = "# Private role\nKeep {{document}} literal.";
 		const source = "roles/researcher.md";
 		const harness = createRuntime({
-			systemPromptProfiles: { driver: { constitution }, worker: { constitutionFile: source } },
+			systemPromptProfiles: { driver: { rolePrompt }, worker: { rolePromptFile: source } },
 		});
 
 		await executeAcpBuiltinSlashCommand("/identity status", harness.runtime);
 		const status = harness.output.mock.calls.at(-1)?.[0] as string;
-		expect(status).toContain(`constitution=inline (${constitution.length} chars)`);
-		expect(status).toContain(`constitution=file ${source}`);
-		expect(status).not.toContain(constitution);
+		expect(status).toContain(`rolePrompt=inline (${rolePrompt.length} chars)`);
+		expect(status).toContain(`rolePrompt=file ${source}`);
+		expect(status).not.toContain(rolePrompt);
 
 		await executeAcpBuiltinSlashCommand("/identity show driver", harness.runtime);
 		const inlineDetails = harness.output.mock.calls.at(-1)?.[0] as string;
-		expect(inlineDetails).toContain(`constitution: inline (${constitution.length} chars)`);
-		expect(inlineDetails).not.toContain(constitution);
+		expect(inlineDetails).toContain(`rolePrompt: inline (${rolePrompt.length} chars)`);
+		expect(inlineDetails).not.toContain(rolePrompt);
 		await executeAcpBuiltinSlashCommand("/identity show worker", harness.runtime);
-		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining(`constitutionFile: ${source}`));
+		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining(`rolePromptFile: ${source}`));
 		expect(harness.set).not.toHaveBeenCalled();
 	});
 
-	it("rejects missing, empty and conflicting constitution documents before writing", async () => {
+	it("rejects missing, empty and conflicting role instructions documents before writing", async () => {
 		const dir = TempDir.createSync("@identity-command-invalid-");
 		try {
-			const source = dir.join("constitution.md");
+			const source = dir.join("role-instructions.md");
 			const harness = createRuntime({
-				systemPromptProfiles: { driver: { constitution: "Original role" }, worker: {} },
+				systemPromptProfiles: { driver: { rolePrompt: "Original role" }, worker: {} },
 			});
 			const replaceFile = () =>
 				applyPromptProfileOperation(harness.runtime, {
 					type: "setField",
 					profileId: "driver",
-					field: "constitutionFile",
+					field: "rolePromptFile",
 					value: source,
 				});
 			await expect(replaceFile()).rejects.toThrow();
@@ -195,18 +195,18 @@ describe("/identity slash command", () => {
 				applyPromptProfileOperation(harness.runtime, {
 					type: "setField",
 					profileId: "driver",
-					field: "constitution",
+					field: "rolePrompt",
 					value: "   ",
 				}),
 			).rejects.toThrow();
-			expect(harness.store.systemPromptProfiles.driver).toEqual({ constitution: "Original role" });
+			expect(harness.store.systemPromptProfiles.driver).toEqual({ rolePrompt: "Original role" });
 			expect(harness.set).not.toHaveBeenCalled();
 			expect(harness.flush).not.toHaveBeenCalled();
 			expect(harness.notifyConfigChanged).not.toHaveBeenCalled();
 
 			await Bun.write(source, "# Valid file role");
 			const conflicting = createRuntime({
-				systemPromptProfiles: { driver: {}, worker: { constitution: "Role", constitutionFile: source } },
+				systemPromptProfiles: { driver: {}, worker: { rolePrompt: "Role", rolePromptFile: source } },
 			});
 			await expect(
 				applyPromptProfileOperation(conflicting.runtime, {

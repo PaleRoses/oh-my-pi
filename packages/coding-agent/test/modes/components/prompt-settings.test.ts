@@ -5,7 +5,7 @@ import type {
 	SystemPromptProfileRouteSetting,
 	SystemPromptProfileSetting,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import { IdentityHubComponent } from "@oh-my-pi/pi-coding-agent/modes/components/identity-hub";
+import { PromptSettingsComponent } from "@oh-my-pi/pi-coding-agent/modes/components/prompt-settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { applyPromptProfileOperation } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/prompt-profile";
 import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
@@ -32,7 +32,7 @@ function createHub(
 		rows?: number;
 	} = {},
 ) {
-	const dir = TempDir.createSync("@identity-hub-");
+	const dir = TempDir.createSync("@prompt-settings-");
 	temporary.push(dir);
 	const settings = Settings.isolated();
 	settings.set("systemPromptProfiles", options.profiles ?? { driver: {}, worker: {} });
@@ -51,17 +51,12 @@ function createHub(
 		startedEffect = true;
 		return promise;
 	};
-	const hub = new IdentityHubComponent(
+	const hub = new PromptSettingsComponent(
 		{ terminal } as TUI,
 		{
 			profiles: settings.get("systemPromptProfiles"),
 			routes: settings.get("systemPromptProfileRoutes"),
-			identity: {
-				role: "main",
-				profileId: "driver",
-				principal: "prompt-profile:driver",
-				source: "system-prompt-profile",
-			},
+			sessionProfileId: "driver",
 			maintainedPromptFile: path.join(dir.path(), "maintained.md"),
 		},
 		{
@@ -141,7 +136,7 @@ function createHub(
 	};
 }
 
-describe("IdentityHubComponent", () => {
+describe("PromptSettingsComponent", () => {
 	it("shows only the selected scope while keeping the sidebar reachable from a library profile", async () => {
 		const h = createHub({
 			profiles: {
@@ -178,41 +173,41 @@ describe("IdentityHubComponent", () => {
 		expect(h.row("Appended instructions")).toBe("");
 	});
 
-	it("returns from nested document options to Subagents rather than Main", async () => {
+	it("returns from nested document options to Subagents rather than Main agent", async () => {
 		const h = createHub({
-			profiles: { driver: { constitutionFile: "driver-only.md" }, worker: { constitutionFile: "worker-only.md" } },
+			profiles: { driver: { rolePromptFile: "driver-only.md" }, worker: { rolePromptFile: "worker-only.md" } },
 		});
 		await h.key(DOWN);
-		h.search("Constitution options");
+		h.search("Role instructions options");
 		await h.key("\n");
 		expect(h.pane()).toContain("Change the Markdown file");
 		h.select("Back");
 		await h.key("\n");
 		await h.key(ESCAPE); // Clear the root search, not the scope.
 		expect(h.row("Profile")).toContain("worker");
-		expect(h.row("Constitution")).toContain("worker-only.md");
+		expect(h.row("Role instructions")).toContain("worker-only.md");
 		expect(h.pane()).not.toContain("driver-only.md");
 		expect(h.closes()).toBe(0);
 	});
 
 	it("switches scope by mouse from an unsaved Markdown path without changing configuration", async () => {
-		const profiles = { driver: {}, worker: { constitution: "Worker role" } };
+		const profiles = { driver: {}, worker: { rolePrompt: "Worker role" } };
 		const h = createHub({ profiles });
 		await h.key(DOWN);
-		h.search("Constitution options");
+		h.search("Role instructions options");
 		await h.key("\n");
 		h.select("Use a Markdown file");
 		await h.key("\n");
 		h.hub.pasteText("unsaved.md");
 		expect(h.pane()).toContain("unsaved.md");
 
-		h.clickScope("Main");
+		h.clickScope("Main agent");
 
 		expect(h.row("Profile")).toContain("driver");
 		expect(h.pane()).not.toContain("unsaved.md");
 		expect(h.settings.get("systemPromptProfiles")).toEqual(profiles);
 		await h.key(DOWN);
-		h.search("Constitution options");
+		h.search("Role instructions options");
 		await h.key("\n");
 		h.select("Use a Markdown file");
 		await h.key("\n");
@@ -274,24 +269,24 @@ describe("IdentityHubComponent", () => {
 		expect(h.settings.get("systemPromptProfiles").driver.instructions).toBe("original edited");
 	});
 
-	it("validates constitution paths, edits the file directly, and restores the file source", async () => {
+	it("validates role instructions paths, edits the file directly, and restores the file source", async () => {
 		let workspace = "";
 		const h = createHub({
-			profiles: { driver: { constitution: "original", instructions: "untouched" }, worker: {} },
+			profiles: { driver: { rolePrompt: "original", instructions: "untouched" }, worker: {} },
 			open: async source => {
 				await Bun.write(path.resolve(workspace, source), "# Edited role");
 				return true;
 			},
 		});
 		workspace = h.dir.path();
-		h.search("Constitution options");
+		h.search("Role instructions options");
 		await h.key("\n");
 		h.select("Use a Markdown file");
 		await h.key("\n");
 		h.hub.pasteText("missing.md");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver).toEqual({
-			constitution: "original",
+			rolePrompt: "original",
 			instructions: "untouched",
 		});
 		// The rejected entry stays open with its text so it can be corrected.
@@ -300,21 +295,21 @@ describe("IdentityHubComponent", () => {
 		await Bun.write(source, "# File role");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver).toEqual({
-			constitutionFile: "missing.md",
+			rolePromptFile: "missing.md",
 			instructions: "untouched",
 		});
 
 		await h.key(ESCAPE); // Clear the root search after returning from the path entry.
-		h.search("Constitution");
+		h.search("Role instructions");
 		await h.key("\n");
 		expect(await Bun.file(source).text()).toBe("# Edited role");
 		expect(h.settings.get("systemPromptProfiles").driver).toEqual({
-			constitutionFile: "missing.md",
+			rolePromptFile: "missing.md",
 			instructions: "untouched",
 		});
 
 		await h.key(ESCAPE);
-		h.search("Constitution options");
+		h.search("Role instructions options");
 		await h.key("\n");
 		h.select("Restore default");
 		await h.key("\n");
@@ -344,43 +339,43 @@ describe("IdentityHubComponent", () => {
 		expect(h.settings.get("systemPromptProfiles").driver.memory).toBeUndefined();
 	});
 
-	it("edits constitution directly, preserves canceled or rejected edits, and restores inline content", async () => {
+	it("edits role instructions directly, preserves canceled or rejected edits, and restores inline content", async () => {
 		let edited: string | null = null;
 		let fail = true;
 		const h = createHub({
-			profiles: { driver: { constitution: "original" }, worker: {} },
+			profiles: { driver: { rolePrompt: "original" }, worker: {} },
 			edit: async () => edited,
 			failSave: () => fail,
 		});
-		h.select("Constitution");
+		h.select("Role instructions");
 		await h.key("\n");
-		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ constitution: "original" });
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ rolePrompt: "original" });
 
 		edited = "# New role\nKeep {{literal}} text.";
 		await h.key("\n");
-		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ constitution: "original" });
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ rolePrompt: "original" });
 		expect(h.render()).toContain("configuration is read-only");
 		fail = false;
 		await h.key("\n");
-		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ constitution: edited });
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ rolePrompt: edited });
 		expect(h.render()).not.toContain(edited);
 
-		h.search("Constitution options");
+		h.search("Role instructions options");
 		await h.key("\n");
 		h.select("Restore default");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver).toEqual({});
 	});
 
-	it("keeps constitution options and Back reachable in a narrow, short terminal", async () => {
+	it("keeps role instructions options and Back reachable in a narrow, short terminal", async () => {
 		const h = createHub({ columns: 62, rows: 18 });
-		h.select("Constitution options");
+		h.select("Role instructions options");
 		expect(h.frame().every(line => visibleWidth(line) <= 62)).toBe(true);
 		await h.key("\n");
 		h.select("Back");
 		expect(h.frame().every(line => visibleWidth(line) <= 62)).toBe(true);
 		await h.key("\n");
-		expect(h.selected()).toContain("Constitution options");
+		expect(h.selected()).toContain("Role instructions options");
 		expect(h.frame().every(line => visibleWidth(line) <= 62)).toBe(true);
 		expect(h.settings.get("systemPromptProfiles").driver).toEqual({});
 		expect(h.closes()).toBe(0);
@@ -427,8 +422,8 @@ describe("IdentityHubComponent", () => {
 			policy[1],
 			policy[3],
 		]);
-		// The session's own identity is pinned and cannot move under a route edit.
-		expect(h.pane()).toContain("prompt-profile:driver");
+		// The session's own profile is pinned and cannot move under a route edit.
+		expect(h.pane()).toContain("Session profile: driver");
 		await h.key("\n");
 		h.select("Clear assignment");
 		await h.key("\n");

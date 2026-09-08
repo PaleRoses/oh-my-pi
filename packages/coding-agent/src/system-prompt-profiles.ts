@@ -4,8 +4,8 @@ import { resolvePath } from "./extensibility/utils";
 
 export interface SystemPromptProfile {
 	readonly id: string;
-	/** Constitution text resolved once at profile compilation. */
-	readonly constitution?: string;
+	/** Role instructions resolved once at profile compilation. */
+	readonly rolePrompt?: string;
 	readonly prompt?: string;
 	readonly instructions?: string;
 	readonly projectContextOnly: boolean;
@@ -46,8 +46,8 @@ export function systemPromptProfileCacheKey(baseKey: string, profileId: string):
 
 const systemPromptProfileSchema = type({
 	"+": "reject",
-	"constitution?": "string",
-	"constitutionFile?": "string",
+	"rolePrompt?": "string",
+	"rolePromptFile?": "string",
 	"prompt?": "string",
 	"promptFile?": "string",
 	"instructions?": "string",
@@ -145,7 +145,7 @@ function compileModelMatcher(pattern: string, label: string): (model: string | u
 async function resolveProfileText(
 	profileId: string,
 	raw: typeof systemPromptProfileSchema.infer,
-	field: "prompt" | "instructions" | "constitution",
+	field: "prompt" | "instructions" | "rolePrompt",
 	cwd: string,
 ): Promise<string | undefined> {
 	const inline = raw[field];
@@ -166,10 +166,10 @@ async function compileProfile(
 ): Promise<SystemPromptProfile> {
 	const prompt = await resolveProfileText(profileId, raw, "prompt", cwd);
 	const instructions = await resolveProfileText(profileId, raw, "instructions", cwd);
-	const constitution = (await resolveProfileText(profileId, raw, "constitution", cwd))?.trim();
+	const rolePrompt = (await resolveProfileText(profileId, raw, "rolePrompt", cwd))?.trim();
 	return {
 		id: profileId,
-		constitution,
+		rolePrompt,
 		prompt,
 		instructions,
 		projectContextOnly: raw.projectContextOnly === true,

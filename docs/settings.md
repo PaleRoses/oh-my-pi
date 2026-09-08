@@ -379,17 +379,17 @@ See [Models](./models.md) for the `models.yml` schema and custom-provider defini
 
 #### System prompt profiles
 
-`systemPromptProfiles` defines named provider-facing prompt identities. A profile's `constitution` or `constitutionFile` supplies Markdown for the maintained prompt's Role section. `systemPromptProfileRoutes` selects the first matching identity from `agentKind` (`main` or `sub`) and an optional `model` glob over `provider/model`.
+`systemPromptProfiles` defines named prompt profiles. A profile's `rolePrompt` or `rolePromptFile` supplies Markdown for the maintained prompt's Role section. Ordered selection rules in `systemPromptProfileRoutes` choose a profile from `agentKind` (`main` or `sub`) and an optional `model` glob over `provider/model`.
 
-Routes are ordered and first-match: a model-qualified `main` route that selects a constitutional profile must precede generic `main`, which would otherwise match first. Model names never select a constitution.
+Selection rules are first-match: put a model-specific `main` rule before a generic `main` rule, which would otherwise match first. Role instructions come from the selected profile, never from a model name.
 
 ```yaml
 systemPromptProfiles:
   driver: {}
   reviewer:
-    constitutionFile: ~/.omp/agent/prompts/reviewer.md
+    rolePromptFile: ~/.omp/agent/prompts/reviewer.md
   worker:
-    instructionsFile: ~/.omp/agent/prompts/worker-constitution.md
+    instructionsFile: ~/.omp/agent/prompts/worker.md
     memory: false
     mcpServerInstructions: false
     projectContextOnly: true
@@ -404,30 +404,31 @@ systemPromptProfileRoutes:
     profile: worker
 ```
 
-Constitution text is loaded and its outer whitespace trimmed once when the profile compiles; interior Markdown is literal, not another template. Omit both sources to retain the generic Role paragraph. A custom base prompt takes precedence. File paths may be absolute, cwd-relative, or start with `~/`; missing/empty files, empty text, and simultaneous inline/file sources are rejected before saving. Model names never supply constitution text, and workers receive only their own selected profile.
+Role instructions are loaded and their outer whitespace trimmed once when the profile compiles; interior Markdown is literal, not another template. Omit both sources to retain the generic Role paragraph. A custom base prompt takes precedence. File paths may be absolute, cwd-relative, or start with `~/`; missing/empty files, empty text, and simultaneous inline/file sources are rejected before saving. Workers receive only their own selected profile.
 
 A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `instructions` or `instructionsFile` adds a final profile-owned system block after generated prompt context. `projectContextOnly: true` excludes context files outside the session cwd and its additional workspace roots. `contextImages` lists image paths injected once per conversation as hidden standing context in the message stream (system content is text-only, so images cannot ride the prompt itself). `userTitle` substitutes a name or phrase for "the user" throughout the maintained prompt (unset keeps the generic wording). `compactionIdentity` adds one paragraph to the compaction summarizer's system prompt so handover notes name the participants instead of writing generically about "the assistant" and "the user" (unset keeps the generic summarizer prompt).
 
 `tools` names the model-facing active tool set; session contracts stay intact (ask, a required yield, the checkpoint/rewind and task/hub pairings, and memory tools while profile memory is enabled), and the full registry remains available through `/tools`. A route may use `deny: true` and an optional `reason` instead of `profile`.
 
-Use `/identity` for the fullscreen hub instead of editing these records in the
-general settings panel. A persistent sidebar selects Main, Subagents, All profiles,
-or Routing; only that view's content is shown. Tab/Left/Right switch panes and
+Use `/identity` to open fullscreen Prompt settings instead of editing these records
+in the general settings panel. A persistent sidebar selects Main agent, Subagents,
+All profiles, or Selection rules; only that view's content is shown. Tab/Left/Right switch panes and
 Escape backs out of nested screens. Enter on a document opens its editor directly.
 Assignments prepend an unconditional `main` or `sub` rule;
-the hub warns that it can shadow model-qualified or deny rules. Prompt elements,
-including constitution documents, are editable in the hub.
+the editor warns that it can shadow model-qualified or deny rules. Prompt elements,
+including Role instructions, are editable here.
 `/identity status` and explicit subcommands remain textual. Referenced files
 are validated before saving. Restart OMP to apply changes; `/new` retains the
 current profile.
+The Session profile header shows the current transcript's profile ID.
 
 OMP pins the selected profile ID when it creates the transcript. Resume, model cycling, prewalk, and retry fallback may continue only when routing still selects that ID. A live switch may enter only a transcript pinned to the same profile and leaves the current session intact if its saved model is incompatible. Changing prompt identity requires a new OMP process and transcript; `/new` intentionally inherits the current profile.
 When Hindsight retention runs, the profile's immutable effective identity supplies the retained `prompt`, `principal`, and `prompt-source` provenance; see [recall](./tools/recall.md).
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `systemPromptProfiles` | record | `{}` | Named profiles with `constitution` / `constitutionFile`, `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, `mcpServerInstructions`, `contextImages`, `userTitle`, `compactionIdentity`, and `tools`. |
-| `systemPromptProfileRoutes` | array | `[]` | Ordered first-match routes selected by optional `agentKind` and `model` glob. Each route names a `profile` or sets `deny: true`; a model-qualified constitutional `main` route must precede generic `main`. |
+| `systemPromptProfiles` | record | `{}` | Named profiles with `rolePrompt` / `rolePromptFile`, `prompt` / `promptFile`, `instructions` / `instructionsFile`, `projectContextOnly`, `memory`, `mcpServerInstructions`, `contextImages`, `userTitle`, `compactionIdentity`, and `tools`. |
+| `systemPromptProfileRoutes` | array | `[]` | Ordered first-match selection rules with optional `agentKind` and `model` glob. Each rule names a `profile` or sets `deny: true`; model-specific `main` rules must precede generic `main` rules. |
 
 ### Advisor
 

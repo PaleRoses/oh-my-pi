@@ -400,8 +400,8 @@ export type SystemPromptProfileAgentKind = "main" | "sub";
 
 export interface SystemPromptProfileSetting {
 	/** Markdown replacing the maintained system prompt's Role text. */
-	readonly constitution?: string;
-	readonly constitutionFile?: string;
+	readonly rolePrompt?: string;
+	readonly rolePromptFile?: string;
 	readonly prompt?: string;
 	readonly promptFile?: string;
 	readonly instructions?: string;

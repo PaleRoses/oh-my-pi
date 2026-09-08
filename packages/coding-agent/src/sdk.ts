@@ -2807,7 +2807,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				? "explicit-system-prompt"
 				: selectedSystemPromptProfile?.prompt !== undefined ||
 					  selectedSystemPromptProfile?.instructions !== undefined ||
-					  selectedSystemPromptProfile?.constitution !== undefined
+					  selectedSystemPromptProfile?.rolePrompt !== undefined
 					? "system-prompt-profile"
 					: selectedSystemPromptProfile === undefined &&
 						  options.customSystemPrompt !== undefined &&

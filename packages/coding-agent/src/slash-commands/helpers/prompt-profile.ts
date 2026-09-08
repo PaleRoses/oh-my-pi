@@ -10,13 +10,13 @@ import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, Subco
 import { commandConsumed, errorMessage } from "./parse";
 
 export const PROMPT_PROFILE_RESTART_NOTICE =
-	"Global config updated. Restart OMP to load the new prompt identity; /new keeps the current profile. Project and --config overrides still take precedence.";
+	"Global config updated. Restart OMP to load the new prompt settings; /new keeps the current profile. Project and --config overrides still take precedence.";
 
 export const IDENTITY_SUBCOMMANDS: SubcommandDef[] = [
-	{ name: "status", description: "Show active identity, configured profiles, and routes" },
+	{ name: "status", description: "Show active identity, configured profiles, and selection rules" },
 	{ name: "show", description: "Show every element of one profile", usage: "<profile>" },
-	{ name: "use", description: "Route an agent kind to a profile", usage: "<profile> [main|sub]" },
-	{ name: "unroute", description: "Remove the unconditional route for an agent kind", usage: "[main|sub]" },
+	{ name: "use", description: "Select a profile for an agent kind", usage: "<profile> [main|sub]" },
+	{ name: "unroute", description: "Remove the unconditional selection rule for an agent kind", usage: "[main|sub]" },
 	{
 		name: "set",
 		description: "Set one profile element; creates the profile when absent",
@@ -31,15 +31,15 @@ export type PromptProfileField = keyof SystemPromptProfileSetting;
 
 export type PromptProfileFieldDefinition = { readonly label: string; readonly aliases?: readonly string[] } & (
 	| {
-			readonly field: "constitution" | "prompt" | "instructions";
+			readonly field: "rolePrompt" | "prompt" | "instructions";
 			readonly input: "markdown";
-			readonly file: "constitutionFile" | "promptFile" | "instructionsFile";
+			readonly file: "rolePromptFile" | "promptFile" | "instructionsFile";
 	  }
 	| { readonly field: "userTitle" | "compactionIdentity"; readonly input: "markdown" }
 	| {
-			readonly field: "constitutionFile" | "promptFile" | "instructionsFile";
+			readonly field: "rolePromptFile" | "promptFile" | "instructionsFile";
 			readonly input: "file";
-			readonly inline: "constitution" | "prompt" | "instructions";
+			readonly inline: "rolePrompt" | "prompt" | "instructions";
 	  }
 	| {
 			readonly field: "projectContextOnly" | "memory" | "mcpServerInstructions";
@@ -50,8 +50,8 @@ export type PromptProfileFieldDefinition = { readonly label: string; readonly al
 );
 
 export const PROMPT_PROFILE_FIELDS = {
-	constitution: { field: "constitution", label: "Constitution", input: "markdown", file: "constitutionFile" },
-	constitutionFile: { field: "constitutionFile", label: "Constitution file", input: "file", inline: "constitution" },
+	rolePrompt: { field: "rolePrompt", label: "Role instructions", input: "markdown", file: "rolePromptFile" },
+	rolePromptFile: { field: "rolePromptFile", label: "Role instructions file", input: "file", inline: "rolePrompt" },
 	prompt: { field: "prompt", label: "Base prompt", input: "markdown", file: "promptFile" },
 	promptFile: { field: "promptFile", label: "Base prompt file", input: "file", inline: "prompt" },
 	instructions: {
@@ -102,7 +102,7 @@ export const PROMPT_PROFILE_FIELD_DEFINITIONS = (
 		"memory",
 		"mcpServerInstructions",
 		"userTitle",
-		"constitution",
+		"rolePrompt",
 	] as const
 ).map(field => PROMPT_PROFILE_FIELDS[field]);
 
@@ -228,13 +228,13 @@ function describeText(value: string | undefined, file?: string, fallback = "none
 }
 
 function describeProfile(profileId: string, profile: SystemPromptProfileSetting): string {
-	const constitution = describeText(profile.constitution, profile.constitutionFile);
+	const rolePrompt = describeText(profile.rolePrompt, profile.rolePromptFile);
 	const base = describeText(profile.prompt || undefined, profile.promptFile, "maintained");
 	const appended = describeText(profile.instructions, profile.instructionsFile);
-	return `${profileId}: constitution=${constitution}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
+	return `${profileId}: rolePrompt=${rolePrompt}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
 }
 
-/** One ordered routing rule, rendered for both the textual status and the hub's route list. */
+/** One ordered routing rule, rendered for both the textual status and the prompt settings selection-rule list. */
 export function formatProfileRoute(route: SystemPromptProfileRouteSetting, index: number): string {
 	const selector = `${route.agentKind ?? "*"} · ${route.model ?? "*"}`;
 	const target = route.deny === true ? `deny${route.reason ? ` (${route.reason})` : ""}` : route.profile;
@@ -252,7 +252,7 @@ function formatIdentityStatus(runtime: IdentityCommandRuntime): string {
 		formatAgentIdentityReport(snapshotAgentIdentity(runtime.session)),
 		"Configured profiles:",
 		...(profileLines.length > 0 ? profileLines : ["  none"]),
-		"Configured routes (first match wins):",
+		"Selection rules (first match wins):",
 		...(routeLines.length > 0 ? routeLines : ["  none"]),
 		"Use /identity help for the compact mutation form.",
 	].join("\n");
@@ -261,8 +261,8 @@ function formatIdentityStatus(runtime: IdentityCommandRuntime): string {
 function formatProfileDetails(profileId: string, profile: SystemPromptProfileSetting): string {
 	return [
 		`System prompt profile: ${profileId}`,
-		`constitution: ${describeText(profile.constitution)}`,
-		`constitutionFile: ${profile.constitutionFile ?? "none"}`,
+		`rolePrompt: ${describeText(profile.rolePrompt)}`,
+		`rolePromptFile: ${profile.rolePromptFile ?? "none"}`,
 		`prompt: ${describeText(profile.prompt)}`,
 		`promptFile: ${profile.promptFile ?? "none"}`,
 		`instructions: ${describeText(profile.instructions)}`,

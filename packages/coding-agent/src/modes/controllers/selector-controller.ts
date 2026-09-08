@@ -97,13 +97,13 @@ import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
 import { listLiveToolRecords, liveToolRecordFromSession } from "../components/extensions/live-tool-session";
 import { HistorySearchComponent } from "../components/history-search";
-import { IdentityHubComponent } from "../components/identity-hub";
 import { LoginDialogComponent } from "../components/login-dialog";
 import { LogoutAccountSelectorComponent } from "../components/logout-account-selector";
 import { ModelHubComponent, type ModelRoleSelectionScope } from "../components/model-hub";
 import { ModelPickerComponent } from "../components/model-picker";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
 import { PluginSelectorComponent } from "../components/plugin-selector";
+import { PromptSettingsComponent } from "../components/prompt-settings";
 import { ReadToolGroupComponent } from "../components/read-tool-group";
 import { ResetUsageSelectorComponent } from "../components/reset-usage-selector";
 import { type BranchVariantPath, RewindSelectorComponent } from "../components/rewind-selector";
@@ -193,7 +193,7 @@ export class SelectorController {
 	}
 
 	/**
-	 * Bare `/identity`: the fullscreen identity hub on the alternate screen,
+	 * Bare `/identity`: fullscreen prompt settings on the alternate screen,
 	 * mounted through the one modal path shared with Settings, Model Hub and
 	 * Agent Hub. Profile writes go through the canonical
 	 * `applyPromptProfileOperation`, which validates the candidate
@@ -201,9 +201,9 @@ export class SelectorController {
 	 * interactive external-editor owner: it stops the TUI for the child
 	 * process and restarts it afterwards, and because this overlay is still
 	 * the topmost visible one the restart re-enters the alternate screen with
-	 * mouse tracking and repaints the hub.
+	 * mouse tracking and repaints prompt settings.
 	 */
-	showIdentityHub(): void {
+	showPromptSettings(): void {
 		let closed = false;
 		const done = () => {
 			// Idempotent: a second close would hide an already-hidden overlay
@@ -214,19 +214,13 @@ export class SelectorController {
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
-		const identity = this.ctx.session.effectiveIdentity;
 		const cwd = this.ctx.sessionManager.getCwd();
-		const hub = new IdentityHubComponent(
+		const hub = new PromptSettingsComponent(
 			this.ctx.ui,
 			{
 				profiles: this.ctx.settings.get("systemPromptProfiles"),
 				routes: this.ctx.settings.get("systemPromptProfileRoutes"),
-				identity: {
-					role: identity.role,
-					profileId: identity.prompt.profileId,
-					principal: identity.prompt.principal,
-					source: identity.prompt.source,
-				},
+				sessionProfileId: this.ctx.session.effectiveIdentity.prompt.profileId,
 				maintainedPromptFile: resolveMaintainedSystemPromptFilePath(),
 			},
 			{

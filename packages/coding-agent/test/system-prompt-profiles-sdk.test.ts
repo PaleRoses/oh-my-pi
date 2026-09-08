@@ -22,7 +22,7 @@ const EMPTY_TREE = {
 	agentsMdFiles: [],
 };
 
-const CONSTITUTION = "Keep {{userTitle}} literal.\n{{#if tools}}<boundary>& unchanged</boundary>{{/if}}";
+const ROLE_PROMPT = "Keep {{userTitle}} literal.\n{{#if tools}}<boundary>& unchanged</boundary>{{/if}}";
 
 function routedSettings(workerMemory = false): Settings {
 	return Settings.isolated({
@@ -31,7 +31,7 @@ function routedSettings(workerMemory = false): Settings {
 		"retry.enabled": false,
 		systemPromptProfiles: {
 			driver: { prompt: "DRIVER CONSTITUTION" },
-			principal: { constitution: CONSTITUTION },
+			principal: { rolePrompt: ROLE_PROMPT },
 			worker: {
 				instructions: "WORKER CONSTITUTION",
 				projectContextOnly: true,
@@ -133,23 +133,23 @@ describe("SDK system prompt profiles", () => {
 			source: "system-prompt-profile",
 		});
 	});
-	it("renders the routed constitution literally inside Role without leaking it to other profiles", async () => {
-		const constitutional = await create("constitutional-main");
+	it("renders the routed role instructions literally inside Role without leaking them to other profiles", async () => {
+		const principal = await create("constitutional-main");
 		const generic = await create("fable-in-name");
 		const worker = await create("constitutional-main", routedSettings(), { taskDepth: 1 });
-		const constitutionalPrompt = constitutional.agent.state.systemPrompt.join("\n\n");
+		const principalPrompt = principal.agent.state.systemPrompt.join("\n\n");
 
-		expect(constitutional.systemPromptProfileId).toBe("principal");
-		expect(constitutional.effectiveIdentity.prompt).toEqual({
+		expect(principal.systemPromptProfileId).toBe("principal");
+		expect(principal.effectiveIdentity.prompt).toEqual({
 			profileId: "principal",
 			principal: "prompt-profile:principal",
 			source: "system-prompt-profile",
 		});
-		expect(constitutionalPrompt).toContain(`§ Role\n${CONSTITUTION}\n\n# Engineering`);
+		expect(principalPrompt).toContain(`§ Role\n${ROLE_PROMPT}\n\n# Engineering`);
 		expect(generic.systemPromptProfileId).toBe("driver");
-		expect(generic.agent.state.systemPrompt.join("\n\n")).not.toContain(CONSTITUTION);
+		expect(generic.agent.state.systemPrompt.join("\n\n")).not.toContain(ROLE_PROMPT);
 		expect(worker.systemPromptProfileId).toBe("worker");
-		expect(worker.agent.state.systemPrompt.join("\n\n")).not.toContain(CONSTITUTION);
+		expect(worker.agent.state.systemPrompt.join("\n\n")).not.toContain(ROLE_PROMPT);
 	});
 
 	it("injects the active Hindsight bank, project, and scope into the runtime identity prompt", async () => {
@@ -371,7 +371,7 @@ describe("SDK system prompt profiles", () => {
 
 		expect(prompt).toContain("EXPLICIT SYSTEM PROMPT");
 		expect(prompt).not.toContain("DRIVER CONSTITUTION");
-		expect(prompt).not.toContain(CONSTITUTION);
+		expect(prompt).not.toContain(ROLE_PROMPT);
 		expect(session.effectiveIdentity.prompt).toEqual({
 			profileId: model === "driver-primary" ? "driver" : "principal",
 			principal: "explicit-system-prompt",
@@ -434,13 +434,13 @@ describe("SDK system prompt profiles", () => {
 		await expect(session.setModel(incompatible)).rejects.toThrow('pinned to system prompt profile "driver"');
 		expect(session.model?.id).toBe("driver-secondary");
 	});
-	it("pins file-backed constitutional content and cache identity across model changes", async () => {
+	it("pins file-backed role instructions and cache identity across model changes", async () => {
 		const settings = routedSettings();
 		settings.override("includeModelInPrompt", false);
-		await Bun.write(dir.join("charter.md"), `${CONSTITUTION}\n`);
+		await Bun.write(dir.join("charter.md"), `${ROLE_PROMPT}\n`);
 		settings.override("systemPromptProfiles", {
 			...settings.get("systemPromptProfiles"),
-			principal: { constitutionFile: "charter.md" },
+			principal: { rolePromptFile: "charter.md" },
 		});
 		const session = await create("constitutional-primary", settings);
 		const initialPrompt = session.agent.state.systemPrompt.join("\n\n");
@@ -458,10 +458,10 @@ describe("SDK system prompt profiles", () => {
 		const compatiblePrompt = session.agent.state.systemPrompt.join("\n\n");
 		const compatibleCacheKey = session.agent.promptCacheKey;
 		expect(session.systemPromptProfileId).toBe("principal");
-		expect(compatiblePrompt).toContain(`§ Role\n${CONSTITUTION}\n\n# Engineering`);
+		expect(compatiblePrompt).toContain(`§ Role\n${ROLE_PROMPT}\n\n# Engineering`);
 		expect(compatiblePrompt).not.toContain("Changed after session creation");
 		expect(compatibleCacheKey).toContain("system-prompt-profile:principal");
-		expect(initialPrompt).toContain(CONSTITUTION);
+		expect(initialPrompt).toContain(ROLE_PROMPT);
 		expect(compatibleCacheKey).toBe(initialCacheKey);
 
 		await expect(session.setModel(incompatible)).rejects.toThrow('pinned to system prompt profile "principal"');
