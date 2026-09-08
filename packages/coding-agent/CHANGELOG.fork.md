@@ -32,6 +32,7 @@ destined for upstream. Kept out of `CHANGELOG.md` so that file stays byte-identi
 
 ### Changed
 
+- Collapsed Identity hub navigation, picker, and save handling into single owners; removed redundant screen factories and state without changing its UI or configuration contract.
 - Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability
 - Restored the built-in `eval` tool name while retaining persistent runtimes, tool re-entry, and artifact-backed output.
 - Code Mode no longer injects `eval` when the caller omitted it. A restricted tool set without `eval` stays without `eval`, and Code Mode stays inactive.
