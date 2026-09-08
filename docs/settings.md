@@ -411,8 +411,10 @@ A profile with no `prompt` or `promptFile` uses the maintained OMP prompt. `inst
 `tools` names the model-facing active tool set; session contracts stay intact (ask, a required yield, the checkpoint/rewind and task/hub pairings, and memory tools while profile memory is enabled), and the full registry remains available through `/tools`. A route may use `deny: true` and an optional `reason` instead of `profile`.
 
 Use `/identity` for the fullscreen hub instead of editing these records in the
-general settings panel. Main and Subagents come first, followed by All profiles
-and ordered Routing. Assignments prepend an unconditional `main` or `sub` rule;
+general settings panel. A persistent sidebar selects Main, Subagents, All profiles,
+or Routing; only that view's content is shown. Tab/Left/Right switch panes and
+Escape backs out of nested screens. Enter on a document opens its editor directly.
+Assignments prepend an unconditional `main` or `sub` rule;
 the hub warns that it can shadow model-qualified or deny rules. Prompt elements,
 including the closed constitution choice, are editable in the hub.
 `/identity status` and explicit subcommands remain textual. Referenced files

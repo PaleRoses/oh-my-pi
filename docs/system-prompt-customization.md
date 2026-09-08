@@ -79,24 +79,25 @@ Profiles support these prompt fields:
 - `tools` names the model-facing active tool set (lowercased, deduplicated at compile). The cut intersects the assembled set — built-ins, custom, and extension tools alike — while preserving session contracts: `ask` stays reachable while enabled, a required `yield` survives, `checkpoint`/`rewind` remain paired, `hub` rides along whenever `task` is listed (an orchestrator that can spawn subagents can always steer, wait on, and cancel them — from eval cells too), and memory tools ride the profile's `memory` axis rather than the list. The full registry stays constructed, so `/tools` can re-activate anything outside the profile's default set. Empty or omitted keeps every tool.
 
 `/identity` is the operator surface for these settings. Bare `/identity`
-opens a fullscreen grouped hub in the interactive TUI: `Main` and
-`Subagents` each show the routed profile and that profile's prompt elements,
-then `All profiles` lists the library and `Routing` shows the ordered rules.
+opens a fullscreen split-pane hub like `/model`. The persistent sidebar
+selects one view: `Main`, `Subagents`, `All profiles`, or `Routing`.
+Main and Subagents show only their assigned profile's prompt elements.
 Assigning a profile from a routing row inserts a kind-wide rule ahead of the
 existing list, which can shadow model-qualified or deny rules; the row warns
-before the write. The hub supports type-to-search, section jumps, and mouse
-selection, and writes take effect for future sessions.
+before the write. Use Tab or Left/Right to move between sidebar and content;
+Escape returns from nested screens. The sidebar also remains clickable while
+editing. Type-to-search filters the current pane.
 
 Field rows present one base-prompt document and one appended-instructions
 document; the inline and file-backed configuration representations are not
-separate UI rows. A configured `promptFile` or `instructionsFile` opens at its
-resolved path. When the base prompt uses maintained OMP defaults and package
-source is available, the hub opens the authoritative
-`src/prompts/system/system-prompt.md` template directly. OMP uses `$VISUAL` or
-`$EDITOR` when configured and otherwise opens a real file through the macOS
-desktop application. Explicitly inline configuration still round-trips through
-the external Markdown editor. Changing the configured file path remains a
-separate action.
+separate UI rows. Enter opens the document directly. A configured `promptFile`
+or `instructionsFile` opens at its resolved path; an unset base prompt opens
+the authoritative `src/prompts/system/system-prompt.md` template when package
+source is available. Existing files honor `$VISUAL` or `$EDITOR`; otherwise
+macOS prefers installed VS Code, then its default text editor—not the app
+associated with Markdown viewing. Inline content still round-trips through the
+configured external editor. Adjacent document-options rows change the source
+file or restore the default.
 
 `/identity status` shows the active immutable identity plus every configured
 profile and route; bare `/identity` is also textual in ACP.

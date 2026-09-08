@@ -1,6 +1,7 @@
 /**
  * Utilities for launching an external text editor ($VISUAL / $EDITOR).
  */
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -24,8 +25,21 @@ export function getEditorCommand(): string | undefined {
 	return undefined;
 }
 
+/** Open existing files in an editor, not their viewer association. Explicit
+ * VISUAL/EDITOR wins; macOS otherwise prefers VS Code, then the default text editor. */
 export function getFileEditorCommand(): string | undefined {
-	return getEditorCommand() ?? (process.platform === "darwin" ? "/usr/bin/open" : undefined);
+	const configured = getEditorCommand();
+	if (configured) return configured;
+	if (process.platform !== "darwin") return undefined;
+
+	// VS Code's CLI shim is optional, so fall back to launching the app bundle itself.
+	const cli = $which("code");
+	if (cli) return `'${cli.replaceAll("'", `'\\''`)}'`;
+	for (const dir of [path.join(os.homedir(), "Applications"), "/Applications"]) {
+		const bundle = path.join(dir, "Visual Studio Code.app");
+		if (existsSync(bundle)) return `/usr/bin/open -a '${bundle.replaceAll("'", `'\\''`)}'`;
+	}
+	return "/usr/bin/open -t";
 }
 
 export interface OpenFileInEditorOptions {

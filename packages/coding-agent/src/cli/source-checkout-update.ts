@@ -18,6 +18,7 @@ const FORK_VALIDATION_TESTS = [
 	"test/modes/controllers/selector-controller-identity.test.ts",
 	"test/slash-commands/identity.test.ts",
 	"test/identity-surfaces.test.ts",
+	"test/external-editor.test.ts",
 	"test/system-prompt-profiles.test.ts",
 	"test/system-prompt-profiles-sdk.test.ts",
 	"test/system-prompt-model.test.ts",

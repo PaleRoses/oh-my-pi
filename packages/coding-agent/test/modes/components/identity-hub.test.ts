@@ -6,7 +6,7 @@ import type {
 	SystemPromptProfileSetting,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { IdentityHubComponent } from "@oh-my-pi/pi-coding-agent/modes/components/identity-hub";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { applyPromptProfileOperation } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/prompt-profile";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -14,6 +14,12 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 beforeAll(() => initTheme());
 const temporary: TempDir[] = [];
 afterEach(() => temporary.splice(0).forEach(dir => dir.removeSync()));
+
+const UP = "\x1b[A";
+const DOWN = "\x1b[B";
+const RIGHT = "\x1b[C";
+const LEFT = "\x1b[D";
+const ESCAPE = "\x1b";
 
 function createHub(
 	options: {
@@ -37,6 +43,7 @@ function createHub(
 	);
 	const terminal = { rows: 32, columns: 120 };
 	let startedEffect = false;
+	let closes = 0;
 	const renders: Array<() => void> = [];
 	const track = <T>(promise: Promise<T>): Promise<T> => {
 		startedEffect = true;
@@ -65,23 +72,64 @@ function createHub(
 				),
 			onEditMarkdown: content => track(options.edit?.(content) ?? Promise.resolve(null)),
 			onOpenMarkdownFile: file => track(options.open?.(file) ?? Promise.resolve(true)),
-			onClose: () => {},
+			onClose: () => {
+				closes += 1;
+			},
 			requestRender: () => renders.splice(0).forEach(resolve => resolve()),
 		},
 	);
 	hub.focused = true;
+	const frame = () => hub.render(terminal.columns).map(line => Bun.stripANSI(line));
+	// Only split-pane cells: receipts and footer text cannot masquerade as rows.
+	const pane = () => {
+		const lines = frame();
+		const border = theme.boxRound.vertical;
+		const header = lines.find(line => line.startsWith(border));
+		const divider = header?.indexOf(border, border.length) ?? -1;
+		return lines.flatMap(line => {
+			if (divider < 0 || !line.startsWith(border) || !line.startsWith(border, divider)) return [];
+			// Input cursor markers can make stripANSI consume the trailing frame border.
+			const end = line.lastIndexOf(border);
+			return [line.slice(divider + border.length, end > divider ? end : undefined).trim()];
+		});
+	};
+	const selected = () => pane().find(line => line.startsWith(`${theme.nav.cursor} `)) ?? "";
+	const rowLabel = (line: string) =>
+		line
+			.replace(`${theme.nav.cursor} `, "")
+			.split(/\s{2,}/)[0]
+			.replace(` ${theme.status.warning}`, "");
+	const select = (label: string) => {
+		hub.handleInput(RIGHT);
+		const visited = new Set<string>();
+		while (rowLabel(selected()) !== label) {
+			const current = selected();
+			if (visited.has(current)) throw new Error(`No selectable row named ${label}`);
+			visited.add(current);
+			hub.handleInput(DOWN);
+		}
+	};
 	return {
 		hub,
 		settings,
 		dir,
-		terminal,
-		render: () =>
-			hub
-				.render(terminal.columns)
-				.map(line => Bun.stripANSI(line))
-				.join("\n"),
+		closes: () => closes,
+		frame,
+		render: () => frame().join("\n"),
+		pane: () => pane().join("\n"),
+		row: (label: string) => pane().find(line => rowLabel(line) === label) ?? "",
+		selected,
+		select,
 		search: (label: string) => {
 			for (const character of label) hub.handleInput(character);
+			select(label);
+		},
+		clickScope: (label: string) => {
+			const lines = frame();
+			const row = lines.findIndex(line => line.split(theme.boxRound.vertical)[1]?.includes(` ${label} `));
+			if (row < 0) throw new Error(`No sidebar scope named ${label}`);
+			const col = lines[row].indexOf(label);
+			hub.handleInput(`\x1b[<0;${col + 1};${row + 1}M`);
 		},
 		key: async (data: string) => {
 			startedEffect = false;
@@ -92,6 +140,169 @@ function createHub(
 }
 
 describe("IdentityHubComponent", () => {
+	it("shows only the selected scope while keeping the sidebar reachable from a library profile", async () => {
+		const h = createHub({
+			profiles: {
+				driver: { instructionsFile: "driver-only.md" },
+				worker: { instructionsFile: "worker-only.md" },
+			},
+		});
+		expect(h.row("Profile")).toContain("driver");
+		expect(h.row("Appended instructions")).toContain("driver-only.md");
+		expect(h.pane()).not.toContain("worker-only.md");
+		expect(h.pane()).not.toContain("main · * -> driver");
+
+		await h.key(DOWN); // Default arrow ownership is the sidebar.
+		expect(h.row("Profile")).toContain("worker");
+		expect(h.row("Appended instructions")).toContain("worker-only.md");
+		expect(h.pane()).not.toContain("driver-only.md");
+
+		await h.key(DOWN);
+		await h.key("\t");
+		h.search("driver");
+		await h.key("\n");
+		expect(h.row("Back to All profiles")).toContain("Esc");
+		expect(h.row("Appended instructions")).toContain("driver-only.md");
+		await h.key(LEFT);
+		await h.key(UP);
+		expect(h.row("Profile")).toContain("worker");
+		expect(h.row("Appended instructions")).toContain("worker-only.md");
+		expect(h.pane()).not.toContain("driver-only.md");
+
+		await h.key(DOWN);
+		await h.key(DOWN);
+		expect(h.pane()).toContain("main · * -> driver");
+		expect(h.pane()).toContain("sub · * -> worker");
+		expect(h.row("Appended instructions")).toBe("");
+	});
+
+	it("returns from nested document options to Subagents rather than Main", async () => {
+		const h = createHub({
+			profiles: { driver: { instructionsFile: "driver-only.md" }, worker: { instructionsFile: "worker-only.md" } },
+		});
+		await h.key(DOWN);
+		h.search("Appended instructions options");
+		await h.key("\n");
+		expect(h.pane()).toContain("Change the Markdown file");
+		h.select("Back");
+		await h.key("\n");
+		await h.key(ESCAPE); // Clear the root search, not the scope.
+		expect(h.row("Profile")).toContain("worker");
+		expect(h.row("Appended instructions")).toContain("worker-only.md");
+		expect(h.pane()).not.toContain("driver-only.md");
+		expect(h.closes()).toBe(0);
+	});
+
+	it("switches scope by mouse from an unsaved Markdown path without changing configuration", async () => {
+		const profiles = { driver: {}, worker: { instructions: "Worker instructions" } };
+		const h = createHub({ profiles });
+		await h.key(DOWN);
+		h.search("Appended instructions options");
+		await h.key("\n");
+		h.select("Use a Markdown file");
+		await h.key("\n");
+		h.hub.pasteText("unsaved.md");
+		expect(h.pane()).toContain("unsaved.md");
+
+		h.clickScope("Main");
+
+		expect(h.row("Profile")).toContain("driver");
+		expect(h.pane()).not.toContain("unsaved.md");
+		expect(h.settings.get("systemPromptProfiles")).toEqual(profiles);
+		await h.key(DOWN);
+		h.search("Appended instructions options");
+		await h.key("\n");
+		h.select("Use a Markdown file");
+		await h.key("\n");
+		expect(h.pane()).toContain("Markdown file path");
+		expect(h.pane()).not.toContain("unsaved.md");
+	});
+
+	it("steps Escape through nested screen, root search, sidebar, then close", async () => {
+		const h = createHub();
+		h.search("Profile");
+		await h.key("\n");
+		expect(h.pane()).toContain("Clear assignment");
+		await h.key(ESCAPE);
+		expect(h.pane()).not.toContain("Clear assignment");
+		expect(h.pane()).toContain("Search: Profile");
+		expect(h.closes()).toBe(0);
+		await h.key(ESCAPE);
+		expect(h.pane()).not.toContain("Search: Profile");
+		expect(h.row("Appended instructions")).toContain("Not configured");
+		expect(h.closes()).toBe(0);
+		await h.key(ESCAPE); // pane -> sidebar
+		expect(h.closes()).toBe(0);
+		await h.key(ESCAPE); // sidebar -> close
+		expect(h.closes()).toBe(1);
+	});
+
+	it("opens the maintained Markdown file on the first activation", async () => {
+		const opened: string[] = [];
+		const h = createHub({
+			open: async file => {
+				opened.push(file);
+				return true;
+			},
+		});
+		h.search("Base prompt");
+		await h.key("\n");
+		expect(opened).toEqual([path.join(h.dir.path(), "maintained.md")]);
+		expect(h.render()).toContain("Opened ");
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({});
+	});
+
+	it.each([false, undefined])("does not claim a Markdown file opened when the opener returns %s", async result => {
+		const h = createHub({ open: async () => result });
+		h.search("Base prompt");
+		await h.key("\n");
+		expect(h.render()).toContain("Could not open");
+		expect(h.render()).not.toContain("Opened ");
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({});
+		expect(h.closes()).toBe(0);
+	});
+
+	it("edits appended instructions inline on the first activation and saves the result", async () => {
+		const h = createHub({
+			profiles: { driver: { instructions: "original" }, worker: {} },
+			edit: async text => `${text} edited`,
+		});
+		h.search("Appended instructions");
+		await h.key("\n");
+		expect(h.settings.get("systemPromptProfiles").driver.instructions).toBe("original edited");
+	});
+
+	it("validates Markdown paths from the document options and atomically replaces the inline source", async () => {
+		const h = createHub({ profiles: { driver: { instructions: "original" }, worker: {} } });
+		await h.key(RIGHT);
+		h.search("Appended instructions options");
+		expect(h.selected()).toContain("Appended instructions options");
+		await h.key("\n");
+		expect(h.render()).toContain("Use a Markdown file");
+		h.select("Use a Markdown file");
+		await h.key("\n");
+		h.hub.pasteText("missing.md");
+		await h.key("\n");
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ instructions: "original" });
+		// The rejected entry stays open with its text so it can be corrected.
+		expect(h.pane()).toContain("missing.md");
+		await Bun.write(path.join(h.dir.path(), "missing.md"), "# File instructions\n");
+		await h.key("\n");
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ instructionsFile: "missing.md" });
+		expect(h.render()).not.toContain("Use a Markdown file");
+	});
+
+	it("restores a document default from the document options", async () => {
+		const h = createHub({ profiles: { driver: { userTitle: "Rosalia" }, worker: {} } });
+		await h.key(RIGHT);
+		h.search("User title options");
+		await h.key("\n");
+		h.select("Restore default");
+		await h.key("\n");
+		expect(h.settings.get("systemPromptProfiles").driver).toEqual({});
+		expect(h.render()).not.toContain("Restore default");
+	});
+
 	it("cycles memory through explicit values and restores inheritance", async () => {
 		const h = createHub();
 		h.search("Memory");
@@ -112,70 +323,27 @@ describe("IdentityHubComponent", () => {
 		expect(h.settings.get("systemPromptProfiles").driver.constitution).toBeUndefined();
 	});
 
-	it("edits appended instructions externally and restores their default", async () => {
-		const h = createHub({
-			profiles: { driver: { instructions: "original" }, worker: {} },
-			edit: async text => text + " edited",
-		});
-		h.search("Appended instructions");
-		await h.key("\n");
-		await h.key("\n");
-		expect(h.settings.get("systemPromptProfiles").driver.instructions).toBe("original edited");
-		await h.key("\n");
-		await h.key("\x1b[B");
-		await h.key("\x1b[B");
-		await h.key("\n");
-		expect(h.settings.get("systemPromptProfiles").driver.instructions).toBeUndefined();
-	});
-
-	it("opens maintained Markdown without creating an inline replacement", async () => {
-		let opened: string | undefined;
-		const h = createHub({
-			open: async file => {
-				opened = file;
-				return true;
-			},
-		});
-		h.search("Base prompt");
-		await h.key("\n");
-		await h.key("\n");
-		expect(opened).toBe(path.join(h.dir.path(), "maintained.md"));
-		expect(h.settings.get("systemPromptProfiles").driver).toEqual({});
-	});
-
-	it("validates Markdown paths and atomically replaces the inline source", async () => {
-		const h = createHub({ profiles: { driver: { instructions: "original" }, worker: {} } });
-		h.search("Appended instructions");
-		await h.key("\n");
-		await h.key("\x1b[B");
-		await h.key("\n");
-		h.hub.pasteText("missing.md");
-		await h.key("\n");
-		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ instructions: "original" });
-		expect(h.render()).toContain("missing.md");
-		await Bun.write(path.join(h.dir.path(), "missing.md"), "# File instructions\n");
-		await h.key("\n");
-		expect(h.settings.get("systemPromptProfiles").driver).toEqual({ instructionsFile: "missing.md" });
-	});
-
 	it("cancels creation without saving, rejects an invalid id, then creates a valid profile", async () => {
 		const h = createHub();
+		await h.key(DOWN);
+		await h.key(DOWN);
+		await h.key(RIGHT);
 		h.search("Create profile");
 		await h.key("\n");
 		h.hub.pasteText("cancelled");
-		await h.key("\x1b");
+		await h.key(ESCAPE);
 		expect(h.settings.get("systemPromptProfiles").cancelled).toBeUndefined();
 		await h.key("\n");
 		h.hub.pasteText("invalid profile");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles")["invalid profile"]).toBeUndefined();
-		await h.key("\x1b");
+		await h.key(ESCAPE);
 		await h.key("\n");
 		h.hub.pasteText("researcher");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").researcher).toEqual({});
 		// The row filter that found "Create profile" must not hide the new profile.
-		expect(h.render()).toMatch(/researcher\s+Configured/);
+		expect(h.row("researcher")).toContain("Configured");
 	});
 
 	it("preserves qualified/deny order when assigning and clearing a kind-wide route", async () => {
@@ -186,8 +354,9 @@ describe("IdentityHubComponent", () => {
 			{ agentKind: "sub", profile: "worker" },
 		];
 		const h = createHub({ routes: policy });
+		h.search("Profile");
 		await h.key("\n");
-		await h.key("\x1b[B");
+		h.select("worker");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfileRoutes")).toEqual([
 			{ agentKind: "main", profile: "worker" },
@@ -195,41 +364,53 @@ describe("IdentityHubComponent", () => {
 			policy[1],
 			policy[3],
 		]);
-		expect(h.render()).toContain("prompt-profile:driver");
+		// The session's own identity is pinned and cannot move under a route edit.
+		expect(h.pane()).toContain("prompt-profile:driver");
 		await h.key("\n");
-		await h.key("\x1b[B");
+		h.select("Clear assignment");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfileRoutes")).toEqual([policy[0], policy[1], policy[3]]);
+		expect(h.row("Profile")).toContain("No unconditional assignment");
 	});
 
 	it("refuses removal while referenced and removes an unreferenced profile", async () => {
 		const h = createHub({ profiles: { driver: {}, worker: {}, spare: {} } });
-		h.search("profile:driver");
+		await h.key(DOWN);
+		await h.key(DOWN);
+		h.search("driver");
 		await h.key("\n");
 		h.search("Remove profile");
 		await h.key("\n");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver).toEqual({});
 		expect(h.render()).toContain("still referenced");
+
 		const spare = createHub({ profiles: { driver: {}, worker: {}, spare: {} } });
-		spare.search("profile:spare");
+		await spare.key(DOWN);
+		await spare.key(DOWN);
+		spare.search("spare");
 		await spare.key("\n");
 		spare.search("Remove profile");
 		await spare.key("\n");
 		await spare.key("\n");
 		expect(spare.settings.get("systemPromptProfiles").spare).toBeUndefined();
-		expect(spare.render()).toMatch(/driver\s+Active session/);
+		expect(spare.row("spare")).toBe("");
+		expect(spare.row("driver")).toContain("Active session");
 	});
 
-	it("reverts a failed optimistic toggle and permits retry", async () => {
+	it("reverts a failed optimistic toggle, keeps the frame height, and permits retry", async () => {
 		let fail = true;
 		const h = createHub({ failSave: () => fail });
+		const height = h.frame().length;
 		h.search("Memory");
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver.memory).toBeUndefined();
+		expect(h.row("Memory")).toContain("default");
 		expect(h.render()).toContain("configuration is read-only");
+		expect(h.frame().length).toBe(height);
 		fail = false;
 		await h.key("\n");
 		expect(h.settings.get("systemPromptProfiles").driver.memory).toBe(true);
+		expect(h.frame().length).toBe(height);
 	});
 });
