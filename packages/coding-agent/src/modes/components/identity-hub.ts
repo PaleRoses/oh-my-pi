@@ -487,24 +487,15 @@ export class IdentityHubComponent implements Component, Focusable {
 		const profile = this.#model.profiles[profileId] ?? {};
 		const items: SettingItem[] = [];
 		for (const definition of PROMPT_PROFILE_FIELD_DEFINITIONS) {
-			if (definition.input !== "markdown") {
+			if (definition.input === "toggle") {
 				const value = profile[definition.field];
-				const toggle = definition.input === "toggle";
 				items.push({
 					id: `toggle:${profileId}:${definition.field}`,
 					label: definition.label,
-					currentValue: toggle
-						? typeof value === "boolean"
-							? value
-								? "on"
-								: "off"
-							: "default"
-						: (profile.constitution ?? "default"),
-					values: toggle ? ["default", "on", "off"] : ["default", "fable"],
-					changed: toggle ? typeof value === "boolean" : value !== undefined,
-					description: toggle
-						? `Default ${definition.default ? "on" : "off"} · applies to future sessions routed to ${profileId}.`
-						: undefined,
+					currentValue: typeof value === "boolean" ? (value ? "on" : "off") : "default",
+					values: ["default", "on", "off"],
+					changed: typeof value === "boolean",
+					description: `Default ${definition.default ? "on" : "off"} · applies to future sessions routed to ${profileId}.`,
 				});
 				continue;
 			}

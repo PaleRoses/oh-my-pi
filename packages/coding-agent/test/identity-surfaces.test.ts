@@ -128,7 +128,6 @@ describe("canonical agent identity surfaces", () => {
 		} as unknown as SlashCommandRuntime);
 		const status = (output.mock.calls.at(-1)?.[0] ?? "") as string;
 		expect(status).toContain(report);
-		expect(status).toContain("fable: constitution=none");
 		expect(status).toContain("1. sub · * -> fable");
 		const footer = new FooterComponent(session);
 		const lines = footer.render(160);

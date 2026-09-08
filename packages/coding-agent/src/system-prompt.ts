@@ -1023,7 +1023,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
 		delegationBias,
-		fableSession: systemPromptProfile?.constitution === "fable",
+		constitution: systemPromptProfile?.constitution,
 		personality: personalityBlock ? prompt.render(personalityBlock, { userTitle, userTitleCap }).trim() : "",
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",

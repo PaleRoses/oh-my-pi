@@ -32,6 +32,7 @@ destined for upstream. Kept out of `CHANGELOG.md` so that file stays byte-identi
 
 ### Changed
 
+- Replaced the fixed constitution selector with profile-owned `constitution` / `constitutionFile` Markdown, using the existing document editor and source validation. Removed personal prose from the maintained template, normalized Role text once at compilation, and corrected constitution-only profile provenance. The former `constitution: fable` setting must be migrated to authored text or a file; it is no longer a preset.
 - Collapsed Identity hub navigation, picker, and save handling into single owners; removed redundant screen factories and state without changing its UI or configuration contract.
 - Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability
 - Restored the built-in `eval` tool name while retaining persistent runtimes, tool re-entry, and artifact-backed output.

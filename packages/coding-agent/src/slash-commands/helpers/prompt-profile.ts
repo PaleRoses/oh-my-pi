@@ -1,6 +1,5 @@
 import type {
 	SystemPromptProfileAgentKind,
-	SystemPromptProfileConstitution,
 	SystemPromptProfileRouteSetting,
 	SystemPromptProfileSetting,
 } from "../../config/settings-schema";
@@ -31,17 +30,16 @@ export const IDENTITY_SUBCOMMANDS: SubcommandDef[] = [
 export type PromptProfileField = keyof SystemPromptProfileSetting;
 
 export type PromptProfileFieldDefinition = { readonly label: string; readonly aliases?: readonly string[] } & (
-	| { readonly field: "constitution"; readonly input: "constitution" }
 	| {
-			readonly field: "prompt" | "instructions";
+			readonly field: "constitution" | "prompt" | "instructions";
 			readonly input: "markdown";
-			readonly file: "promptFile" | "instructionsFile";
+			readonly file: "constitutionFile" | "promptFile" | "instructionsFile";
 	  }
 	| { readonly field: "userTitle" | "compactionIdentity"; readonly input: "markdown" }
 	| {
-			readonly field: "promptFile" | "instructionsFile";
+			readonly field: "constitutionFile" | "promptFile" | "instructionsFile";
 			readonly input: "file";
-			readonly inline: "prompt" | "instructions";
+			readonly inline: "constitution" | "prompt" | "instructions";
 	  }
 	| {
 			readonly field: "projectContextOnly" | "memory" | "mcpServerInstructions";
@@ -52,7 +50,8 @@ export type PromptProfileFieldDefinition = { readonly label: string; readonly al
 );
 
 export const PROMPT_PROFILE_FIELDS = {
-	constitution: { field: "constitution", label: "Constitution", input: "constitution" },
+	constitution: { field: "constitution", label: "Constitution", input: "markdown", file: "constitutionFile" },
+	constitutionFile: { field: "constitutionFile", label: "Constitution file", input: "file", inline: "constitution" },
 	prompt: { field: "prompt", label: "Base prompt", input: "markdown", file: "promptFile" },
 	promptFile: { field: "promptFile", label: "Base prompt file", input: "file", inline: "prompt" },
 	instructions: {
@@ -188,15 +187,6 @@ function parseToggle(raw: string, field: PromptProfileField): boolean {
 	}
 }
 
-function parseConstitution(raw: string): SystemPromptProfileConstitution {
-	switch (raw.toLowerCase()) {
-		case "fable":
-			return "fable";
-		default:
-			throw new Error(`constitution expects fable, received "${raw}".`);
-	}
-}
-
 function omitProfileField(profile: SystemPromptProfileSetting, field: PromptProfileField): SystemPromptProfileSetting {
 	const next = { ...profile };
 	delete next[field];
@@ -213,9 +203,6 @@ function setProfileField(
 	const definition = PROMPT_PROFILE_FIELDS[field];
 	const next = { ...profile };
 	switch (definition.input) {
-		case "constitution":
-			next.constitution = parseConstitution(value);
-			break;
 		case "toggle":
 			next[definition.field] = parseToggle(value, field);
 			break;
@@ -236,20 +223,15 @@ function setProfileField(
 	return next;
 }
 
-function describeInline(value: string | undefined): string {
-	return value === undefined ? "none" : `inline (${value.length} chars)`;
+function describeText(value: string | undefined, file?: string, fallback = "none"): string {
+	return file ? `file ${file}` : value === undefined ? fallback : `inline (${value.length} chars)`;
 }
 
 function describeProfile(profileId: string, profile: SystemPromptProfileSetting): string {
-	const base = profile.promptFile
-		? `file ${profile.promptFile}`
-		: profile.prompt
-			? describeInline(profile.prompt)
-			: "maintained";
-	const appended = profile.instructionsFile
-		? `file ${profile.instructionsFile}`
-		: describeInline(profile.instructions);
-	return `${profileId}: constitution=${profile.constitution ?? "none"}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
+	const constitution = describeText(profile.constitution, profile.constitutionFile);
+	const base = describeText(profile.prompt || undefined, profile.promptFile, "maintained");
+	const appended = describeText(profile.instructions, profile.instructionsFile);
+	return `${profileId}: constitution=${constitution}; base=${base}; append=${appended}; context=${profile.projectContextOnly ? "project" : "all"}; memory=${profile.memory === false ? "off" : "on"}; mcp=${profile.mcpServerInstructions === false ? "off" : "on"}; images=${profile.contextImages?.length ?? 0}; user=${profile.userTitle ?? "default"}; identity=${profile.compactionIdentity === undefined ? "default" : "set"}; tools=${profile.tools?.length ? profile.tools.join(",") : "all"}`;
 }
 
 /** One ordered routing rule, rendered for both the textual status and the hub's route list. */
@@ -279,10 +261,11 @@ function formatIdentityStatus(runtime: IdentityCommandRuntime): string {
 function formatProfileDetails(profileId: string, profile: SystemPromptProfileSetting): string {
 	return [
 		`System prompt profile: ${profileId}`,
-		`constitution: ${profile.constitution ?? "none (default)"}`,
-		`prompt: ${describeInline(profile.prompt)}`,
+		`constitution: ${describeText(profile.constitution)}`,
+		`constitutionFile: ${profile.constitutionFile ?? "none"}`,
+		`prompt: ${describeText(profile.prompt)}`,
 		`promptFile: ${profile.promptFile ?? "none"}`,
-		`instructions: ${describeInline(profile.instructions)}`,
+		`instructions: ${describeText(profile.instructions)}`,
 		`instructionsFile: ${profile.instructionsFile ?? "none"}`,
 		`projectContextOnly: ${profile.projectContextOnly === true ? "on" : "off"}`,
 		`memory: ${profile.memory === false ? "off" : "on (default)"}`,

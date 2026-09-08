@@ -1,16 +1,11 @@
-import { resolvePath } from "./extensibility/utils";
 import { type } from "arktype";
-import {
-	SYSTEM_PROMPT_PROFILE_CONSTITUTION_VALUES,
-	type SystemPromptProfileAgentKind,
-	type SystemPromptProfileConstitution,
-	type SystemPromptProfileRouteSetting,
-} from "./config/settings-schema";
+import type { SystemPromptProfileAgentKind, SystemPromptProfileRouteSetting } from "./config/settings-schema";
+import { resolvePath } from "./extensibility/utils";
 
 export interface SystemPromptProfile {
 	readonly id: string;
-	/** Closed profile-owned constitution selection. */
-	readonly constitution?: SystemPromptProfileConstitution;
+	/** Constitution text resolved once at profile compilation. */
+	readonly constitution?: string;
 	readonly prompt?: string;
 	readonly instructions?: string;
 	readonly projectContextOnly: boolean;
@@ -49,10 +44,10 @@ export function systemPromptProfileCacheKey(baseKey: string, profileId: string):
 	return `${baseKey}:system-prompt-profile:${profileId}`;
 }
 
-const systemPromptProfileConstitutionSchema = type.enumerated(...SYSTEM_PROMPT_PROFILE_CONSTITUTION_VALUES);
 const systemPromptProfileSchema = type({
 	"+": "reject",
-	"constitution?": systemPromptProfileConstitutionSchema,
+	"constitution?": "string",
+	"constitutionFile?": "string",
 	"prompt?": "string",
 	"promptFile?": "string",
 	"instructions?": "string",
@@ -150,13 +145,16 @@ function compileModelMatcher(pattern: string, label: string): (model: string | u
 async function resolveProfileText(
 	profileId: string,
 	raw: typeof systemPromptProfileSchema.infer,
-	field: "prompt" | "instructions",
+	field: "prompt" | "instructions" | "constitution",
 	cwd: string,
 ): Promise<string | undefined> {
-	const label = `systemPromptProfiles.${profileId}.${field}`;
 	const inline = raw[field];
-	if (inline !== undefined) return requireNonEmptyString(inline, label);
 	const file = raw[`${field}File`];
+	if (inline !== undefined && file !== undefined) {
+		throw new Error(`systemPromptProfiles.${profileId} may contain only one of "${field}" or "${field}File"`);
+	}
+	const label = `systemPromptProfiles.${profileId}.${field}`;
+	if (inline !== undefined) return requireNonEmptyString(inline, label);
 	if (file === undefined) return undefined;
 	return loadPromptFile(profileId, requireNonEmptyString(file, `${label}File`), cwd);
 }
@@ -166,17 +164,12 @@ async function compileProfile(
 	raw: typeof systemPromptProfileSchema.infer,
 	cwd: string,
 ): Promise<SystemPromptProfile> {
-	if (raw.prompt !== undefined && raw.promptFile !== undefined) {
-		throw new Error(`systemPromptProfiles.${profileId} may contain only one of "prompt" or "promptFile"`);
-	}
-	if (raw.instructions !== undefined && raw.instructionsFile !== undefined) {
-		throw new Error(`systemPromptProfiles.${profileId} may contain only one of "instructions" or "instructionsFile"`);
-	}
 	const prompt = await resolveProfileText(profileId, raw, "prompt", cwd);
 	const instructions = await resolveProfileText(profileId, raw, "instructions", cwd);
+	const constitution = (await resolveProfileText(profileId, raw, "constitution", cwd))?.trim();
 	return {
 		id: profileId,
-		constitution: raw.constitution,
+		constitution,
 		prompt,
 		instructions,
 		projectContextOnly: raw.projectContextOnly === true,

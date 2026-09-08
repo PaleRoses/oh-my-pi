@@ -37,7 +37,7 @@ For a single-line value, OMP first tries to read that value as a file path. If r
 
 ### Session-scoped prompt profiles
 
-`systemPromptProfiles` and `systemPromptProfileRoutes` parameterize prompt identity without changing CLI model selection. Each profile can declare the closed `constitution` selection independently of a route's model glob; `fable` is the only accepted value. Routes are ordered and may match `agentKind` (`main` or `sub`) plus an optional `provider/model` glob.
+`systemPromptProfiles` and `systemPromptProfileRoutes` parameterize prompt identity without changing CLI model selection. Each profile may supply its own constitution Markdown independently of a route's model glob. Routes are ordered and may match `agentKind` (`main` or `sub`) plus an optional `provider/model` glob.
 
 Routes are first-match. A model-qualified `main` route that selects a constitutional profile must precede generic `main`, or the generic route catches the model first. A model name does not select a constitution; only the selected profile does.
 
@@ -46,8 +46,8 @@ Task sessions derive `sub` from their task metadata. Internal SDK callers withou
 ```yaml
 systemPromptProfiles:
   driver: {}
-  fable-driver:
-    constitution: fable
+  reviewer:
+    constitutionFile: ~/.omp/agent/prompts/reviewer.md
   worker:
     instructionsFile: ~/.omp/agent/prompts/worker-constitution.md
     memory: false
@@ -57,7 +57,7 @@ systemPromptProfiles:
 systemPromptProfileRoutes:
   - agentKind: main
     model: anthropic/claude-opus-*
-    profile: fable-driver
+    profile: reviewer
   - agentKind: main
     profile: driver
   - agentKind: sub
@@ -66,7 +66,7 @@ systemPromptProfileRoutes:
 
 Profiles support these prompt fields:
 
-- `constitution: fable` is the only allowed constitution selection. It is profile-owned and compiled with the profile; a route's model glob only selects that profile. Omit it to leave the constitution unspecified. Choose it in the Identity hub, with `/identity set <profile> constitution fable`, or directly in YAML.
+- `constitution` or `constitutionFile` replaces only the maintained prompt's Role paragraph with literal Markdown. Omit both to retain the generic role; a custom base prompt takes precedence. Inline/file sources are mutually exclusive and nonempty; files resolve relative to cwd, `~/`, or an absolute path. Text is loaded and outer whitespace trimmed once at profile compilation, preserving interior bytes without evaluating template syntax. Edit it in the Identity hub or with `/identity set <profile> constitutionFile <path>`.
 - `prompt` or `promptFile` replaces ambient discovered `SYSTEM.md` while retaining normal generated prompt assembly. An explicit `--system-prompt` or SDK override still wins.
 - Omitting both keeps the maintained OMP prompt.
 - `instructions` or `instructionsFile` appends one profile-owned system block after the assembled prompt.
@@ -74,9 +74,11 @@ Profiles support these prompt fields:
 - `memory: false` disables automatic recall/retention and memory tools for the profile.
 - `mcpServerInstructions: false` omits MCP server instructions while leaving the configured MCP tools available.
 - `contextImages` lists image file paths (absolute, `~/`, or cwd-relative; existence validated when the profile compiles) injected once per conversation as a hidden custom message at the front of the first turn. System-role content is text-only across providers, so this is the standing-image equivalent of a prompt block: resume reuses the persisted copy, while `/new`, `/reset`, and compaction re-inject on the following turn.
-- `userTitle` substitutes a name or phrase for "the user" wherever the maintained prompt (including personality blocks) refers to the person driving the session, e.g. `userTitle: Rosalia` renders "Carry Rosalia's intent". Unset keeps the generic "the user" wording; profiles without the field (e.g. subagent workers) are unaffected.
-- `compactionIdentity` adds one paragraph to the compaction summarizer's system prompt, e.g. `compactionIdentity: "The assistant is Fable; the user is Rosalia."` so the summary that survives compaction names the participants instead of writing about "the assistant" and "the user". It rides every summarization call on the compaction path (initial summary, iterative update, short summary, turn prefix); unset keeps the historical single-element summarizer prompt, so profiles without the field are byte-identical to before.
+- `userTitle` substitutes a name or phrase for "the user" wherever the maintained prompt (including personality blocks) refers to the person driving the session, e.g. `userTitle: project owner`. Unset keeps the generic wording; profiles without the field are unaffected.
+- `compactionIdentity` adds a paragraph to the compaction summarizer, e.g. `compactionIdentity: "The assistant is the reviewer; the user is the maintainer."`. It rides every summarization path; unset keeps the generic summarizer prompt.
 - `tools` names the model-facing active tool set (lowercased, deduplicated at compile). The cut intersects the assembled set — built-ins, custom, and extension tools alike — while preserving session contracts: `ask` stays reachable while enabled, a required `yield` survives, `checkpoint`/`rewind` remain paired, `hub` rides along whenever `task` is listed (an orchestrator that can spawn subagents can always steer, wait on, and cancel them — from eval cells too), and memory tools ride the profile's `memory` axis rather than the list. The full registry stays constructed, so `/tools` can re-activate anything outside the profile's default set. Empty or omitted keeps every tool.
+
+The former `constitution: fable` selector is no longer a preset. Preserve its prose in a profile-owned file and select `constitutionFile`; a `constitution` string now means literal Markdown, never a named built-in. Constitutions remain pinned with the compiled profile, so changing their files requires a fresh OMP process.
 
 `/identity` is the operator surface for these settings. Bare `/identity`
 opens a fullscreen split-pane hub like `/model`. The persistent sidebar
@@ -88,10 +90,10 @@ before the write. Use Tab or Left/Right to move between sidebar and content;
 Escape returns from nested screens. The sidebar also remains clickable while
 editing. Type-to-search filters the current pane.
 
-Field rows present one base-prompt document and one appended-instructions
-document; the inline and file-backed configuration representations are not
-separate UI rows. Enter opens the document directly. A configured `promptFile`
-or `instructionsFile` opens at its resolved path; an unset base prompt opens
+Field rows present one document per constitution, base prompt, and appended
+instructions; inline/file representations are not separate UI rows. Enter opens
+the document directly. A configured `constitutionFile`, `promptFile`, or
+`instructionsFile` opens at its resolved path; an unset base prompt opens
 the authoritative `src/prompts/system/system-prompt.md` template when package
 source is available. Existing files honor `$VISUAL` or `$EDITOR`; otherwise
 macOS prefers installed VS Code, then its default text editor—not the app

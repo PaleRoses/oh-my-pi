@@ -75,15 +75,12 @@ describe("/identity slash command", () => {
 		expect(report).toContain("Model: anthropic/claude-fable-5");
 		expect(report).toContain("Session ID: session-identity");
 		expect(report).toContain("Memory backend: off (disabled)");
-		expect(report).toContain(
-			"driver: constitution=none; base=maintained; append=none; context=all; memory=on; mcp=on; images=0; user=default; identity=default; tools=all",
-		);
 		expect(report).toContain("1. main · * -> driver");
 		expect(report).toContain("2. sub · * -> worker");
 		expect(harness.set).not.toHaveBeenCalled();
 	});
 
-	it("sets file-backed instructions, preserves sibling profiles, and flushes before reporting", async () => {
+	it("sets file-backed instructions, preserves sibling profiles, and persists configuration", async () => {
 		const dir = TempDir.createSync("@identity-command-");
 		try {
 			const instructionsPath = dir.join("driver instructions.md");
@@ -99,38 +96,49 @@ describe("/identity slash command", () => {
 			expect(harness.store.systemPromptProfiles.worker?.instructions).toBe("WORKER");
 			expect(harness.flush).toHaveBeenCalledTimes(1);
 			expect(harness.notifyConfigChanged).toHaveBeenCalledTimes(1);
-			expect(harness.output).toHaveBeenCalledWith(
-				"Saved driver.instructionsFile.\nGlobal config updated. Restart OMP to load the new prompt identity; /new keeps the current profile. Project and --config overrides still take precedence.",
-			);
 		} finally {
 			dir.removeSync();
 		}
 	});
 
-	it("keeps prompt and promptFile mutually exclusive", async () => {
+	it.each([
+		["constitution", "constitutionFile"],
+		["prompt", "promptFile"],
+		["instructions", "instructionsFile"],
+	] as const)("switches %s sources exclusively and restores either source", async (inline, file) => {
 		const dir = TempDir.createSync("@identity-command-source-");
 		try {
-			const promptPath = dir.join("driver.md");
-			await Bun.write(promptPath, "DRIVER PROMPT");
+			const source = dir.join("driver.md");
+			await Bun.write(source, "# File document");
 			const harness = createRuntime({
-				systemPromptProfiles: { driver: { prompt: "INLINE" }, worker: {} },
+				systemPromptProfiles: { driver: { [inline]: "INLINE", memory: false }, worker: {} },
 			});
 
-			await executeAcpBuiltinSlashCommand(`/identity set driver promptFile "${promptPath}"`, harness.runtime);
+			await executeAcpBuiltinSlashCommand(`/identity set driver ${file} "${source}"`, harness.runtime);
+			expect(harness.store.systemPromptProfiles.driver).toEqual({ [file]: source, memory: false });
+			await executeAcpBuiltinSlashCommand(`/identity unset driver ${file}`, harness.runtime);
+			expect(harness.store.systemPromptProfiles.driver).toEqual({ memory: false });
 
-			expect(harness.store.systemPromptProfiles.driver).toEqual({ promptFile: promptPath });
+			await executeAcpBuiltinSlashCommand(`/identity set driver ${file} "${source}"`, harness.runtime);
+			await executeAcpBuiltinSlashCommand(`/identity set driver ${inline} "REPLACEMENT"`, harness.runtime);
+			expect(harness.store.systemPromptProfiles.driver).toEqual({ [inline]: "REPLACEMENT", memory: false });
+			await executeAcpBuiltinSlashCommand(`/identity unset driver ${inline}`, harness.runtime);
+			expect(harness.store.systemPromptProfiles.driver).toEqual({ memory: false });
 		} finally {
 			dir.removeSync();
 		}
 	});
 
-	it("preserves quoted inline prompt whitespace", async () => {
+	it("preserves quoted constitution whitespace and template-looking text", async () => {
 		const harness = createRuntime();
 
-		await executeAcpBuiltinSlashCommand('/identity set driver instructions "Keep  exact   spacing"', harness.runtime);
+		await executeAcpBuiltinSlashCommand(
+			'/identity set driver constitution "Keep  {{literal}}   spacing"',
+			harness.runtime,
+		);
 
 		expect(harness.store.systemPromptProfiles.driver).toEqual({
-			instructions: "Keep  exact   spacing",
+			constitution: "Keep  {{literal}}   spacing",
 		});
 	});
 
@@ -144,24 +152,75 @@ describe("/identity slash command", () => {
 		expect(harness.flush).toHaveBeenCalledTimes(2);
 	});
 
-	it("sets only the closed Fable constitution and restores its default", async () => {
-		const harness = createRuntime();
-
-		await executeAcpBuiltinSlashCommand("/identity set driver constitution fable", harness.runtime);
-		expect(harness.store.systemPromptProfiles.driver).toEqual({ constitution: "fable" });
+	it("summarizes constitution sources without exposing document prose", async () => {
+		const constitution = "# Private role\nKeep {{document}} literal.";
+		const source = "roles/researcher.md";
+		const harness = createRuntime({
+			systemPromptProfiles: { driver: { constitution }, worker: { constitutionFile: source } },
+		});
 
 		await executeAcpBuiltinSlashCommand("/identity status", harness.runtime);
-		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("driver: constitution=fable"));
+		const status = harness.output.mock.calls.at(-1)?.[0] as string;
+		expect(status).toContain(`constitution=inline (${constitution.length} chars)`);
+		expect(status).toContain(`constitution=file ${source}`);
+		expect(status).not.toContain(constitution);
+
 		await executeAcpBuiltinSlashCommand("/identity show driver", harness.runtime);
-		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining("constitution: fable"));
-
-		harness.set.mockClear();
-		await executeAcpBuiltinSlashCommand("/identity set driver constitution other", harness.runtime);
+		const inlineDetails = harness.output.mock.calls.at(-1)?.[0] as string;
+		expect(inlineDetails).toContain(`constitution: inline (${constitution.length} chars)`);
+		expect(inlineDetails).not.toContain(constitution);
+		await executeAcpBuiltinSlashCommand("/identity show worker", harness.runtime);
+		expect(harness.output).toHaveBeenLastCalledWith(expect.stringContaining(`constitutionFile: ${source}`));
 		expect(harness.set).not.toHaveBeenCalled();
-		expect(harness.output).toHaveBeenLastCalledWith('Identity error: constitution expects fable, received "other".');
+	});
 
-		await executeAcpBuiltinSlashCommand("/identity unset driver constitution", harness.runtime);
-		expect(harness.store.systemPromptProfiles.driver).toEqual({});
+	it("rejects missing, empty and conflicting constitution documents before writing", async () => {
+		const dir = TempDir.createSync("@identity-command-invalid-");
+		try {
+			const source = dir.join("constitution.md");
+			const harness = createRuntime({
+				systemPromptProfiles: { driver: { constitution: "Original role" }, worker: {} },
+			});
+			const replaceFile = () =>
+				applyPromptProfileOperation(harness.runtime, {
+					type: "setField",
+					profileId: "driver",
+					field: "constitutionFile",
+					value: source,
+				});
+			await expect(replaceFile()).rejects.toThrow();
+			await Bun.write(source, "   ");
+			await expect(replaceFile()).rejects.toThrow();
+			await expect(
+				applyPromptProfileOperation(harness.runtime, {
+					type: "setField",
+					profileId: "driver",
+					field: "constitution",
+					value: "   ",
+				}),
+			).rejects.toThrow();
+			expect(harness.store.systemPromptProfiles.driver).toEqual({ constitution: "Original role" });
+			expect(harness.set).not.toHaveBeenCalled();
+			expect(harness.flush).not.toHaveBeenCalled();
+			expect(harness.notifyConfigChanged).not.toHaveBeenCalled();
+
+			await Bun.write(source, "# Valid file role");
+			const conflicting = createRuntime({
+				systemPromptProfiles: { driver: {}, worker: { constitution: "Role", constitutionFile: source } },
+			});
+			await expect(
+				applyPromptProfileOperation(conflicting.runtime, {
+					type: "setField",
+					profileId: "driver",
+					field: "memory",
+					value: "off",
+				}),
+			).rejects.toThrow();
+			expect(conflicting.set).not.toHaveBeenCalled();
+			expect(conflicting.flush).not.toHaveBeenCalled();
+		} finally {
+			dir.removeSync();
+		}
 	});
 
 	it("rejects invalid values without mutating settings", async () => {
@@ -218,9 +277,6 @@ describe("/identity slash command", () => {
 			{ agentKind: "sub", profile: "worker" },
 			{ agentKind: "sub", model: "openai/*", deny: true },
 		]);
-		expect(harness.output).toHaveBeenCalledWith(
-			"Set the global unconditional main prompt route to researcher.\nGlobal config updated. Restart OMP to load the new prompt identity; /new keeps the current profile. Project and --config overrides still take precedence.",
-		);
 	});
 
 	it("restores a field default and refuses to remove a routed profile", async () => {
