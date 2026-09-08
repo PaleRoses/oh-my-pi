@@ -58,9 +58,16 @@ export const DEFAULT_PRUNE_CONFIG: PruneConfig = {
 	pruneUseless: true,
 };
 
+/** Replaced content retained for callers that persist recovery artifacts. */
+export interface PrunedResultRecord {
+	message: ToolResultMessage;
+	originalContent: ToolResultMessage["content"];
+}
+
 export interface PruneResult {
 	prunedCount: number;
 	tokensSaved: number;
+	pruned: PrunedResultRecord[];
 }
 
 /** Exact placeholder written over a superseded tool result. */
@@ -263,7 +270,7 @@ export function pruneSupersededToolResults(
 		candidates.push(...collectUselessResults(entries, tokenizer, toolCallsById, config.protectedTools, exclude));
 		candidates.sort((a, b) => a.index - b.index);
 	}
-	if (candidates.length === 0) return { prunedCount: 0, tokensSaved: 0 };
+	if (candidates.length === 0) return { prunedCount: 0, tokensSaved: 0, pruned: [] };
 
 	const now = config.now ?? Date.now();
 	let lastMessageTimestamp: number | undefined;
@@ -296,17 +303,19 @@ export function pruneSupersededToolResults(
 			candidate => candidate.index >= boundaryIndex && suffixTokens[candidate.index] <= suffixTokenLimit,
 		);
 	}
-	if (toPrune.length === 0) return { prunedCount: 0, tokensSaved: 0 };
+	if (toPrune.length === 0) return { prunedCount: 0, tokensSaved: 0, pruned: [] };
 
 	const prunedAt = Date.now();
 	let tokensSaved = 0;
+	const pruned: PrunedResultRecord[] = [];
 	for (const candidate of toPrune) {
+		pruned.push({ message: candidate.message, originalContent: candidate.message.content });
 		candidate.message.content = [{ type: "text", text: candidate.notice }];
 		candidate.message.prunedAt = prunedAt;
 		invalidateMessageCache(candidate.message as AgentMessage);
 		tokensSaved += estimatePrunedSavings(candidate.tokens, candidate.notice);
 	}
-	return { prunedCount: toPrune.length, tokensSaved };
+	return { prunedCount: toPrune.length, tokensSaved, pruned };
 }
 
 export function pruneToolOutputs(
@@ -400,10 +409,11 @@ export function pruneToolOutputs(
 	}
 
 	if (tokensSaved < config.minimumSavings || candidates.length === 0) {
-		return { prunedCount: 0, tokensSaved: 0 };
+		return { prunedCount: 0, tokensSaved: 0, pruned: [] };
 	}
 
 	const prunedAt = Date.now();
+	const pruned: PrunedResultRecord[] = [];
 	for (const candidate of candidates) {
 		const message = candidate.entry.message as ToolResultMessage;
 		const notice = candidate.superseded
@@ -411,13 +421,14 @@ export function pruneToolOutputs(
 			: candidate.useless
 				? USELESS_NOTICE
 				: createPrunedNotice(candidate.tokens);
+		pruned.push({ message, originalContent: message.content });
 		message.content = [{ type: "text", text: notice }];
 		message.prunedAt = prunedAt;
 		invalidateMessageCache(message as AgentMessage);
 		prunedCount++;
 	}
 
-	return { prunedCount, tokensSaved };
+	return { prunedCount, tokensSaved, pruned };
 }
 
 /**

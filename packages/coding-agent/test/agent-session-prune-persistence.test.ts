@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import { USELESS_NOTICE } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -27,6 +26,7 @@ describe("AgentSession per-turn prune persistence", () => {
 	let authStorage: AuthStorage;
 
 	const BIG_CALL_ID = "call-big-useless";
+	const ORIGINAL_TEXT = "match line\n".repeat(20000) + "Example: artifact://not-a-backup";
 
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-prune-persistence-");
@@ -69,7 +69,7 @@ describe("AgentSession per-turn prune persistence", () => {
 			role: "toolResult",
 			toolCallId: BIG_CALL_ID,
 			toolName: "grep",
-			content: [{ type: "text", text: "match line\n".repeat(20000) }],
+			content: [{ type: "text", text: ORIGINAL_TEXT }],
 			isError: false,
 			useless: true,
 			timestamp: now - 170,
@@ -122,7 +122,7 @@ describe("AgentSession per-turn prune persistence", () => {
 		return text.text;
 	}
 
-	it("persists the pruned rewrite so a from-disk rebuild matches the live context", async () => {
+	async function finishTurn() {
 		const finalAssistant = {
 			role: "assistant" as const,
 			content: [{ type: "text" as const, text: "Continuing." }],
@@ -143,9 +143,17 @@ describe("AgentSession per-turn prune persistence", () => {
 		session.agent.emitExternalEvent({ type: "message_end", message: finalAssistant });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [finalAssistant] });
 		await session.waitForIdle();
+	}
 
-		// The per-turn pass rewrote the live context…
-		expect(liveResultText()).toBe(USELESS_NOTICE);
+	it("keeps pruned output recoverable after reopening the journal", async () => {
+		await finishTurn();
+		const prunedText = liveResultText();
+		const artifactId = /\[full output: artifact:\/\/([^\]]+)\]/.exec(prunedText)?.[1];
+		expect(artifactId).toBeDefined();
+		if (!artifactId) throw new Error("Expected a recovery pointer after pruning");
+		const artifactPath = await sessionManager.getArtifactPath(artifactId);
+		if (!artifactPath) throw new Error("Expected the pruned original in the artifact store");
+		expect(await Bun.file(artifactPath).text()).toBe(ORIGINAL_TEXT);
 
 		// …and the persisted file must rebuild to the SAME content (fork/resume
 		// read this file; a divergent prefix cold-misses the provider cache).
@@ -160,6 +168,18 @@ describe("AgentSession per-turn prune persistence", () => {
 			throw new Error("Expected the seeded tool result in the from-disk rebuild");
 		}
 		const rebuiltText = rebuilt.content.find(block => block.type === "text");
-		expect(rebuiltText?.type === "text" ? rebuiltText.text : undefined).toBe(USELESS_NOTICE);
+		expect(rebuiltText?.type === "text" ? rebuiltText.text : undefined).toBe(prunedText);
+		const reloadedArtifactPath = await reloaded.getArtifactPath(artifactId);
+		if (!reloadedArtifactPath) throw new Error("Expected the recovery pointer to survive resume");
+		expect(await Bun.file(reloadedArtifactPath).text()).toBe(ORIGINAL_TEXT);
+	});
+
+	it("does not promise recovery when artifact storage fails", async () => {
+		const artifactsDir = sessionManager.getArtifactsDir();
+		if (!artifactsDir) throw new Error("Expected a session artifact directory");
+		await Bun.write(artifactsDir, "Not a directory");
+		await finishTurn();
+		expect(liveResultText()).not.toContain(ORIGINAL_TEXT);
+		expect(liveResultText()).not.toContain("artifact://");
 	});
 });

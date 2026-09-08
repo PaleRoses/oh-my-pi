@@ -328,6 +328,8 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result2)).toBe(FILE_CONTENT);
+		for (const pruned of result.pruned) pruned.message.content = pruned.originalContent;
+		expect(resultText(result1)).toBe(FILE_CONTENT);
 	});
 
 	test("(g) without supersedeKey, behavior is unchanged (regression guard)", () => {
@@ -348,7 +350,7 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 			minimumSavings: 0,
 			protectedTools: [],
 		});
-		expect(protectedRun).toEqual({ prunedCount: 0, tokensSaved: 0 });
+		expect(protectedRun.prunedCount).toBe(0);
 		expect(resultText(protectedFixture.oldResult)).toBe(FILE_CONTENT);
 		expect(resultText(protectedFixture.newResult)).toBe(FILE_CONTENT);
 

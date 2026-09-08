@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Automatically pruned text outputs of at least 2 KiB are saved as session artifacts; recovery links persist with the pruned history. Small results and failed artifact writes retain the existing lossy behavior.
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed

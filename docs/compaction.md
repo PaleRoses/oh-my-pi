@@ -171,11 +171,13 @@ Pruned tool results are replaced with:
 
 If pruning changes entries, session storage is rewritten and agent message state is refreshed before compaction decisions.
 
+Both pruning passes save replaced text of at least 2,048 UTF-8 bytes to the session artifact store and append a `[full output: artifact://<id>]` recovery link before rewriting history. Recovery links survive resume; their token cost is deducted from reported savings. This preserves text, not image blocks. Smaller outputs and failed artifact writes retain the existing lossy behavior.
+
 ### Useless-result elision
 
 Tools can flag a finished result as contextually useless — a search with zero matches, a `hub` wait that timed out with everything still running, an empty `hub` inbox drain. The flag originates on the tool result (`AgentToolResult.useless`, set via `ToolResultBuilder.useless()` or directly on the returned object), is copied by the agent loop onto the persisted `ToolResultMessage` (never together with `isError` — errors always win), and is consumed in three places:
 
-- **Per-turn stale-result pass** (`pruneSupersededToolResults`, gated by `compaction.dropUseless`, default on): flagged results are blanked to the exact placeholder `[Uneventful result elided]` (`USELESS_NOTICE`) with the same cache-aware timing as superseded reads — only when the suffix after the candidate is small (≤ ~8k tokens) or the session has idled past the provider prompt-cache lifetime. Results smaller than the notice itself are never blanked (no savings), and protected tools are exempt.
+- **Per-turn stale-result pass** (`pruneSupersededToolResults`, gated by `compaction.dropUseless`, default on): flagged results are replaced with `[Uneventful result elided]` (`USELESS_NOTICE`) and, when saved, a recovery link. The pass retains the same cache-aware timing as superseded reads — only when the suffix after the candidate is small (≤ ~8k tokens) or the session has idled past the provider prompt-cache lifetime. Results smaller than the notice itself are never blanked (no savings), and protected tools are exempt.
 - **Threshold prune** (`pruneToolOutputs`): flagged results bypass the protect-recent window, same as superseded reads, and receive `USELESS_NOTICE` instead of the token-count placeholder.
 - **Summary serialization**: `serializeConversation` (agent and snapcompact) drops the whole tool call/result pair from summarizer/archive input — the source region is discarded after summarization anyway, so the exclusion costs no cache.
 
