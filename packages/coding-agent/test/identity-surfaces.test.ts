@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { FooterComponent } from "@oh-my-pi/pi-coding-agent/modes/components/footer";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
+import { FooterComponent } from "@oh-my-pi/pi-tui/status-line/footer";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import {
 	createEffectiveSessionIdentity,
@@ -139,7 +140,7 @@ describe("canonical agent identity surfaces", () => {
 		const status = (output.mock.calls.at(-1)?.[0] ?? "") as string;
 		expect(status).toContain(report);
 		expect(status).toContain("1. sub · * -> fable");
-		const footer = new FooterComponent(session);
+		const footer = new FooterComponent(session, statusLineHost);
 		const lines = footer.render(160);
 		expect(lines).toHaveLength(2);
 		expect(stripVTControlCharacters(lines[1] ?? "")).toContain(formatAgentIdentityBadge(snapshot));
@@ -260,7 +261,7 @@ describe("canonical agent identity surfaces", () => {
 				tags: [],
 			},
 		});
-		const footer = new FooterComponent(session);
+		const footer = new FooterComponent(session, statusLineHost);
 		footer.setExtensionStatus("zeta", "second\nstatus");
 		footer.setExtensionStatus("alpha", "first\tstatus");
 

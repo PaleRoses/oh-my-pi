@@ -7,7 +7,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { PromptSettingsComponent } from "@oh-my-pi/pi-coding-agent/modes/components/prompt-settings";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 
 beforeAll(async () => {

@@ -28,10 +28,17 @@ import {
 	type PromptProfileSelectorFieldDefinition,
 	type PromptProfileUpdateReceipt,
 } from "../../slash-commands/helpers/prompt-profile";
-import { shortenPath } from "../../tools/render-utils";
-import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme";
-import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { bottomBorder, dividerSplit, row, splitBodyWidth, splitRow, topBorderSplit } from "./overlay-box";
+import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import { getSelectListTheme, getSettingsListTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "@oh-my-pi/pi-tui/keybinding-matchers";
+import {
+	bottomBorder,
+	dividerSplit,
+	row,
+	splitBodyWidth,
+	splitRow,
+	topBorderSplit,
+} from "@oh-my-pi/pi-tui/chrome/overlay-box";
 
 export interface PromptSettingsModel extends PromptProfileConfiguration {
 	readonly sessionProfileId: string | undefined;

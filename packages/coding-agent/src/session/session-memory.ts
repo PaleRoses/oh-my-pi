@@ -24,6 +24,7 @@ export interface SessionMemoryHost {
 	takeMnemopiSessionState(): MnemopiSessionState | undefined;
 	setBaseSystemPrompt(prompt: string[]): void;
 	refreshBaseSystemPrompt(): Promise<void>;
+	hasMemoryTools(): boolean;
 	replaceMemoryTools(tools: AgentTool[]): Promise<void>;
 }
 
@@ -98,12 +99,16 @@ export class SessionMemory {
 		this.#host.getMnemopiSessionState()?.setSessionId(sid);
 	}
 
-	/** New session file: reset auto-recall / retain-threshold counters for the new transcript. */
+	/** New transcript: reset Hindsight counters and reload its frozen mental-model snapshot. */
 	#resetHindsightConversationTrackingIfHindsight(): boolean {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;
 		const state = this.#host.getHindsightSessionState();
 		if (!state || state.isAlias) return false;
 		state.resetConversationTracking();
+		// Start a bounded first-turn reload without delaying /new, fork, clear, or
+		// session switches. A slow result is discarded so the previous snapshot
+		// remains byte-stable for this transcript (#11961).
+		state.beginMentalModelsTranscriptReload();
 		return true;
 	}
 
@@ -148,8 +153,10 @@ export class SessionMemory {
 		if (this.#localMemoryStartupAbort?.signal === signal) this.#localMemoryStartupAbort = undefined;
 	}
 
-	async #disposeMemoryBackendState(consolidateMnemopi = true, retainMnemopi = true): Promise<void> {
+	/** Releases live backend state; true when a Hindsight or Mnemopi owner was torn down. */
+	async #disposeMemoryBackendState(consolidateMnemopi = true, retainMnemopi = true): Promise<boolean> {
 		this.cancelLocalMemoryStartup();
+		let released = false;
 		try {
 			releaseSharpshooterSession(this.#host.memoryBackendSession());
 		} catch (error) {
@@ -164,6 +171,7 @@ export class SessionMemory {
 			}
 			this.#host.setHindsightSessionState(undefined);
 			hindsight.dispose();
+			released = true;
 		}
 
 		const mnemopi = this.#host.takeMnemopiSessionState();
@@ -173,7 +181,9 @@ export class SessionMemory {
 			} catch (error) {
 				logger.warn("Memory lifecycle: Mnemopi dispose failed", { error: String(error) });
 			}
+			released = true;
 		}
+		return released;
 	}
 
 	/**
@@ -226,7 +236,7 @@ export class SessionMemory {
 			}
 			const replaceHindsightInPlace = backend?.id === "hindsight" && liveHindsight !== undefined;
 			// Live child aliases read the parent slot, so Hindsight replaces it atomically after draining the old route.
-			if (!replaceHindsightInPlace) await this.#disposeMemoryBackendState(true, retainMnemopi);
+			const released = replaceHindsightInPlace ? false : await this.#disposeMemoryBackendState(true, retainMnemopi);
 			if (backend && agentDir !== undefined && !this.#host.isDisposed()) {
 				await backend.start({
 					session,
@@ -241,9 +251,13 @@ export class SessionMemory {
 				await this.#disposeMemoryBackendState(false);
 				return;
 			}
-			await this.#refreshMemoryTools();
+			const toolsChanged = await this.#refreshMemoryTools();
 			if (this.#host.isDisposed()) return;
-			await this.#host.refreshBaseSystemPrompt();
+			// A transition that released no live owner, started no backend, and left
+			// the memory tools alone cannot change the rendered prompt. Skipping the
+			// rebuild keeps session start from scheduling a registry mutation and a
+			// full prompt render that reproduce byte-identical output.
+			if (released || toolsChanged || backend?.id !== "off") await this.#host.refreshBaseSystemPrompt();
 		} catch (error) {
 			await this.#disposeMemoryBackendState(false);
 			if (!this.#host.isDisposed()) {
@@ -257,10 +271,13 @@ export class SessionMemory {
 		}
 	}
 
-	async #refreshMemoryTools(): Promise<void> {
-		if (!this.#createMemoryTools) return;
+	/** Rebuilds the memory tool set; true when the registry actually changed. */
+	async #refreshMemoryTools(): Promise<boolean> {
+		if (!this.#createMemoryTools) return false;
 		const tools = this.#host.memoryEnabled() ? await this.#createMemoryTools() : [];
+		if (tools.length === 0 && !this.#host.hasMemoryTools()) return false;
 		await this.#replaceMemoryTools(tools);
+		return true;
 	}
 
 	#replaceMemoryTools(tools: AgentTool[]): Promise<void> {

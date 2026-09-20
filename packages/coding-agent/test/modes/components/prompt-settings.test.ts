@@ -6,9 +6,9 @@ import type {
 	SystemPromptProfileSetting,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { PromptSettingsComponent } from "@oh-my-pi/pi-coding-agent/modes/components/prompt-settings";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { applyPromptProfileOperation } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/prompt-profile";
 import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 beforeAll(() => initTheme());

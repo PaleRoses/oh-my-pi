@@ -11,14 +11,18 @@ function makeSession(opts: {
 	backends?: Record<string, boolean>;
 	xdev?: boolean;
 	preludes?: () => readonly EvalPreludeDefinition[];
+	taskDepth?: number;
+	maxRecursionDepth?: number;
 }): ToolSession {
 	const settings = Settings.isolated();
 	for (const [key, value] of Object.entries(opts.backends ?? {})) settings.set(key as never, value);
+	if (opts.maxRecursionDepth !== undefined) settings.set("task.maxRecursionDepth", opts.maxRecursionDepth);
 	return {
 		cwd: "/tmp/eval-test",
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => opts.spawns ?? "*",
+		taskDepth: opts.taskDepth,
 		...(opts.preludes ? { getEvalPreludes: opts.preludes } : {}),
 		settings,
 		...(opts.xdev
@@ -60,11 +64,17 @@ describe("eval tool description", () => {
 		expect(text).toContain("xd://eval");
 	});
 
-	it("omits agent() when the session forbids spawning", () => {
+	it("omits spawning helpers but keeps wait() when the session forbids spawning", () => {
 		// Subagents with spawns: undefined (resolved to "") cannot launch tasks.
-		// Neither doc may promise a helper that always throws.
-		expect(getEvalToolDescription({ py: true, js: true, spawns: false })).not.toContain("agent(");
-		expect(getEvalToolManual({ py: true, js: true, spawns: false })).not.toContain("agent(prompt");
+		// Neither doc may promise a helper that always throws; wait() stays
+		// usable with completion() handles.
+		const contract = getEvalToolDescription({ py: true, js: true, spawns: false });
+		expect(contract).not.toContain("agent(");
+		expect(contract).not.toContain("workpool(");
+		expect(contract).toContain("wait(handles");
+		const manual = getEvalToolManual({ py: true, js: true, spawns: false });
+		expect(manual).not.toContain("agent(prompt");
+		expect(manual).toContain("wait(handles");
 	});
 
 	it("manual carries the full prelude signatures", () => {
@@ -86,6 +96,19 @@ describe("eval tool description", () => {
 		expect(inlined.description).toContain("agent(prompt");
 		const denied = new EvalTool(makeSession({ spawns: "" }));
 		expect(denied.description).not.toContain("agent(prompt");
+	});
+
+	it("omits spawning helpers but keeps wait() when recursion depth is exhausted", () => {
+		const belowCap = new EvalTool(makeSession({ taskDepth: 1, maxRecursionDepth: 2 })).description;
+		const atCap = new EvalTool(makeSession({ taskDepth: 2, maxRecursionDepth: 2 })).description;
+		const spawningDisabled = new EvalTool(makeSession({ taskDepth: 0, maxRecursionDepth: 0 })).description;
+
+		expect(belowCap).toContain("agent(prompt");
+		for (const description of [atCap, spawningDisabled]) {
+			expect(description).not.toContain("agent(prompt");
+			expect(description).not.toContain("workpool(");
+			expect(description).toContain("wait(handles");
+		}
 	});
 
 	it("hides eval-defined tool guidance when eval.tools.enabled is off", () => {

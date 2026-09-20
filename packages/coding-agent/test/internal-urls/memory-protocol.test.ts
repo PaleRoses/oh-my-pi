@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
-import { MemoryProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/memory-protocol";
+import { MemoryProtocolHandler, splitMemoryGlobPattern } from "@oh-my-pi/pi-coding-agent/internal-urls/memory-protocol";
 import { getMemoryRoot } from "@oh-my-pi/pi-coding-agent/memories";
 import type { MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -13,7 +13,7 @@ import {
 	MnemopiSessionState,
 	setMnemopiSessionState,
 } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
-import { getInternalUrlSuggestions } from "@oh-my-pi/pi-coding-agent/modes/internal-url-autocomplete";
+import { getInternalUrlSuggestions } from "@oh-my-pi/pi-tui/prompt/internal-url-autocomplete";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -965,9 +965,9 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 				await expect(router.resolve(`memory://${twinId}`, context)).rejects.toThrow(
 					/not found in the calling session's scoped bank/,
 				);
-				await expect(router.resolve("memory://root", context)).resolves.toMatchObject({
-					content: "shared cwd summary",
-				});
+				await expect(router.resolve("memory://root", context)).rejects.toThrow(
+					"File-backed memory artifacts only exist with memory.backend=local (active backend: mnemopi).",
+				);
 			} finally {
 				setAgentDir(previousAgentDir);
 				await twinState?.dispose({ consolidate: false });
@@ -1010,12 +1010,13 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 			expect(bound?.items.map(item => item.value)).toContain("memory://<memory-id>");
 
 			// Typing into the child instead binds to its hindsight backend, which has
-			// no addressable ids, rather than to the peer bank in the same cwd.
+			// no addressable ids and no file-backed root, so it is offered nothing.
 			const childBound = await getInternalUrlSuggestions("memory://", undefined, undefined, () => ({
 				cwd: sharedCwd,
 				sessionFile: childSessionFile,
 			}));
-			expect(childBound?.items.map(item => item.value)).not.toContain("memory://<memory-id>");
+			expect(childBound?.items.map(item => item.value) ?? []).not.toContain("memory://<memory-id>");
+			expect(childBound?.items.map(item => item.value) ?? []).not.toContain("memory://root");
 
 			// A caller that is no longer registered is offered nothing at all.
 			expect(
@@ -1044,11 +1045,11 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 		});
 	});
 
-	it("routes memory://root to the file-backed summary even when mnemopi is active", async () => {
+	it("refuses a contextless memory://root read while mnemopi is the live backend", async () => {
 		await withMnemopiSession(async () => {
 			const router = InternalUrlRouter.instance();
 			await expect(router.resolve("memory://root")).rejects.toThrow(
-				"Memory artifacts are not available for this project yet. Run a session with memories enabled first.",
+				"File-backed memory artifacts only exist with memory.backend=local (active backend: mnemopi).",
 			);
 		});
 	});
@@ -1114,6 +1115,73 @@ describe("MemoryProtocolHandler — hindsight (issue #7587)", () => {
 		const router = InternalUrlRouter.instance();
 		await expect(router.resolve("memory://a1b2c3d4e5f6")).rejects.toThrow(
 			/Unknown memory namespace: a1b2c3d4e5f6\. Supported: root/,
+		);
+	});
+});
+
+describe("MemoryProtocolHandler — file-backed root vs non-local backends (issue #11909)", () => {
+	beforeEach(() => {
+		AgentRegistry.resetGlobalForTests();
+		InternalUrlRouter.resetForTests();
+	});
+
+	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
+		InternalUrlRouter.resetForTests();
+	});
+
+	it("rejects stale local root artifacts after switching to hindsight", async () => {
+		const cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "memory-protocol-11909-hindsight-"));
+		const previousAgentDir = getAgentDir();
+		try {
+			setAgentDir(path.join(cleanupRoot, "agent"));
+			const cwd = path.join(cleanupRoot, "project");
+			await fs.mkdir(cwd, { recursive: true });
+			const memoryRoot = getMemoryRoot(getAgentDir(), cwd);
+			await fs.mkdir(memoryRoot, { recursive: true });
+			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "stale local summary");
+			const settings = Settings.isolated({ "memory.backend": "hindsight" });
+			await expect(InternalUrlRouter.instance().resolve("memory://root", { cwd, settings })).rejects.toThrow(
+				"File-backed memory artifacts only exist with memory.backend=local (active backend: hindsight). Use `recall`/`reflect` to search Hindsight memories.",
+			);
+		} finally {
+			setAgentDir(previousAgentDir);
+			await removeWithRetries(cleanupRoot);
+		}
+	});
+
+	it("keeps the 'run a session' message for local backend before consolidation writes the root", async () => {
+		const cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "memory-protocol-11909-local-"));
+		const previousAgentDir = getAgentDir();
+		try {
+			setAgentDir(path.join(cleanupRoot, "agent"));
+			const cwd = path.join(cleanupRoot, "project");
+			await fs.mkdir(cwd, { recursive: true });
+			const settings = Settings.isolated({ "memory.backend": "local" });
+			await expect(InternalUrlRouter.instance().resolve("memory://root", { cwd, settings })).rejects.toThrow(
+				"Memory artifacts are not available for this project yet. Run a session with memories enabled first.",
+			);
+		} finally {
+			setAgentDir(previousAgentDir);
+			await removeWithRetries(cleanupRoot);
+		}
+	});
+
+	it("advertises memory://root only on the local backend that can populate it", async () => {
+		const router = InternalUrlRouter.instance();
+		const hindsight = await router.complete("memory", "", {
+			settings: Settings.isolated({ "memory.backend": "hindsight" }),
+		});
+		expect((hindsight ?? []).map(item => item.value)).not.toContain("root");
+		const local = await router.complete("memory", "", {
+			settings: Settings.isolated({ "memory.backend": "local" }),
+		});
+		expect((local ?? []).map(item => item.value)).toContain("root");
+	});
+
+	it("names the expected glob form rather than the rejected input", () => {
+		expect(() => splitMemoryGlobPattern("memory://**")).toThrow(
+			"Memory glob patterns require the root namespace (e.g. memory://root/**); got: memory://**",
 		);
 	});
 });

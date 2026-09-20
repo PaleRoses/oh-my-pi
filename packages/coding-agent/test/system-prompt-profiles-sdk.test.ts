@@ -105,6 +105,8 @@ describe("SDK system prompt profiles", () => {
 			agentKind?: "main" | "sub";
 			sessionManager?: SessionManager;
 			customSystemPrompt?: string;
+			systemPromptTemplate?: string;
+			systemPromptTemplateSource?: "explicit" | "discovered";
 			customSystemPromptSource?: "explicit" | "discovered";
 			systemPrompt?: CreateAgentSessionOptions["systemPrompt"];
 			contextFiles?: Array<{ path: string; content: string; depth?: number }>;
@@ -132,6 +134,8 @@ describe("SDK system prompt profiles", () => {
 			inheritedMemoryBinding: options.inheritedMemoryBinding,
 			parentHindsightSessionState: options.parentSession?.getHindsightSessionState(),
 			customSystemPrompt: options.customSystemPrompt,
+			systemPromptTemplate: options.systemPromptTemplate,
+			systemPromptTemplateSource: options.systemPromptTemplateSource,
 			customSystemPromptSource: options.customSystemPromptSource,
 			systemPrompt: options.systemPrompt,
 			disableExtensionDiscovery: true,
@@ -147,6 +151,21 @@ describe("SDK system prompt profiles", () => {
 		sessions.push(session);
 		return session;
 	}
+
+	it("keeps discovered templates below profiles and explicit templates above them", async () => {
+		const discovered = await create("driver-primary", routedSettings(), {
+			systemPromptTemplate: "AMBIENT TEMPLATE",
+			systemPromptTemplateSource: "discovered",
+		});
+		expect(discovered.systemPrompt.join("\n")).toContain("DRIVER CONSTITUTION");
+		expect(discovered.systemPrompt.join("\n")).not.toContain("AMBIENT TEMPLATE");
+		const explicit = await create("driver-primary", routedSettings(), {
+			systemPromptTemplate: "EXPLICIT TEMPLATE",
+		});
+		expect(explicit.systemPrompt.join("\n")).toContain("EXPLICIT TEMPLATE");
+		expect(explicit.systemPrompt.join("\n")).not.toContain("DRIVER CONSTITUTION");
+		expect(explicit.effectiveIdentity.prompt.source).toBe("explicit-system-prompt");
+	});
 
 	it("pins the main profile in the prompt, transcript header, and provider cache key", async () => {
 		const session = await create("driver-primary");

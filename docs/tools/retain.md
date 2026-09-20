@@ -133,6 +133,6 @@ Mnemopi:
 - Mnemopi auto-retain stores prepared transcripts with `source: "coding-agent-transcript"`, `importance: 0.65`, `veracity: "unknown"`, and `memoryType: "episode"`.
 - Hindsight mental-model bootstrap lives in the shared backend: `HindsightSessionState.runMentalModelLoad(...)` optionally resolves seeds, creates missing models, then caches a rendered `<mental_models>` block for prompt injection.
 - Built-in Hindsight seeds are `user-preferences`, `project-conventions`, and `project-decisions`. `projectTagged: true` seeds inherit the active scope's retain tags; untagged seeds read the whole bank.
-- Hindsight mental-model enablement, automatic seeding, refresh cadence, and render cap come from the active Hindsight configuration. The first-turn load is bounded by `MENTAL_MODEL_FIRST_TURN_DEADLINE_MS`.
+- Hindsight mental-model enablement, automatic seeding, and render cap come from the active Hindsight configuration. The rendered `<mental_models>` block is frozen for the current transcript — a background reflect applies when the next transcript/session boundary reloads it, and `/memory mm reload` forces an explicit in-session refresh. The first-turn load is bounded by `MENTAL_MODEL_FIRST_TURN_DEADLINE_MS`.
 - Hindsight seed lifecycle is create-only. Changing `packages/coding-agent/src/hindsight/seeds.json` does not mutate existing server-side models.
 - `recall.md` and `reflect.md` rely on the same backend selection and scoping behavior.

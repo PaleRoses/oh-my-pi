@@ -91,6 +91,13 @@ export interface MemoryBackendStartOptions {
 	parentHindsightSessionState?: HindsightSessionState;
 }
 
+/** A successful recall, including an empty result, staged until user-turn delivery. */
+export interface MemoryPromptPreparation {
+	context?: string;
+	/** Commit synchronously after delivery validation; false rejects lost ownership without state writes. */
+	commit(): boolean;
+}
+
 export interface MemoryBackend {
 	readonly id: MemoryBackendId;
 
@@ -144,11 +151,11 @@ export interface MemoryBackend {
 	 * system prompt before the agent starts generating.
 	 *
 	 * This is the only place a backend can affect the very first answer of a
-	 * fresh session. The returned text is appended to the already-built base
-	 * system prompt for this turn only; callers may separately cache it and
-	 * surface it through `buildDeveloperInstructions()` on later rebuilds.
+	 * fresh session. Context is appended to the winning base prompt at delivery;
+	 * commit publishes the cached snippet and first-turn consumption together.
+	 * Return undefined for an ineligible or failed recall, not an empty success.
 	 */
-	beforeAgentStartPrompt?(session: AgentSession, promptText: string): Promise<string | undefined>;
+	beforeAgentStartPrompt?(session: AgentSession, promptText: string): Promise<MemoryPromptPreparation | undefined>;
 
 	/**
 	 * Optional hook to splice extra context into a compaction summarization.

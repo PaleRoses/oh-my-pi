@@ -10,6 +10,8 @@ import type {
 	UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
+import { MarketplaceManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
@@ -614,7 +616,7 @@ describe("ACP builtin slash commands", () => {
 			"/copy",
 			"/btw hi",
 			"/new",
-			"/drop",
+			"/delete",
 			"/fork",
 		];
 		for (const cmd of removedCommands) {
@@ -1259,6 +1261,21 @@ describe("wave 4 commands", () => {
 	});
 
 	// /plugins
+	it("/plugin list: the singular alias dispatches the plugins builtin", async () => {
+		const npmSpy = spyOn(PluginManager.prototype, "list").mockResolvedValue([
+			{ name: "@czottmann/pi-automode", version: "1.16.0" } as never,
+		]);
+		const installedSpy = spyOn(MarketplaceManager.prototype, "listInstalledPlugins").mockResolvedValue([]);
+		try {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand("/plugin list", runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("@czottmann/pi-automode@1.16.0");
+		} finally {
+			npmSpy.mockRestore();
+			installedSpy.mockRestore();
+		}
+	});
 
 	// /todo start with in_progress status in fuzzy list
 	it("/todo start: resolves ambiguous matches by preferring active tasks", async () => {

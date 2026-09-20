@@ -43,6 +43,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 			memory: { status: "enabled", memoryBinding: deps.memoryBinding },
 		},
 		model: undefined,
+		memoryEnabled: true,
 		settings: deps.settings ?? Settings.isolated(),
 		sessionManager: {
 			getEntries: () =>
@@ -460,10 +461,12 @@ describe("hindsightBackend first-turn injection", () => {
 			session as never,
 			"What do I know about this user?",
 		);
-		expect(block).toContain("<memories>");
-		expect(block).toContain("Can prefers concise communication");
+		expect(block?.context).toContain("<memories>");
+		expect(block?.context).toContain("Can prefers concise communication");
+		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(false);
+		block?.commit();
 		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(true);
-		expect(session.getHindsightSessionState()?.lastRecallSnippet).toBe(block);
+		expect(session.getHindsightSessionState()?.lastRecallSnippet).toBe(block?.context);
 	});
 
 	it("does not let agent_start preempt first-turn recall injection", async () => {
@@ -498,7 +501,8 @@ describe("hindsightBackend first-turn injection", () => {
 
 		// beforeAgentStartPrompt is the sole, awaited injection path.
 		const block = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "What is the canary phrase?");
-		expect(block).toContain("PURPLE-OTTER-9931");
+		expect(block?.context).toContain("PURPLE-OTTER-9931");
+		block?.commit();
 		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(true);
 	});
 
@@ -1193,6 +1197,7 @@ describe("hindsightBackend bound memory owner", () => {
 				takeMnemopiSessionState: () => undefined,
 				setBaseSystemPrompt: () => {},
 				refreshBaseSystemPrompt: async () => {},
+				hasMemoryTools: () => false,
 				replaceMemoryTools: async () => {},
 			},
 			{ memoryAgentDir: "/tmp" },
@@ -1230,6 +1235,55 @@ describe("hindsightBackend bound memory owner", () => {
 		settings.set("hindsight.apiUrl", "http://localhost:8888");
 		await memory.applyMemoryBackend();
 		expect(session.getHindsightSessionState()?.bankId).toBe(BINDING.bankId);
+	});
+
+	// Session start applies the backend in the background. With memory off and no
+	// memory tool installed there is nothing to render, so the transition must not
+	// mutate the tool registry or rebuild the prompt — that work outlives the
+	// caller and reproduces byte-identical output.
+	it("performs no tool or prompt work when an off transition changes nothing", async () => {
+		const settings = Settings.isolated();
+		settings.set("memory.backend", "off");
+		const session = makeFakeSession({ sessionId: "s-off-noop", settings });
+		const refreshBaseSystemPrompt = vi.fn(async () => {});
+		const replaceMemoryTools = vi.fn(async () => {});
+		let memoryToolsInstalled = false;
+		const memory = new SessionMemory(
+			{
+				agent: { sessionId: "s-off-noop" } as never,
+				settings,
+				modelRegistry: {} as never,
+				isDisposed: () => false,
+				memoryEnabled: () => true,
+				memoryBackendSession: () => session as never,
+				getHindsightSessionState: () => session.getHindsightSessionState(),
+				setHindsightSessionState: state => {
+					session.setHindsightSessionState(state);
+				},
+				getMnemopiSessionState: () => undefined,
+				takeMnemopiSessionState: () => undefined,
+				setBaseSystemPrompt: () => {},
+				refreshBaseSystemPrompt,
+				hasMemoryTools: () => memoryToolsInstalled,
+				replaceMemoryTools,
+			},
+			{ memoryAgentDir: "/tmp", createMemoryTools: async () => [] },
+		);
+
+		await memory.applyMemoryBackend();
+		expect({
+			prompts: refreshBaseSystemPrompt.mock.calls.length,
+			tools: replaceMemoryTools.mock.calls.length,
+		}).toEqual({ prompts: 0, tools: 0 });
+
+		// Turning memory off while tools are live must still tear them down and
+		// re-render, so the skip above cannot swallow a real transition.
+		memoryToolsInstalled = true;
+		await memory.applyMemoryBackend();
+		expect({
+			prompts: refreshBaseSystemPrompt.mock.calls.length,
+			tools: replaceMemoryTools.mock.calls.length,
+		}).toEqual({ prompts: 1, tools: 1 });
 	});
 
 	// Project tagging scopes retrieval inside the owner's bank, so a cwd move
@@ -1304,10 +1358,7 @@ describe("hindsightBackend cwd rebind", () => {
 		vi.restoreAllMocks();
 	});
 
-	// A cwd move used to leave the rebuild queued as a bare microtask, so the
-	// prompt that follows `/move` could still recall and retain against the
-	// source project's bank. `rebindMemoryBackendForCwd` must have installed
-	// the destination route by the time it resolves — no extra yields.
+	// No extra yield after rebind: the next retain must already use the destination.
 	it("routes the destination project's bank before the move completes", async () => {
 		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
@@ -1316,8 +1367,6 @@ describe("hindsightBackend cwd rebind", () => {
 			"hindsight.apiUrl": "http://localhost:8888",
 		});
 		settings.set("hindsight.scoping", "per-project");
-		// The fake session reads `deps.cwd` on every `getCwd()`, so moving the
-		// session manager's cwd is a mutation of this object.
 		const deps: FakeSessionDeps = { sessionId: "s-cwd-move", cwd: "/work/source", settings };
 		const session = makeFakeSession(deps);
 
@@ -1390,9 +1439,6 @@ describe("hindsightBackend cwd rebind", () => {
 		},
 	);
 
-	// The rebuild loop is the only owner of queued rebuild requests, so a
-	// request that arrives while one is mid-flight must still be applied —
-	// otherwise the move settles on the route of the superseded request.
 	it("honors a rebuild requested while the previous one is still in flight", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const parked = Promise.withResolvers<void>();
@@ -1432,8 +1478,8 @@ describe("hindsightBackend cwd rebind", () => {
 
 		const settledState = session.getHindsightSessionState();
 		vi.spyOn(session, "getHindsightSessionState").mockImplementationOnce(() => {
-			// Queue after the no-op loop exits, but before its completion settles.
-			queueMicrotask(() => queueMicrotask(() => settings.set("hindsight.bankId", "third")));
+			// Three microtasks land after loop retirement but before rebind resolves.
+			queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => settings.set("hindsight.bankId", "third"))));
 			return settledState;
 		});
 		await rebindMemoryBackendForCwd(session as never);
@@ -1441,9 +1487,6 @@ describe("hindsightBackend cwd rebind", () => {
 		session.getHindsightSessionState()?.dispose();
 	});
 
-	// A preserved failure must not be sticky either: when the request that
-	// coalesced onto the failed attempt does complete the transition, the
-	// session really is rebound and the move has to report success.
 	it("clears a failed attempt once a coalesced retry completes the transition", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const parked = Promise.withResolvers<void>();

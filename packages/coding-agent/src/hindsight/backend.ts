@@ -11,7 +11,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { onHindsightScopeChanged, type Settings } from "../config/settings";
 import type { HindsightMemoryBinding } from "../config/settings-schema";
-import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
+import type { MemoryBackend, MemoryBackendStartOptions, MemoryPromptPreparation } from "../memory-backend/types";
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, computeSessionBankScope, resolveProjectLabel } from "./bank";
 import { createHindsightClient } from "./client";
@@ -101,11 +101,19 @@ export const hindsightBackend: MemoryBackend = {
 		return parts.join("\n\n");
 	},
 
-	async beforeAgentStartPrompt(session: AgentSession, promptText: string): Promise<string | undefined> {
+	async beforeAgentStartPrompt(
+		session: AgentSession,
+		promptText: string,
+	): Promise<MemoryPromptPreparation | undefined> {
 		const state = session.getHindsightSessionState();
 		if (!state) return undefined;
 
-		return await state.beforeAgentStartPrompt(promptText);
+		const preparation = await state.beforeAgentStartPrompt(promptText);
+		if (!preparation) return undefined;
+		return {
+			context: preparation.context,
+			commit: () => session.getHindsightSessionState() === state && preparation.commit(),
+		};
 	},
 
 	async clear(_agentDir, _cwd, session): Promise<void> {
@@ -210,6 +218,7 @@ function schedulePrimaryStateRebuild(session: AgentSession): PrimaryRebuildTask 
  * Hindsight.
  */
 export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<void> {
+	if (!session.memoryEnabled) return;
 	// Other backends have no Hindsight scope subscription. Reapply them on an
 	// explicit cwd move, but let an in-flight Hindsight transition finish (or
 	// fail) rather than retrying a partially torn-down backend outside its task.
@@ -227,6 +236,11 @@ export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<
 		// A hook that fired while we waited installs a fresh task; the move is
 		// not rebound until the last one has settled.
 		task = primaryRebuildTasks.get(session);
+	}
+
+	// Startup is best-effort, but a move must not commit an unusable memory backend.
+	if (session.settings.get("memory.backend") === "mnemopi" && !session.getMnemopiSessionState()) {
+		throw new Error("Mnemopi backend failed to initialise for the destination cwd.");
 	}
 }
 
@@ -424,7 +438,11 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 		current.config.hindsightApiUrl === config.hindsightApiUrl &&
 		current.config.bankMission.trim() === config.bankMission.trim() &&
 		(current.config.retainMission?.trim() || "") === (config.retainMission?.trim() || "");
-	return (await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set())) !== undefined;
+	const state = await installPrimaryState(session, settings, sameBankConfig ? current.banksSet : new Set());
+	if (!state) return false;
+	// A destination with no recall injection must not reuse the source bank's prompt.
+	await session.refreshBaseSystemPrompt();
+	return true;
 }
 
 /** Global bank selectors, which a bound owner resolves from its binding instead. */
