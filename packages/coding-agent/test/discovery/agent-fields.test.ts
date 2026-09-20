@@ -98,14 +98,14 @@ describe("parseAgentFields", () => {
 		expect(parseAgentFields({ name: "quiet", description: "desc" })?.tools).toBeUndefined();
 	});
 
-	test("maps legacy search and find tool names", () => {
+	test("normalizes search while keeping semantic find distinct from glob", () => {
 		const fields = parseAgentFields({
 			name: "reviewer",
 			description: "desc",
 			tools: ["Find", "Glob", "Search", "Grep"],
 		});
 
-		expect(fields?.tools).toEqual(["glob", "grep", "yield"]);
+		expect(fields?.tools).toEqual(["find", "glob", "grep", "yield"]);
 	});
 
 	test("parses autoloadSkills from array frontmatter", () => {

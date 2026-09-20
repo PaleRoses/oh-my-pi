@@ -12,6 +12,8 @@
 
 - `--prompt-profile <id>` explicitly selects a fresh session's prompt profile while honoring deny rules. Transcripts pin profile, selection source, and memory owner; resume preserves the selection and refuses conflicting owners, while legacy history cannot silently acquire an owner.
 - Profile `memoryBinding` binds Hindsight to an explicit principal and bank, editable atomically in `/identity`. Delegated work inherits ownership independently of memory permission, and live backend/service changes cannot move a bound session's memory. Retain provenance distinguishes memory owner from prompt identity.
+- Added `find` tool for semantic workspace searching, allowing agents to locate behaviors and symbols using natural language
+- Added `find` CLI command for performing semantic workspace searches
 - Added batch evaluation with judge_batch(states, questions) / judgeBatch(...), including bounded background execution, incremental result and status access, per-item failure reporting, and the ability to wait for or reattach to jobs across turns or after a reset.
 - Added the jevify magic keyword to have the agent establish an evaluation rubric before classifying bulk items and inspect only items flagged by the judge.
 - Added omp web-search as an alias for omp search.
@@ -24,12 +26,15 @@
 
 - Consolidated profile field handling, editor transitions, identity derivation, and source-update plumbing without removing supported behavior.
 - Scout and task guidance select agents by capabilities and tool restrictions, request source-backed findings, and defer delegation to the parent’s decomposition. Role prompts no longer repeat inherited tool, editing, or completion rules; scout depth, read-only scope, and full-report contracts remain intact.
+- Updated agent system prompts to prioritize the `find` tool over `grep` and `glob` for behavioral lookups
+- Refined system prompt instructions for XML tag handling and agent persona
 - Updated sloppy edit tool syntax to use plain text headers instead of XML tags
 - Improved startup performance by validating provider-qualified model selectors against only the relevant provider catalog.
 - Reduced launch time for npm and compiled builds by embedding the model catalog more efficiently.
 
 ### Fixed
 
+- Classified the new semantic `find` tool as read-only for scout delegation and persisted agent capabilities.
 - Avoided redundant memory-off startup work that could leave native prompt rendering in flight during session teardown.
 - Preserved profile compaction identity in Anthropic native compaction instructions without changing the cached system prompt.
 - Preserved prompt-profile precedence and runtime identity with system prompt templates: explicit templates override profile prompts; discovered templates do not.

@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Read-only investigation agent for codebase research, pattern searches, and evidence gathering. Returns source-anchored findings for handoff.
-tools: read, grep, glob, web_search
+tools: read, find, grep, glob, web_search
 model: "@smol"
 thinking-level: medium
 read-summarize: false

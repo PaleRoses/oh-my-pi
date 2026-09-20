@@ -72,14 +72,13 @@ describe("createTools", () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "astGrep.enabled": false }),
 		});
-		const tools = await createTools(session, ["search", "find", "eval", "grep"]);
+		const tools = await createTools(session, ["search", "glob", "eval", "grep"]);
 		const names = tools.map(t => t.name);
 
 		expect(names.filter(name => name === "grep")).toHaveLength(1);
 		expect(names).toContain("glob");
 		expect(names.filter(name => name === "eval")).toHaveLength(1);
 		expect(names).not.toContain("search");
-		expect(names).not.toContain("find");
 	});
 
 	it("includes bash and eval when both eval backends are allowed", async () => {
