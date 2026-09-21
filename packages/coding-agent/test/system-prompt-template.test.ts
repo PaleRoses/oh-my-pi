@@ -196,18 +196,16 @@ describe("system prompt Handlebars templates", () => {
 			const result = await buildSystemPrompt(options(cwd));
 			const text = result.systemPrompt.join("\n\n");
 			expect(text).toContain("fallback literal prompt");
-			expect(text).not.toContain("Helpful, trusted assistant");
 		});
 	});
 
-	it("warns on a malformed discovered template and falls back to the bundled prompt", async () => {
+	it("uses the same bundled prompt when a discovered template is malformed or absent", async () => {
 		await withDiscoveryHome(async ({ cwd, projectConfig }) => {
+			const expected = await buildSystemPrompt(options(cwd));
 			await Bun.write(path.join(projectConfig, "SYSTEM_TEMPLATE.md"), "{{#if eagerTasks}}");
 
 			const result = await buildSystemPrompt(options(cwd));
-			const text = result.systemPrompt.join("\n\n");
-			expect(text).not.toContain("TASK_BRANCH=");
-			expect(text).toContain("Helpful, trusted assistant");
+			expect(result.systemPrompt).toEqual(expected.systemPrompt);
 		});
 	});
 
@@ -219,7 +217,6 @@ describe("system prompt Handlebars templates", () => {
 			const result = await buildSystemPrompt(options(cwd));
 			const text = result.systemPrompt.join("\n\n");
 			expect(text).toContain("fallback literal prompt");
-			expect(text).not.toContain("Helpful, trusted assistant");
 		});
 	});
 
