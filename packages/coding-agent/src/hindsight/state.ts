@@ -466,6 +466,7 @@ export class HindsightSessionState {
 				types: route.config.recallTypes.length > 0 ? route.config.recallTypes : undefined,
 				tags: route.recallTags,
 				tagsMatch: route.recallTagsMatch,
+				signal,
 			});
 			if (signal?.aborted) return { context: null, ok: false };
 			const results = response.results ?? [];
@@ -590,7 +591,10 @@ export class HindsightSessionState {
 		}
 	}
 
-	async beforeAgentStartPrompt(promptText: string): Promise<MemoryPromptPreparation | undefined> {
+	async beforeAgentStartPrompt(
+		promptText: string,
+		signal?: AbortSignal,
+	): Promise<MemoryPromptPreparation | undefined> {
 		if (this.isAlias) return undefined;
 		if (this.config.mentalModelsEnabled && this.mentalModelsLoadPromise && this.mentalModelsLoadedAt === undefined) {
 			await Promise.race([this.mentalModelsLoadPromise, Bun.sleep(MENTAL_MODEL_FIRST_TURN_DEADLINE_MS)]);
@@ -606,7 +610,7 @@ export class HindsightSessionState {
 		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
 		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
-		const { context, ok } = await this.recallForContext(truncated);
+		const { context, ok } = await this.recallForContext(truncated, signal);
 		if (!ok) return undefined;
 
 		return {
